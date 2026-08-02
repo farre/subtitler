@@ -10,6 +10,19 @@ Requirements:
 - pkg-config modules: gstreamer-1.0, gstreamer-app-1.0, gstreamer-audio-1.0,
   gstreamer-video-1.0, glib-2.0, gobject-2.0, gio-2.0, libsoup-3.0
 
+On a 64-bit trixie-based Raspberry Pi OS, everything above — plus the test
+framework and runtime GStreamer plugins — installs with:
+
+```sh
+sudo apt install clang cmake doctest-dev gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-good libdrm-tests libglib2.0-dev \
+    libgstreamer-plugins-base1.0-dev libgstreamer1.0-dev libsoup-3.0-dev \
+    ninja-build pkg-config
+```
+
+(Bookworm is too old: it ships cmake 3.25 and clang 14, while the project
+needs cmake >= 3.30 and a C++26-capable standard library.)
+
 ```sh
 cmake --preset default
 cmake --build --preset default
