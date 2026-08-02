@@ -4,6 +4,7 @@
     "bash": {
       "*": "ask",
       "gh issue view*": "allow",
+      "gh issue list*": "allow",
       "git status*": "allow",
       "git diff*": "allow",
       "git log*": "allow",
