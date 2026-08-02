@@ -17,7 +17,13 @@ include(CompilerWarnings)
 include(Sanitizers)
 include(Dependencies)
 
+include(CTest)
+
 add_subdirectory(src)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 
 add_executable(
     subtitler

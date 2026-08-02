@@ -28,8 +28,8 @@ cmake --build --preset default
 - The `default` preset in `CMakePresets.json` sets the Ninja generator, `build/` binary dir, and clang++ — the README, the VSCode task, and manual builds all go through it.
 - If `build/` already exists configured with Makefiles, delete it first — CMake errors on generator mismatch instead of switching in place.
 - Requires CMake >= 3.30 and a very recent C++26 compiler (uses `std::print`, `std::format`, `std::out_ptr`, `std::jthread`). Verified working with Clang 22.1.8.
-- Dependencies resolve via pkg-config (all `REQUIRED`; configure fails if dev packages are missing): gstreamer-1.0, gstreamer-app-1.0, gstreamer-audio-1.0, gstreamer-video-1.0, glib-2.0 / gobject-2.0 / gio-2.0, libsoup-3.0.
-- No tests, no CI, no lint targets. Verification = a clean `cmake --build build`.
+- Dependencies resolve via pkg-config (all `REQUIRED`; configure fails if dev packages are missing): gstreamer-1.0, gstreamer-app-1.0, gstreamer-audio-1.0, gstreamer-video-1.0, glib-2.0 / gobject-2.0 / gio-2.0, libsoup-3.0. Tests additionally use doctest via `find_package(doctest REQUIRED)` (CMake package, not pkg-config).
+- Tests run with `ctest --test-dir build` (doctest unit tests under `tests/`, registered via `doctest_discover_tests`; gated on `BUILD_TESTING`, default ON). No CI, no lint targets. Verification = a clean `cmake --build build` plus passing ctest.
 - Formatting: clang-format with the repo's `.clang-format` (Google base, 2-space indent, 80 columns).
 
 ## Layout and conventions
@@ -37,6 +37,7 @@ cmake --build --preset default
 - All headers are private and live next to their sources under `src/`. The include root is `src/`, so includes look like `#include "stream/description.h"`. The root `include/` directory is intentionally empty, reserved for a future public API — do not put headers there.
 - `src/stream/` builds the static lib `stream` (alias `subtitler::stream`), consumed only by the `subtitler` executable from `src/main.cpp`. New modules should follow the same `src/<module>/` pattern with their own CMakeLists.
 - `src/stream/stream.cpp` and `stream.h` are empty placeholders still listed as lib sources — the lib today is only `description.cpp` + `deleters.h`.
+- `tests/` holds the doctest unit tests. Libs expose nothing publicly, so test targets set their own `target_include_directories` for `src/`.
 - `cmake/CompilerWarnings.cmake` and `cmake/Sanitizers.cmake` are **empty placeholders**; warning flags (`-Wall -Wextra -Wpedantic`) are set directly on targets in the root `CMakeLists.txt`. Don't grep the module files for warning config.
 - `cmake/Dependencies.cmake` declares GLib, libsoup, and Threads that nothing links yet — intentional (libsoup is for the planned web UI). Don't prune them as "unused".
 - Wrap GStreamer objects with the RAII deleters in `src/stream/deleters.h` (see the `GstPointer` aliases in `main.cpp`) instead of raw `gst_*_unref` calls.

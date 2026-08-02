@@ -20,6 +20,16 @@ The `default` preset (see `CMakePresets.json`) uses the Ninja generator,
 already exists configured with Makefiles, delete it first — CMake errors on
 generator mismatch instead of switching in place.
 
+## Testing
+
+```sh
+ctest --test-dir build
+```
+
+Tests use [doctest](https://github.com/doctest/doctest) (CMake package;
+`doctest` on Arch, `doctest-dev` on Debian/Raspberry Pi OS). They are built
+by default; disable with `-DBUILD_TESTING=OFF`.
+
 ## Running
 
 ```sh
