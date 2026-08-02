@@ -64,6 +64,24 @@ cmake --install build
 Installs the `subtitler` binary to `${CMAKE_INSTALL_PREFIX}/bin`
 (`/usr/local` by default).
 
+## Provisioning the Pi
+
+Create the service user and grant it device access via groups:
+
+```sh
+sudo adduser --system --no-create-home --shell /usr/sbin/nologin subtitler
+sudo usermod -aG video,render,audio subtitler
+```
+
+The `video` group grants access to `/dev/video*` and `/dev/dri/card*`,
+`render` to `/dev/dri/renderD*`, and `audio` to `/dev/snd/*`. Verify access
+as the service user (capture device and display connected):
+
+```sh
+sudo -u subtitler v4l2-ctl --device /dev/video0 --all
+sudo -u subtitler modetest -M vc4
+```
+
 ## Running
 
 ```sh
