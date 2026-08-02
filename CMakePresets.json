@@ -8,12 +8,35 @@
       "cacheVariables": {
         "CMAKE_CXX_COMPILER": "clang++"
       }
+    },
+    {
+      "name": "asan-ubsan",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/asan-ubsan",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "SUBTITLER_ENABLE_ASAN": "ON",
+        "SUBTITLER_ENABLE_UBSAN": "ON"
+      }
     }
   ],
   "buildPresets": [
     {
       "name": "default",
       "configurePreset": "default"
+    },
+    {
+      "name": "asan-ubsan",
+      "configurePreset": "asan-ubsan"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "asan-ubsan",
+      "configurePreset": "asan-ubsan",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

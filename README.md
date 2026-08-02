@@ -20,6 +20,18 @@ The `default` preset (see `CMakePresets.json`) uses the Ninja generator,
 already exists configured with Makefiles, delete it first — CMake errors on
 generator mismatch instead of switching in place.
 
+Optional AddressSanitizer and UndefinedBehaviorSanitizer builds are available
+via the `asan-ubsan` presets (binary dir `build/asan-ubsan`):
+
+```sh
+cmake --preset asan-ubsan
+cmake --build --preset asan-ubsan
+ctest --preset asan-ubsan
+```
+
+The underlying cache options are `SUBTITLER_ENABLE_ASAN` and
+`SUBTITLER_ENABLE_UBSAN` (both default OFF).
+
 ## Testing
 
 ```sh

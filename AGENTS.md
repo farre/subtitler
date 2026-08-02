@@ -38,7 +38,8 @@ cmake --build --preset default
 - `src/stream/` builds the static lib `stream` (alias `subtitler::stream`), consumed only by the `subtitler` executable from `src/main.cpp`. New modules should follow the same `src/<module>/` pattern with their own CMakeLists.
 - `src/stream/stream.cpp` and `stream.h` are empty placeholders still listed as lib sources — the lib today is only `description.cpp` + `deleters.h`.
 - `tests/` holds the doctest unit tests. Libs expose nothing publicly, so test targets set their own `target_include_directories` for `src/`.
-- `cmake/CompilerWarnings.cmake` and `cmake/Sanitizers.cmake` are **empty placeholders**; warning flags (`-Wall -Wextra -Wpedantic`) are set directly on targets in the root `CMakeLists.txt`. Don't grep the module files for warning config.
+- `cmake/CompilerWarnings.cmake` is an **empty placeholder**; warning flags (`-Wall -Wextra -Wpedantic`) are set directly on targets in the root `CMakeLists.txt`. Don't grep the module file for warning config.
+- `cmake/Sanitizers.cmake` holds the optional sanitizers: `SUBTITLER_ENABLE_ASAN` / `SUBTITLER_ENABLE_UBSAN` (both default OFF), applied directory-scope so tests are instrumented too. Build them via the `asan-ubsan` configure/build/test presets (binary dir `build/asan-ubsan`).
 - `cmake/Dependencies.cmake` declares GLib, libsoup, and Threads that nothing links yet — intentional (libsoup is for the planned web UI). Don't prune them as "unused".
 - Wrap GStreamer objects with the RAII deleters in `src/stream/deleters.h` (see the `GstPointer` aliases in `main.cpp`) instead of raw `gst_*_unref` calls.
 
