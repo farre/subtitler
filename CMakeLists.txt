@@ -16,6 +16,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
 include(Sanitizers)
 include(Dependencies)
+include(GNUInstallDirs)
 
 include(CTest)
 
@@ -55,4 +56,9 @@ target_include_directories(
     subtitler
     PRIVATE
         "${PROJECT_SOURCE_DIR}/src"
+)
+
+install(
+    TARGETS subtitler
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )

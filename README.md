@@ -42,6 +42,15 @@ Tests use [doctest](https://github.com/doctest/doctest) (CMake package;
 `doctest` on Arch, `doctest-dev` on Debian/Raspberry Pi OS). They are built
 by default; disable with `-DBUILD_TESTING=OFF`.
 
+## Installing
+
+```sh
+cmake --install build
+```
+
+Installs the `subtitler` binary to `${CMAKE_INSTALL_PREFIX}/bin`
+(`/usr/local` by default).
+
 ## Running
 
 ```sh

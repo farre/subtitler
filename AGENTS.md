@@ -42,6 +42,7 @@ cmake --build --preset default
 - `cmake/Sanitizers.cmake` holds the optional sanitizers: `SUBTITLER_ENABLE_ASAN` / `SUBTITLER_ENABLE_UBSAN` (both default OFF), applied directory-scope so tests are instrumented too. Build them via the `asan-ubsan` configure/build/test presets (binary dir `build/asan-ubsan`).
 - `cmake/Dependencies.cmake` declares GLib, libsoup, and Threads that nothing links yet — intentional (libsoup is for the planned web UI). Don't prune them as "unused".
 - Wrap GStreamer objects with the RAII deleters in `src/stream/deleters.h` (see the `GstPointer` aliases in `main.cpp`) instead of raw `gst_*_unref` calls.
+- Installation covers only the `subtitler` binary (`install(TARGETS ...)` + GNUInstallDirs in the root CMakeLists). When `config/subtidlerd.service` and `config/subtitler.example.json` get implemented, add install rules for them too.
 
 ## Gotchas
 
