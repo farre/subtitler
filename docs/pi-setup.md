@@ -89,4 +89,11 @@ attached yet):
   to /dev/null
 - Live DRM/KMS display checks (#5: #71-#74, #80, #81): kmssink test
   pattern, connected-connector identification, both HDMI outputs — needs a
-  display attached
+  display attached. Include this controlled pair to empirically confirm
+  that packed 4:2:2 scanout is impossible (expect YUY2 to fail negotiation,
+  NV16 to display):
+
+  ```sh
+  gst-launch-1.0 videotestsrc ! video/x-raw,format=YUY2,width=1920,height=1080 ! kmssink driver-name=vc4 force-modesetting=true
+  gst-launch-1.0 videotestsrc ! video/x-raw,format=NV16,width=1920,height=1080 ! kmssink driver-name=vc4 force-modesetting=true
+  ```
