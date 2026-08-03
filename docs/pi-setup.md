@@ -65,9 +65,28 @@ Kernel log:
 Note: `/dev/video19`-`/dev/video35` are the Pi's own pispbe (ISP) and
 rpi-hevc-dec nodes, not the CV105.
 
+## Display output (DRM/KMS)
+
+Verified with `modetest`/`gst-inspect-1.0` on the vc4 driver (no display
+attached yet):
+
+- kmssink is installed (gst-plugins-bad 1.26.2)
+- Connectors: HDMI-A-1 (id 35) and HDMI-A-2 (id 44)
+- 4 CRTCs (ids 59, 78, 94, 106); 56 planes, all sharing one identical
+  format list; 16 overlay planes (ids 107-272, possible CRTCs 0xE), e.g.
+  plane 107 is usable for video
+- NV12/NV21 and NV16/NV61 supported everywhere (LINEAR plus Broadcom
+  SAND64/128/256 tiling modifiers), along with the usual RGB32 variants
+- **No packed 4:2:2 on any plane** (no YUYV/UYVY/YVYU/VYUY): captured YUY2
+  frames cannot be scanned out directly — kmssink intersects its caps with
+  the plane formats at runtime. The pipeline needs a conversion step (e.g.
+  YUY2 to NV16 via videoconvert, or hardware-accelerated via the
+  pispbe/v4l2convert)
+
 ## Pending validation
 
-- Long-running USB stability soak (#58): 30 minutes of 1080p60 YUYV capture
+- Long-running USB stability soak (#58): 60 minutes of 1080p60 YUYV capture
   to /dev/null
-- DRM/KMS output validation (#5, issues #71-#82): kmssink presence and test
-  pattern, connector IDs, plane format support — needs a display attached
+- Live DRM/KMS display checks (#5: #71-#74, #80, #81): kmssink test
+  pattern, connected-connector identification, both HDMI outputs — needs a
+  display attached
