@@ -11,9 +11,10 @@ empty placeholders). Current code is the low-latency passthrough only.
 ## GitHub milestones
 
 The roadmap lives in six GitHub milestones named `N. Title` (issue #1 was
-split into issues #2–#29 across them). The numeric prefix defines execution
-order — GitHub has no milestone ordering — so keep prefixes sequential when
-adding or inserting milestones.
+split into issues #2–#29 across them; those have their own sub-issues,
+numbered into the #80s). The numeric prefix defines execution order — GitHub
+has no milestone ordering — so keep prefixes sequential when adding or
+inserting milestones.
 
 ## Technology
 C++26 is allowed! We use CMake and ninja.
@@ -27,7 +28,7 @@ cmake --build --preset default
 
 - The `default` preset in `CMakePresets.json` sets the Ninja generator, `build/` binary dir, and clang++ — the README, the VSCode task, and manual builds all go through it.
 - If `build/` already exists configured with Makefiles, delete it first — CMake errors on generator mismatch instead of switching in place.
-- Requires CMake >= 3.30 and a very recent C++26 compiler (uses `std::print`, `std::format`, `std::out_ptr`, `std::jthread`). Verified working with Clang 22.1.8.
+- Requires CMake >= 3.30 and a very recent C++26 compiler (uses `std::print`, `std::format`, `std::out_ptr`, `std::jthread`). Verified with Clang 22.1.8 (dev machine) and clang 19 on the Pi 5 target (trixie; see `docs/pi-setup.md`).
 - Dependencies resolve via pkg-config (all `REQUIRED`; configure fails if dev packages are missing): gstreamer-1.0, gstreamer-app-1.0, gstreamer-audio-1.0, gstreamer-video-1.0, glib-2.0 / gobject-2.0 / gio-2.0, libsoup-3.0. Tests additionally use doctest via `find_package(doctest REQUIRED)` (CMake package, not pkg-config).
 - Tests run with `ctest --test-dir build` (doctest unit tests under `tests/`, registered via `doctest_discover_tests`; gated on `BUILD_TESTING`, default ON). No CI, no lint targets. Verification = a clean `cmake --build build` plus passing ctest.
 - Formatting: clang-format with the repo's `.clang-format` (Google base, 2-space indent, 80 columns).
@@ -49,6 +50,7 @@ cmake --build --preset default
 
 - Resolution/format constants (1080p60 YUY2) are **duplicated** in `src/main.cpp` and `src/stream/description.cpp` — change both together or capture/output caps mismatch.
 - The output pipeline hardcodes `kmssink driver-name=vc4` (Raspberry Pi). Running the binary needs a real V4L2 capture device and a KMS display — don't use it as a smoke test on a dev machine; build-only verification is the norm.
+- No vc4 plane supports packed 4:2:2 (no YUYV/UYVY/YVYU/VYUY — verified via `modetest -p`), so captured YUY2 frames **cannot be scanned out directly**: a conversion step (e.g. YUY2→NV16) before kmssink is mandatory. The empirical gst-launch confirmation pair is still pending; hardware profile in `docs/pi-setup.md`.
 - Usage: `subtitler [video-device] [connector-id]` (defaults: `/dev/video0`, auto connector).
 
 ## OpenCode config
