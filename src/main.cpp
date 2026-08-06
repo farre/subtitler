@@ -45,13 +45,14 @@ using BufferPtr = GstPointer<GstBuffer>;
 using ElementPtr = GstPointer<GstElement>;
 using BusPtr = GstPointer<GstBus>;
 using CapsPtr = GstPointer<GstCaps>;
-using AppSinkPtr = GstPointer<GstAppSink>;
-using AppSrcPtr = GstPointer<GstAppSrc>;
 using ClockPtr = GstPointer<GstClock>;
 using MessagePtr = GstPointer<GstMessage>;
 using SamplePtr = GstPointer<GstSample>;
 using ErrorPtr = GstPointer<GError>;
 using CharPtr = GstPointer<gchar>;
+
+template <typename T>
+using GstView = subtitler::GstView<T>;
 
 class FrameBuffer {
  public:
@@ -251,8 +252,12 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
-  auto capture_sink = AppSinkPtr{GST_APP_SINK(capture_sink_element.get())};
-  auto output_source = AppSrcPtr{GST_APP_SRC(output_source_element.get())};
+  // The casts add no reference; the views are non-owning and the
+  // ElementPtrs above remain the sole owners.
+  const auto capture_sink =
+      GstView<GstAppSink>{GST_APP_SINK(capture_sink_element.get())};
+  const auto output_source =
+      GstView<GstAppSrc>{GST_APP_SRC(output_source_element.get())};
 
   {
     auto output_caps = CapsPtr{gst_caps_new_simple(
@@ -260,7 +265,7 @@ int main(int argc, char** argv) {
         width, "height", G_TYPE_INT, height, "framerate", GST_TYPE_FRACTION,
         frames_per_second, 1, nullptr)};
 
-    gst_app_src_set_caps(output_source.get(), output_caps.get());
+    gst_app_src_set_caps(output_source, output_caps.get());
   }
 
   auto capture_bus = BusPtr{gst_element_get_bus(capture_pipeline.get())};
@@ -297,10 +302,10 @@ int main(int argc, char** argv) {
 
     while (!stop.stop_requested()) {
       SamplePtr sample = SamplePtr{
-          gst_app_sink_try_pull_sample(capture_sink.get(), 100 * GST_MSECOND)};
+          gst_app_sink_try_pull_sample(capture_sink, 100 * GST_MSECOND)};
 
       if (sample == nullptr) {
-        if (gst_app_sink_is_eos(capture_sink.get())) {
+        if (gst_app_sink_is_eos(capture_sink)) {
           break;
         }
 
@@ -308,14 +313,15 @@ int main(int argc, char** argv) {
       }
 
       auto copy_sample = [](SamplePtr& sample) -> BufferPtr {
-        auto captured = BufferPtr{gst_sample_get_buffer(sample.get())};
-        if (!captured) {
+        // gst_sample_get_buffer is transfer-none.
+        const GstView<GstBuffer> captured = gst_sample_get_buffer(sample.get());
+        if (captured == nullptr) {
           std::println(stderr, "Captured sample contained no buffer");
 
           return nullptr;
         }
 
-        return BufferPtr{gst_buffer_copy_deep(captured.get())};
+        return BufferPtr{gst_buffer_copy_deep(captured)};
       };
 
       // This creates application-owned memory rather than
@@ -400,7 +406,7 @@ int main(int argc, char** argv) {
 
       // gst_app_src_push_buffer takes ownership.
       const auto result =
-          gst_app_src_push_buffer(output_source.get(), frame.release());
+          gst_app_src_push_buffer(output_source, frame.release());
 
       if (result != GST_FLOW_OK) {
         if (!stop.stop_requested()) {
@@ -414,7 +420,7 @@ int main(int argc, char** argv) {
       }
     }
 
-    gst_app_src_end_of_stream(output_source.get());
+    gst_app_src_end_of_stream(output_source);
   }};
 
   bool running = true;

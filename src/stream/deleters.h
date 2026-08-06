@@ -45,6 +45,11 @@ struct GstDeleter {
   }
 };
 
+// Non-owning view of a Gst object; makes the ownership contract visible at
+// the call site.
+template <typename T>
+using GstView = T*;
+
 struct GstBufferDeleter {
   void operator()(GstBuffer* buffer) const noexcept {
     if (buffer != nullptr) {
