@@ -30,7 +30,7 @@ cmake --build --preset default
 - If `build/` already exists configured with Makefiles, delete it first — CMake errors on generator mismatch instead of switching in place.
 - Requires CMake >= 3.30 and a very recent C++26 compiler (uses `std::print`, `std::format`, `std::out_ptr`, `std::jthread`). Verified with Clang 22.1.8 (dev machine) and clang 19 on the Pi 5 target (trixie; see `docs/pi-setup.md`).
 - Dependencies resolve via pkg-config (all `REQUIRED`; configure fails if dev packages are missing): gstreamer-1.0, gstreamer-app-1.0, gstreamer-audio-1.0, gstreamer-video-1.0, glib-2.0 / gobject-2.0 / gio-2.0, libsoup-3.0. Tests additionally use doctest via `find_package(doctest REQUIRED)` (CMake package, not pkg-config).
-- Tests run with `ctest --test-dir build` (doctest unit tests under `tests/`, registered via `doctest_discover_tests`; gated on `BUILD_TESTING`, default ON). No CI, no lint targets. Verification = a clean `cmake --build build` plus passing ctest.
+- Tests run with `ctest --test-dir build` (doctest unit tests under `tests/`, registered via `doctest_discover_tests`; gated on `BUILD_TESTING`, default ON). The description tests parse real pipelines with `gst_parse_launch`, so the machine running the suite needs the GStreamer runtime plugins (v4l2src, appsink/appsrc, kmssink) installed, not just the dev packages. No CI, no lint targets. Verification = a clean `cmake --build build` plus passing ctest.
 - Formatting: clang-format with the repo's `.clang-format` (Google base, 2-space indent, 80 columns).
 
 ## Layout and conventions
@@ -43,7 +43,7 @@ cmake --build --preset default
 - `cmake/CompilerWarnings.cmake` is an **empty placeholder**; warning flags (`-Wall -Wextra -Wpedantic`) are set directly on targets in the root `CMakeLists.txt`. Don't grep the module file for warning config.
 - `cmake/Sanitizers.cmake` holds the optional sanitizers: `SUBTITLER_ENABLE_ASAN` / `SUBTITLER_ENABLE_UBSAN` (both default OFF), applied directory-scope so tests are instrumented too. Build them via the `asan-ubsan` configure/build/test presets (binary dir `build/asan-ubsan`).
 - `cmake/Dependencies.cmake` declares GLib, libsoup, and Threads that nothing links yet — intentional (libsoup is for the planned web UI). Don't prune them as "unused".
-- Wrap GStreamer objects with the RAII deleters in `src/stream/deleters.h` (see the `GstPointer` aliases in `main.cpp`) instead of raw `gst_*_unref` calls.
+- Wrap GStreamer objects with the RAII deleters in `src/stream/deleters.h` (see the `GstPointer` aliases in `main.cpp`) instead of raw `gst_*_unref` calls. Non-owning references (GObject casts, transfer-none getters) use `GstView<T>` — never wrap those in an owning `GstPointer`; the double-unref this causes was #134.
 - Installation covers only the `subtitler` binary (`install(TARGETS ...)` + GNUInstallDirs in the root CMakeLists). When `config/subtidlerd.service` and `config/subtitler.example.json` get implemented, add install rules for them too.
 
 ## Gotchas
