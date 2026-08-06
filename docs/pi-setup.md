@@ -88,7 +88,8 @@ gst-launch runs (Pi OS Lite console, no X11/Wayland):
 
 ## Pending validation
 
-- Long-running USB stability soak (#58): 60 minutes of 1080p60 YUYV capture
-  to /dev/null
-- One-hour display-output stability (#5's last criterion): an hour of the
-  test pattern — or of the real pipeline, once the YUY2 conversion exists
+- Long-running passthrough stability (#58, milestone 2, under #6): a
+  one-hour end-to-end run of the real pipeline, covering CV105 connectivity
+  and output stability in one go. If it shows drops or disconnects, bisect
+  hardware vs software with the capture-only v4l2-ctl soak or the
+  display-only NV16 test pattern (commands in #58).
