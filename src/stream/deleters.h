@@ -1,6 +1,7 @@
 #pragma once
 
 #include <gst/app/gstappsink.h>
+#include <gst/app/gstappsrc.h>
 #include <gst/gstbuffer.h>
 #include <gst/gstelement.h>
 
