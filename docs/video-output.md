@@ -38,7 +38,16 @@ appsrc
   -> kmssink
 ```
 
-The Raspberry Pi DRM planes do not support packed YUY2 directly, so conversion is required before `kmssink`. This is confirmed both by the plane format lists and empirically (a YUY2 test pattern fails `kmssink` negotiation with not-negotiated; see docs/pi-setup.md and #74).
+The Raspberry Pi DRM planes do not support packed YUY2 directly, so
+conversion is required before `kmssink`. This is confirmed both by the
+plane format lists and empirically (a YUY2 test pattern fails `kmssink`
+negotiation with not-negotiated; see docs/pi-setup.md and #74).
+
+Conversion happens on the output side, after `appsrc` and the subtitle
+overlay, rather than on the capture side before frames enter the app:
+compositing operates on the 4:2:2 frame (better text chroma), the
+application boundary stays in the capture format, and a single conversion
+point feeds both the HDMI and preview branches.
 
 Use `pispconvert` as the primary hardware-accelerated conversion backend.
 
@@ -59,6 +68,12 @@ width=1920,
 height=1080,
 framerate=60/1
 ```
+
+> **Caps detail for the spike.** DMABuf caps express the format as
+> `fourcc:modifier` (e.g. the Broadcom SAND tiling modifiers from the vc4
+> plane IN_FORMATS blobs), and the modifier is what makes the path
+> zero-copy. Step 0 should record the exact caps strings that negotiate,
+> not just the fourcc.
 
 Conceptual GStreamer pipeline:
 
@@ -119,7 +134,13 @@ window
 null
 ```
 
-Use `kms-software` as the correctness reference when debugging PiSP or DMABUF issues. Because it is lossless NV16, any chroma artifact seen only on the `kms-pisp` path can be attributed to the hardware conversion rather than to 4:2:0 subsampling.
+`window` targets a dev machine with a display server (e.g. `glimagesink`)
+for debugging; the headless appliance uses the `kms-*` modes or `null`.
+
+Use `kms-software` as the correctness reference when debugging PiSP or
+DMABUF issues. Because it is lossless NV16, any chroma artifact seen only
+on the `kms-pisp` path can be attributed to the hardware conversion rather
+than to 4:2:0 subsampling.
 
 ## MJPEG web preview
 
@@ -145,9 +166,11 @@ JPEG quality: 75
 Maximum clients: 4
 ```
 
-Use one JPEG encoder for all clients. Do not create a separate encoder per browser connection.
+Use one JPEG encoder for all clients. Do not create a separate encoder per
+browser connection.
 
-Each browser should receive the most recent completed JPEG. Slow clients should skip frames rather than building a backlog.
+Each browser should receive the most recent completed JPEG. Slow clients
+should skip frames rather than building a backlog.
 
 ## Preferred PiSP branching
 
@@ -245,7 +268,9 @@ The GStreamer `appsink` callback should:
 
 It must not write to HTTP sockets from the GStreamer streaming thread.
 
-Each HTTP client tracks the last sequence number it sent. If several frames are produced before the client is ready, send only the newest frame.
+Each HTTP client tracks the last sequence number it sent. If several
+frames are produced before the client is ready, send only the newest
+frame.
 
 ## Preview configuration
 
@@ -286,7 +311,8 @@ high:
   quality 80
 ```
 
-Avoid arbitrary per-client resolutions because that would require additional scaling or encoding pipelines.
+Avoid arbitrary per-client resolutions because that would require
+additional scaling or encoding pipelines.
 
 ## Preview activation
 
@@ -326,7 +352,8 @@ Use it for:
 - checking displayed cues
 - approximate monitoring
 
-For precise manual synchronization, watch the physical HDMI output while using the web controls.
+For precise manual synchronization, watch the physical HDMI output while
+using the web controls.
 
 ## Implementation order
 
@@ -335,7 +362,9 @@ For precise manual synchronization, watch the physical HDMI output while using t
    node), whether it exposes multiple scaled source pads, and which formats and
    DMABUF layouts it can emit (in particular, whether tiled NV16 is available
    or the path forces NV12). The answers decide the format target and whether
-   the dual-output branching above is reachable.
+   the dual-output branching above is reachable. Also measure sustained
+   1080p60 conversion throughput and CPU cost with system-memory input —
+   the main path depends on it, making this the design's gating measurement.
 1. Install and verify the converter element from step 0.
 2. Test YUY2 to NV12 DMABUF conversion with `kmssink` (use NV16 if step 0 shows
    tiled 4:2:2 is available).
