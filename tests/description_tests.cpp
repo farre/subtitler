@@ -66,6 +66,11 @@ TEST_CASE("output pipeline description") {
 
     CHECK(description.contains("appsrc"));
     CHECK(description.contains("name=output_source"));
+    CHECK(description.contains("videoconvert"));
+    CHECK(description.contains("format=NV16"));
+    CHECK(description.contains("width=1920"));
+    CHECK(description.contains("height=1080"));
+    CHECK(description.contains("framerate=60/1"));
     CHECK(description.contains("kmssink"));
     CHECK(description.contains("driver-name=vc4"));
   }

@@ -38,11 +38,18 @@ std::string output_pipeline_description(std::optional<int> connector_id) {
       "format=time "
       "block=true "
       "max-buffers=2 "
+      "! videoconvert "
+      "n-threads=4 "
+      "! video/x-raw,"
+      "format=NV16,"
+      "width={},"
+      "height={},"
+      "framerate={}/1 "
       "! kmssink "
       "driver-name=vc4 "
       "force-modesetting=true "
       "sync=true"
       "{}",
-      connector);
+      width, height, frames_per_second, connector);
 }
 }  // namespace subtitler
