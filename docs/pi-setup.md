@@ -67,33 +67,28 @@ rpi-hevc-dec nodes, not the CV105.
 
 ## Display output (DRM/KMS)
 
-Verified with `modetest`/`gst-inspect-1.0` on the vc4 driver (no display
-attached yet):
+Verified on the vc4 driver with modetest/gst-inspect-1.0 and live
+gst-launch runs (Pi OS Lite console, no X11/Wayland):
 
 - kmssink is installed (gst-plugins-bad 1.26.2)
-- Connectors: HDMI-A-1 (id 35) and HDMI-A-2 (id 44)
+- Connectors: HDMI-A-1 (id 35) and HDMI-A-2 (id 44); both outputs verified
+  with the test pattern, via automatic selection and explicit connector-id
 - 4 CRTCs (ids 59, 78, 94, 106); 56 planes, all sharing one identical
   format list; 16 overlay planes (ids 107-272, possible CRTCs 0xE), e.g.
   plane 107 is usable for video
 - NV12/NV21 and NV16/NV61 supported everywhere (LINEAR plus Broadcom
   SAND64/128/256 tiling modifiers), along with the usual RGB32 variants
 - **No packed 4:2:2 on any plane** (no YUYV/UYVY/YVYU/VYUY): captured YUY2
-  frames cannot be scanned out directly — kmssink intersects its caps with
-  the plane formats at runtime. The pipeline needs a conversion step (e.g.
-  YUY2 to NV16 via videoconvert, or hardware-accelerated via the
-  pispbe/v4l2convert)
+  frames cannot be scanned out directly — confirmed by the plane format
+  lists and empirically (a YUY2 test-pattern run fails with not-negotiated
+  while NV16 displays). The pipeline needs a conversion step (e.g. YUY2 to
+  NV16 via videoconvert, or hardware-accelerated via the
+  pispbe/v4l2convert). Note that the current binary's hardcoded YUY2
+  output hits exactly this failure until the conversion exists.
 
 ## Pending validation
 
 - Long-running USB stability soak (#58): 60 minutes of 1080p60 YUYV capture
   to /dev/null
-- Live DRM/KMS display checks (#5: #71-#74, #80, #81): kmssink test
-  pattern, connected-connector identification, both HDMI outputs — needs a
-  display attached. Include this controlled pair to empirically confirm
-  that packed 4:2:2 scanout is impossible (expect YUY2 to fail negotiation,
-  NV16 to display):
-
-  ```sh
-  gst-launch-1.0 videotestsrc ! video/x-raw,format=YUY2,width=1920,height=1080 ! kmssink driver-name=vc4 force-modesetting=true
-  gst-launch-1.0 videotestsrc ! video/x-raw,format=NV16,width=1920,height=1080 ! kmssink driver-name=vc4 force-modesetting=true
-  ```
+- One-hour display-output stability (#5's last criterion): an hour of the
+  test pattern — or of the real pipeline, once the YUY2 conversion exists
