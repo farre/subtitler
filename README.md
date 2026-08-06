@@ -15,7 +15,7 @@ framework and runtime GStreamer plugins — installs with:
 
 ```sh
 sudo apt install clang cmake doctest-dev gstreamer1.0-plugins-bad \
-    gstreamer1.0-plugins-good libdrm-tests libglib2.0-dev \
+    gstreamer1.0-plugins-good libdrm-dev libdrm-tests libglib2.0-dev \
     libgstreamer-plugins-base1.0-dev libgstreamer1.0-dev libsoup-3.0-dev \
     ninja-build pkg-config
 ```
@@ -81,6 +81,18 @@ as the service user (capture device and display connected):
 sudo -u subtitler v4l2-ctl --device /dev/video0 --all
 sudo -u subtitler modetest -M vc4
 ```
+
+## Diagnostics
+
+`subtitler-probe` inspects the appliance's capture devices, GStreamer
+elements, and DRM/KMS capabilities using native APIs:
+
+```sh
+subtitler-probe [--json] [devices | capture <device> | plugins | drm]
+```
+
+With no arguments it prints a full report; `--json` emits machine-readable
+output.
 
 ## Running
 

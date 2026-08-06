@@ -59,6 +59,6 @@ target_include_directories(
 )
 
 install(
-    TARGETS subtitler
+    TARGETS subtitler subtitler-probe
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )

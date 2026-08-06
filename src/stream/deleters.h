@@ -4,12 +4,17 @@
 #include <gst/app/gstappsrc.h>
 #include <gst/gstbuffer.h>
 #include <gst/gstelement.h>
+#include <gst/gstelementfactory.h>
 
 namespace subtitler {
 inline void gst_unref(GstBuffer* buffer) noexcept { gst_buffer_unref(buffer); }
 
 inline void gst_unref(GstElement* element) noexcept {
   gst_object_unref(element);
+}
+
+inline void gst_unref(GstElementFactory* factory) noexcept {
+  gst_object_unref(factory);
 }
 
 inline void gst_unref(GstBus* bus) noexcept { gst_object_unref(bus); }

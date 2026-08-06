@@ -21,6 +21,13 @@ pkg_check_modules(
 )
 
 pkg_check_modules(
+    LIBDRM
+    REQUIRED
+    IMPORTED_TARGET
+    libdrm
+)
+
+pkg_check_modules(
     LIBSOUP
     REQUIRED
     IMPORTED_TARGET
