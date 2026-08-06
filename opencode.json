@@ -3,6 +3,7 @@
   "permission": {
     "bash": {
       "*": "ask",
+      "clang-format*": "allow",
       "gh issue view*": "allow",
       "gh issue list*": "allow",
       "git status*": "allow",
