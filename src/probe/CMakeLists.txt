@@ -27,3 +27,9 @@ target_compile_options(
         -Wextra
         -Wpedantic
 )
+
+set_target_properties(
+    subtitler-probe
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
+)
