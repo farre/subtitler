@@ -81,10 +81,9 @@ gst-launch runs (Pi OS Lite console, no X11/Wayland):
 - **No packed 4:2:2 on any plane** (no YUYV/UYVY/YVYU/VYUY): captured YUY2
   frames cannot be scanned out directly — confirmed by the plane format
   lists and empirically (a YUY2 test-pattern run fails with not-negotiated
-  while NV16 displays). The pipeline needs a conversion step (e.g. YUY2 to
-  NV16 via videoconvert, or hardware-accelerated via the
-  pispbe/v4l2convert). Note that the current binary's hardcoded YUY2
-  output hits exactly this failure until the conversion exists.
+  while NV16 displays). The output pipeline therefore converts YUY2 to
+  NV16 in software (videoconvert, #366), and the full passthrough displays
+  live video on the Pi (verified on the appliance).
 
 ## Pending validation
 
