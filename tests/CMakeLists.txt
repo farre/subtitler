@@ -12,6 +12,7 @@ target_link_libraries(
     PRIVATE
     subtitler::stream
     doctest::doctest
+    PkgConfig::GSTREAMER
 )
 
 target_compile_options(

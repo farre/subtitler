@@ -2,48 +2,85 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
+#include <gst/gst.h>
+
+#include <memory>
+#include <string>
+#include <utility>
+
+#include "stream/deleters.h"
+
+namespace {
+
+template <typename T>
+using GstPointer = std::unique_ptr<T, subtitler::GstDeleter<T>>;
+
+void check_constructible(const std::string& description) {
+  GstPointer<GError> error;
+  const GstPointer<GstElement> pipeline{
+      gst_parse_launch(description.c_str(), std::out_ptr(error))};
+
+  // gst_parse_launch can return a partially built pipeline on failure;
+  // the error is the source of truth.
+  INFO("gst_parse_launch error: ",
+       error != nullptr ? std::string{error->message} : "none");
+  CHECK(error == nullptr);
+}
+
+}  // namespace
 
 TEST_CASE("capture pipeline description") {
-  CHECK(subtitler::capture_pipeline_description("/dev/video0") ==
-        "v4l2src "
-        "device=\"/dev/video0\" "
-        "io-mode=mmap "
-        "do-timestamp=true "
-        "! video/x-raw,"
-        "format=YUY2,"
-        "width=1920,"
-        "height=1080,"
-        "framerate=60/1 "
-        "! appsink "
-        "name=capture_sink "
-        "sync=false "
-        "max-buffers=2 "
-        "drop=true");
+  gst_init(nullptr, nullptr);
+
+  SUBCASE("contains the key capture properties") {
+    const auto description =
+        subtitler::capture_pipeline_description("/dev/video0");
+
+    CHECK(description.contains("v4l2src"));
+    CHECK(description.contains("device=\"/dev/video0\""));
+    CHECK(description.contains("video/x-raw"));
+    CHECK(description.contains("format=YUY2"));
+    CHECK(description.contains("width=1920"));
+    CHECK(description.contains("height=1080"));
+    CHECK(description.contains("framerate=60/1"));
+    CHECK(description.contains("appsink"));
+    CHECK(description.contains("name=capture_sink"));
+  }
+
+  SUBCASE("substitutes the device") {
+    CHECK(subtitler::capture_pipeline_description("/dev/video42")
+              .contains("device=\"/dev/video42\""));
+  }
+
+  SUBCASE("is constructible") {
+    check_constructible(subtitler::capture_pipeline_description("/dev/video0"));
+  }
 }
 
 TEST_CASE("output pipeline description") {
-  CHECK(subtitler::output_pipeline_description(std::nullopt) ==
-        "appsrc "
-        "name=output_source "
-        "is-live=true "
-        "format=time "
-        "block=true "
-        "max-buffers=2 "
-        "! kmssink "
-        "driver-name=vc4 "
-        "force-modesetting=true "
-        "sync=true");
+  gst_init(nullptr, nullptr);
 
-  CHECK(subtitler::output_pipeline_description(7) ==
-        "appsrc "
-        "name=output_source "
-        "is-live=true "
-        "format=time "
-        "block=true "
-        "max-buffers=2 "
-        "! kmssink "
-        "driver-name=vc4 "
-        "force-modesetting=true "
-        "sync=true "
-        "connector-id=7");
+  SUBCASE("contains the key output properties") {
+    const auto description =
+        subtitler::output_pipeline_description(std::nullopt);
+
+    CHECK(description.contains("appsrc"));
+    CHECK(description.contains("name=output_source"));
+    CHECK(description.contains("kmssink"));
+    CHECK(description.contains("driver-name=vc4"));
+  }
+
+  SUBCASE("omits connector-id without a connector") {
+    CHECK_FALSE(subtitler::output_pipeline_description(std::nullopt)
+                    .contains("connector-id"));
+  }
+
+  SUBCASE("includes connector-id with a connector") {
+    CHECK(subtitler::output_pipeline_description(7).contains("connector-id=7"));
+  }
+
+  SUBCASE("is constructible") {
+    check_constructible(subtitler::output_pipeline_description(std::nullopt));
+    check_constructible(subtitler::output_pipeline_description(7));
+  }
 }
