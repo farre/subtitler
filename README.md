@@ -97,7 +97,7 @@ output.
 ## Running
 
 ```sh
-./build/subtitler [video-device] [connector-id]
+./build/subtitler [video-device] [connector-id] [--output=software|pisp|window|null]
 ```
 
 - `video-device` — V4L2 capture device (default `/dev/video0`). It must
@@ -105,12 +105,20 @@ output.
 - `connector-id` — DRM connector ID of the display output (optional; kmssink
   picks a connector automatically if omitted). List connector IDs with
   `modetest -M vc4`.
+- `--output` — output backend (default `software`):
+  - `software` — converts to NV16 with `videoconvert` and scans out via
+    `kmssink`; the lossless correctness reference.
+  - `pisp` — converts to NV12 SAND-tiled DMABuf with the PiSP hardware
+    converter (`pispconvert`, from `gstreamer1.0-pispconvert`) and scans out
+    zero-copy via `kmssink`. Pi 5 only.
+  - `window` — `glimagesink`, for dev machines with a display server.
+  - `null` — `fakesink`, for headless testing.
 
-Video is output directly via KMS/DRM using the vc4 driver (Raspberry Pi), so
-run from a virtual console where no X/Wayland compositor owns the display,
-with permission to access `/dev/dri` (root or membership in the `video`
-group). The vc4 planes cannot scan out packed YUY2, so the output pipeline
-converts each frame to NV16 before `kmssink` (see docs/pi-setup.md). The
+The KMS modes output directly via KMS/DRM using the vc4 driver (Raspberry
+Pi), so run from a virtual console where no X/Wayland compositor owns the
+display, with permission to access `/dev/dri` (root or membership in the
+`video` group). The vc4 planes cannot scan out packed YUY2, so the output
+pipeline converts each frame before `kmssink` (see docs/pi-setup.md). The
 GStreamer `v4l2src` (gst-plugins-good), `videoconvert` (gst-plugins-base),
 and `kmssink` (gst-plugins-bad) elements must be installed.
 

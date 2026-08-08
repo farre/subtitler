@@ -198,24 +198,49 @@ GstClockTime output_running_time(ElementPtr& output_pipeline,
 }  // namespace
 
 int main(int argc, char** argv) {
-  const std::string device = argc >= 2 ? argv[1] : "/dev/video0";
-
+  std::string device = "/dev/video0";
+  subtitler::OutputMode output_mode = subtitler::OutputMode::kKmsSoftware;
   std::optional<int> connector_id;
+  int positional = 0;
 
-  if (argc >= 3) {
-    connector_id = parse_integer(argv[2]);
+  const auto usage = [&] {
+    std::println(stderr,
+                 "Usage: {} [video-device] [connector-id] "
+                 "[--output=software|pisp|window|null]",
+                 argv[0]);
+  };
 
-    if (!connector_id) {
-      std::println(stderr, "Invalid DRM connector ID: {}", argv[2]);
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view arg{argv[i]};
 
+    if (arg == "--output=pisp") {
+      output_mode = subtitler::OutputMode::kKmsPisp;
+    } else if (arg == "--output=software") {
+      output_mode = subtitler::OutputMode::kKmsSoftware;
+    } else if (arg == "--output=window") {
+      output_mode = subtitler::OutputMode::kWindow;
+    } else if (arg == "--output=null") {
+      output_mode = subtitler::OutputMode::kNull;
+    } else if (arg.starts_with("--")) {
+      std::println(stderr, "Unknown option: {}", arg);
+      usage();
+      return EXIT_FAILURE;
+    } else if (positional == 0) {
+      device = arg;
+      ++positional;
+    } else if (positional == 1) {
+      connector_id = parse_integer(arg);
+
+      if (!connector_id) {
+        std::println(stderr, "Invalid DRM connector ID: {}", arg);
+        return EXIT_FAILURE;
+      }
+
+      ++positional;
+    } else {
+      usage();
       return EXIT_FAILURE;
     }
-  }
-
-  if (argc > 3) {
-    std::println(stderr, "Usage: {} [video-device] [connector-id]", argv[0]);
-
-    return EXIT_FAILURE;
   }
 
   gst_init(nullptr, nullptr);
@@ -227,7 +252,7 @@ int main(int argc, char** argv) {
       subtitler::capture_pipeline_description(device);
 
   const auto output_description =
-      subtitler::output_pipeline_description(connector_id);
+      subtitler::output_pipeline_description(output_mode, connector_id);
 
   std::println("Capture pipeline:\n{}\n\nOutput pipeline:\n{}\n",
                capture_description, output_description);

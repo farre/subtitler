@@ -61,8 +61,8 @@ TEST_CASE("output pipeline description") {
   gst_init(nullptr, nullptr);
 
   SUBCASE("contains the key output properties") {
-    const auto description =
-        subtitler::output_pipeline_description(std::nullopt);
+    const auto description = subtitler::output_pipeline_description(
+        subtitler::OutputMode::kKmsSoftware, std::nullopt);
 
     CHECK(description.contains("appsrc"));
     CHECK(description.contains("name=output_source"));
@@ -75,17 +75,47 @@ TEST_CASE("output pipeline description") {
     CHECK(description.contains("driver-name=vc4"));
   }
 
+  SUBCASE("pisp pipeline has pispconvert and NV12 DMABuf") {
+    const auto description = subtitler::output_pipeline_description(
+        subtitler::OutputMode::kKmsPisp, std::nullopt);
+
+    CHECK(description.contains("pispconvert"));
+    CHECK(description.contains("video/x-raw(memory:DMABuf)"));
+    CHECK(description.contains("drm-format=NV12"));
+  }
+
   SUBCASE("omits connector-id without a connector") {
-    CHECK_FALSE(subtitler::output_pipeline_description(std::nullopt)
+    CHECK_FALSE(subtitler::output_pipeline_description(
+                    subtitler::OutputMode::kKmsSoftware, std::nullopt)
                     .contains("connector-id"));
   }
 
   SUBCASE("includes connector-id with a connector") {
-    CHECK(subtitler::output_pipeline_description(7).contains("connector-id=7"));
+    CHECK(subtitler::output_pipeline_description(
+              subtitler::OutputMode::kKmsSoftware, 7)
+              .contains("connector-id=7"));
   }
 
   SUBCASE("is constructible") {
-    check_constructible(subtitler::output_pipeline_description(std::nullopt));
-    check_constructible(subtitler::output_pipeline_description(7));
+    check_constructible(subtitler::output_pipeline_description(
+        subtitler::OutputMode::kKmsSoftware, std::nullopt));
+    check_constructible(subtitler::output_pipeline_description(
+        subtitler::OutputMode::kKmsSoftware, 7));
+    check_constructible(subtitler::output_pipeline_description(
+        subtitler::OutputMode::kNull, std::nullopt));
+
+    GstPointer<GstElementFactory> pisp_factory{
+        gst_element_factory_find("pispconvert")};
+    if (pisp_factory != nullptr) {
+      check_constructible(subtitler::output_pipeline_description(
+          subtitler::OutputMode::kKmsPisp, std::nullopt));
+    }
+
+    GstPointer<GstElementFactory> gl_factory{
+        gst_element_factory_find("glimagesink")};
+    if (gl_factory != nullptr) {
+      check_constructible(subtitler::output_pipeline_description(
+          subtitler::OutputMode::kWindow, std::nullopt));
+    }
   }
 }
