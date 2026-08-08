@@ -78,6 +78,30 @@ void print_modes_text(const std::string& path,
   std::println();
 }
 
+void print_audio_text(const std::vector<AudioDevice>& devices) {
+  const auto print = [&](bool capture, std::string_view title) {
+    std::println("## {}\n", title);
+    bool any = false;
+    for (const auto& device : devices) {
+      if (capture ? !device.capture : !device.playback) {
+        continue;
+      }
+      any = true;
+      std::println(
+          "hw:CARD={},DEV={}  {}{}", device.card_id, device.device,
+          device.card_name,
+          device.device_name.empty() ? "" : " — " + device.device_name);
+    }
+    if (!any) {
+      std::println("(none found)");
+    }
+    std::println();
+  };
+
+  print(true, "Audio capture");
+  print(false, "Audio playback");
+}
+
 void print_elements_text(const std::vector<ElementAvailability>& elements) {
   std::println("## GStreamer elements\n");
   for (const auto& [name, available] : elements) {
@@ -117,6 +141,33 @@ void print_drm_text(const DrmInfo& info) {
   std::println();
 }
 
+void print_pipeline_text(const PipelinePlan& plan) {
+  std::println("## Recommended pipeline\n");
+  if (plan.device_path.empty()) {
+    std::println("(no recommendation: capture device missing)\n");
+    return;
+  }
+
+  std::println("Capture: {} {}x{} at {} fps from {}{}", plan.capture_format,
+               plan.width, plan.height, plan.frame_rate, plan.device_path,
+               plan.needs_jpegdec ? " (via jpegdec)" : "");
+  std::println("Conversion: {} to {}", plan.converter, plan.kms_format);
+  if (plan.connector_id) {
+    std::println("Output: kmssink connector-id={}", *plan.connector_id);
+  }
+
+  for (const auto& note : plan.notes) {
+    std::println("Note: {}", note);
+  }
+
+  if (plan.negotiation_tested) {
+    std::println(
+        "\nNegotiation: {}",
+        plan.negotiation_ok ? "ok" : "FAILED: " + plan.negotiation_error);
+  }
+  std::println();
+}
+
 std::string devices_to_json(const std::vector<VideoDevice>& devices,
                             const std::vector<std::vector<VideoMode>>& modes) {
   std::string result = "[";
@@ -147,6 +198,25 @@ std::string modes_to_json(const std::vector<VideoMode>& modes) {
         "{}{{\"format\": \"{}\", \"width\": {}, \"height\": {}, "
         "\"frame_rates\": [{}]}}",
         first ? "" : ", ", mode.format, mode.width, mode.height, rates);
+    first = false;
+  }
+  return result + "]";
+}
+
+std::string audio_to_json(const std::vector<AudioDevice>& devices,
+                          bool capture) {
+  std::string result = "[";
+  bool first = true;
+  for (const auto& device : devices) {
+    if (capture ? !device.capture : !device.playback) {
+      continue;
+    }
+    result += std::format(
+        "{}{{\"device\": \"hw:CARD={},DEV={}\", \"card_id\": \"{}\", "
+        "\"card_name\": \"{}\", \"device_name\": \"{}\"}}",
+        first ? "" : ", ", device.card_id, device.device,
+        escape_json(device.card_id), escape_json(device.card_name),
+        escape_json(device.device_name));
     first = false;
   }
   return result + "]";
@@ -190,6 +260,29 @@ std::string drm_to_json(const DrmInfo& info) {
       "{{\"driver\": \"{}\", \"connectors\": {}, "
       "\"planes\": {}}}",
       escape_json(info.driver), connectors, planes);
+}
+
+std::string pipeline_to_json(const PipelinePlan& plan) {
+  std::string notes = "[";
+  bool first = true;
+  for (const auto& note : plan.notes) {
+    notes += std::format("{}\"{}\"", first ? "" : ", ", escape_json(note));
+    first = false;
+  }
+  notes += "]";
+
+  return std::format(
+      "{{\"device\": \"{}\", \"capture_format\": \"{}\", \"width\": {}, "
+      "\"height\": {}, \"frame_rate\": {}, \"needs_jpegdec\": {}, "
+      "\"converter\": \"{}\", \"kms_format\": \"{}\", \"connector_id\": {}, "
+      "\"notes\": {}, \"negotiation\": {{\"tested\": {}, \"ok\": {}, "
+      "\"error\": \"{}\"}}}}",
+      escape_json(plan.device_path), plan.capture_format, plan.width,
+      plan.height, plan.frame_rate, plan.needs_jpegdec, plan.converter,
+      plan.kms_format,
+      plan.connector_id ? std::to_string(*plan.connector_id) : "null", notes,
+      plan.negotiation_tested, plan.negotiation_ok,
+      escape_json(plan.negotiation_error));
 }
 
 }  // namespace subtitler::probe

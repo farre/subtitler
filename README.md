@@ -15,8 +15,8 @@ framework and runtime GStreamer plugins — installs with:
 
 ```sh
 sudo apt install clang cmake doctest-dev gstreamer1.0-plugins-bad \
-    gstreamer1.0-plugins-base gstreamer1.0-plugins-good libdrm-dev \
-    libdrm-tests libglib2.0-dev libgstreamer-plugins-base1.0-dev \
+    gstreamer1.0-plugins-base gstreamer1.0-plugins-good libasound2-dev \
+    libdrm-dev libdrm-tests libglib2.0-dev libgstreamer-plugins-base1.0-dev \
     libgstreamer1.0-dev libsoup-3.0-dev ninja-build pkg-config
 ```
 
@@ -88,7 +88,7 @@ sudo -u subtitler modetest -M vc4
 elements, and DRM/KMS capabilities using native APIs:
 
 ```sh
-subtitler-probe [--json] [devices | capture <device> | plugins | drm]
+subtitler-probe [--json] [devices | capture <device> | audio | plugins | drm | pipeline]
 ```
 
 With no arguments it prints a full report; `--json` emits machine-readable

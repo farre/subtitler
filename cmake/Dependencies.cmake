@@ -28,6 +28,13 @@ pkg_check_modules(
 )
 
 pkg_check_modules(
+    ALSA
+    REQUIRED
+    IMPORTED_TARGET
+    alsa
+)
+
+pkg_check_modules(
     LIBSOUP
     REQUIRED
     IMPORTED_TARGET

@@ -1,8 +1,10 @@
 add_executable(
     subtitler-probe
+    audio.cpp
     capture.cpp
     drm.cpp
     main.cpp
+    pipeline.cpp
     plugins.cpp
     report.cpp
 )
@@ -10,6 +12,7 @@ add_executable(
 target_link_libraries(
     subtitler-probe
     PRIVATE
+    PkgConfig::ALSA
     PkgConfig::GSTREAMER
     PkgConfig::LIBDRM
 )

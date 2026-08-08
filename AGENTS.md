@@ -29,7 +29,7 @@ cmake --build --preset default
 - The `default` preset in `CMakePresets.json` sets the Ninja generator, `build/` binary dir, and clang++ — the README, the VSCode task, and manual builds all go through it.
 - If `build/` already exists configured with Makefiles, delete it first — CMake errors on generator mismatch instead of switching in place.
 - Requires CMake >= 3.30 and a very recent C++26 compiler (uses `std::print`, `std::format`, `std::out_ptr`, `std::jthread`). Verified with Clang 22.1.8 (dev machine) and clang 19 on the Pi 5 target (trixie; see `docs/pi-setup.md`).
-- Dependencies resolve via pkg-config (all `REQUIRED`; configure fails if dev packages are missing): gstreamer-1.0, gstreamer-app-1.0, gstreamer-audio-1.0, gstreamer-video-1.0, glib-2.0 / gobject-2.0 / gio-2.0, libsoup-3.0, libdrm (used by `subtitler-probe`). Tests additionally use doctest via `find_package(doctest REQUIRED)` (CMake package, not pkg-config).
+- Dependencies resolve via pkg-config (all `REQUIRED`; configure fails if dev packages are missing): gstreamer-1.0, gstreamer-app-1.0, gstreamer-audio-1.0, gstreamer-video-1.0, glib-2.0 / gobject-2.0 / gio-2.0, libsoup-3.0, libdrm and alsa (used by `subtitler-probe`). Tests additionally use doctest via `find_package(doctest REQUIRED)` (CMake package, not pkg-config).
 - Tests run with `ctest --test-dir build` (doctest unit tests under `tests/`, registered via `doctest_discover_tests`; gated on `BUILD_TESTING`, default ON). The description tests parse real pipelines with `gst_parse_launch`, so the machine running the suite needs the GStreamer runtime plugins (v4l2src, appsink/appsrc, kmssink) installed, not just the dev packages. No CI, no lint targets. Verification = a clean `cmake --build build` plus passing ctest.
 - Formatting: clang-format with the repo's `.clang-format` (Google base, 2-space indent, 80 columns).
 
@@ -37,7 +37,7 @@ cmake --build --preset default
 
 - All headers are private and live next to their sources under `src/`. The include root is `src/`, so includes look like `#include "stream/description.h"`. The root `include/` directory is intentionally empty, reserved for a future public API — do not put headers there.
 - `src/stream/` builds the static lib `stream` (alias `subtitler::stream`), consumed only by the `subtitler` executable from `src/main.cpp`. New modules should follow the same `src/<module>/` pattern with their own CMakeLists.
-- `src/probe/` builds the `subtitler-probe` diagnostic executable (#94): capability probes via native APIs (GStreamer registry, V4L2 ioctls, libdrm), text and `--json` output.
+- `src/probe/` builds the `subtitler-probe` diagnostic executable (#94): capability probes via native APIs (GStreamer registry, V4L2 ioctls, libdrm, ALSA), a pipeline recommendation/negotiation check, text and `--json` output.
 - `src/stream/stream.cpp` and `stream.h` are empty placeholders still listed as lib sources — the lib today is only `description.cpp` + `deleters.h`.
 - `tests/` holds the doctest unit tests. Libs expose nothing publicly, so test targets set their own `target_include_directories` for `src/`.
 - `docs/` holds appliance documentation (e.g. `docs/pi-setup.md`, the verified Pi 5 + CV105 hardware profile). The README stays the how-to; docs/ is the record — don't duplicate commands between them.
