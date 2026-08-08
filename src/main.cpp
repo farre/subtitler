@@ -213,7 +213,10 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg{argv[i]};
 
-    if (arg == "--output=pisp") {
+    if (arg == "-h" || arg == "--help") {
+      usage();
+      return EXIT_SUCCESS;
+    } else if (arg == "--output=pisp") {
       output_mode = subtitler::OutputMode::kKmsPisp;
     } else if (arg == "--output=software") {
       output_mode = subtitler::OutputMode::kKmsSoftware;
