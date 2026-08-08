@@ -108,6 +108,25 @@ It exists on the Pi 5 despite widespread claims to the contrary — confirmed vi
 - Negotiation is capability, not fact: validate an actual link with
   `gst-launch-1.0 -v` and read the caps/modifier printed after PAUSED
 
+**Status 2026-08-07 — blocked upstream on BCM2712C1:** on the appliance's
+C1-stepping Pi 5 (revision `d04170`), NV12 output renders with a heavy blue
+tint — solid black (YUY2 16,128,128) comes out solid blue (NV12 45,230,108 ≈
+RGB 0,7,255), identically for system-memory and SAND-tiled DMABuf output.
+This is upstream bug [raspberrypi/libpisp#76](https://github.com/raspberrypi/libpisp/issues/76)
+("image too blue when output of pispconvert is NV12", C1 stepping only); no
+fixed package as of 2026-08-07. `kms-software` (NV16) stays the default until
+it lands.
+
+Gotchas found while isolating the bug:
+
+- `videotestsrc` cannot feed `pispconvert` (streaming stops with error -5);
+  validate with `v4l2src`.
+- The scaler src pads fixate to the downstream/display size when unconstrained
+  (a 1920x1080 input negotiated 3840x2160 on the 4K display) — always pin
+  width/height in the converter output caps.
+- YU16 DMABuf failed kmssink negotiation ("failed to configure video mode");
+  not investigated further — NV12 is the primary target.
+
 Hardware-path format choice (from `modetest -M vc4 -p`): every plane scans out
 NV12 (LINEAR + Broadcom SAND) and YU16 (planar 4:2:2, **LINEAR only** — no
 tiling), and pispconvert can emit both. NV16/NV61 are in the plane list but

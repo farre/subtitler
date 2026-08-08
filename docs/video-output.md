@@ -397,7 +397,9 @@ using the web controls.
 1. Install the converter element (`sudo apt install gstreamer1.0-pispconvert`).
 2. Test YUY2 to NV12 SAND-tiled DMABUF conversion with `kmssink`; confirm the
    negotiated modifier per the validation note above. (YU16 LINEAR is the
-   lossless alternate if colored-text fidelity needs it.)
+   lossless alternate if colored-text fidelity needs it.) **Blocked on
+   BCM2712C1:** pispconvert NV12 output renders blue (raspberrypi/libpisp#76);
+   see docs/pi-setup.md. `kms-software` remains the default until fixed.
 3. Add the `kms-pisp` output backend.
 4. Keep `kms-software` (NV16) as a fallback and correctness reference.
 5. Add subtitle rendering before conversion.
