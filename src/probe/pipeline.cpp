@@ -2,6 +2,7 @@
 
 #include <gst/gst.h>
 
+#include <charconv>
 #include <format>
 #include <fstream>
 #include <memory>
@@ -44,22 +45,41 @@ bool has_element(
   return false;
 }
 
-// raspberrypi/libpisp#76 (NV12 output renders blue) affects only the
-// BCM2712C1 stepping, which ships in Pi 5 family boards marked "Rev 1.1".
-bool is_bcm2712c1() {
+// raspberrypi/libpisp#76 (NV12 output renders blue) affects the BCM2712C1
+// stepping — in practice all Pi 5 family boards except the later 2GB D0
+// model. There is no reliable userspace stepping readout, so match the whole
+// BCM2712 family via the processor nibble of the revision code.
+bool is_bcm2712() {
   std::ifstream cpuinfo{"/proc/cpuinfo"};
-  if (!cpuinfo) {
-    return false;
+  std::string line;
+  while (std::getline(cpuinfo, line)) {
+    if (!line.starts_with("Revision")) {
+      continue;
+    }
+
+    const auto colon = line.find(':');
+    if (colon == std::string::npos) {
+      return false;
+    }
+
+    const std::string_view hex{line.data() + colon + 1,
+                               line.size() - colon - 1};
+    const auto start = hex.find_first_not_of(" \t");
+    if (start == std::string_view::npos) {
+      return false;
+    }
+
+    unsigned long value = 0;
+    const auto* first = hex.data() + start;
+    const auto [end, error] =
+        std::from_chars(first, hex.data() + hex.size(), value, 16);
+    if (error != std::errc{} || end == first) {
+      return false;
+    }
+
+    return ((value >> 12) & 0xF) == 0x4;
   }
-
-  const std::string contents{std::istreambuf_iterator<char>{cpuinfo},
-                             std::istreambuf_iterator<char>{}};
-
-  const bool pi5_family = contents.contains("Raspberry Pi 5") ||
-                          contents.contains("Raspberry Pi 500") ||
-                          contents.contains("Compute Module 5");
-
-  return pi5_family && contents.contains("Rev 1.1");
+  return false;
 }
 
 }  // namespace
@@ -108,7 +128,7 @@ PipelinePlan recommend_pipeline(
   }
 
   const bool pisp = has_element(elements, "pispconvert");
-  if (pisp && !is_bcm2712c1()) {
+  if (pisp && !is_bcm2712()) {
     plan.converter = "pispconvert";
     plan.kms_format = "NV12";
   } else {
@@ -116,8 +136,9 @@ PipelinePlan recommend_pipeline(
     plan.kms_format = "NV16";
     if (pisp) {
       plan.notes.emplace_back(
-          "BCM2712C1 detected: pispconvert NV12 output renders blue "
-          "(raspberrypi/libpisp#76), recommending software conversion");
+          "BCM2712 board: pispconvert NV12 output renders blue on the C1 "
+          "stepping (raspberrypi/libpisp#76), recommending software "
+          "conversion");
     }
   }
 
