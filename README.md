@@ -15,9 +15,9 @@ framework and runtime GStreamer plugins — installs with:
 
 ```sh
 sudo apt install clang cmake doctest-dev gstreamer1.0-plugins-bad \
-    gstreamer1.0-plugins-good libdrm-dev libdrm-tests libglib2.0-dev \
-    libgstreamer-plugins-base1.0-dev libgstreamer1.0-dev libsoup-3.0-dev \
-    ninja-build pkg-config
+    gstreamer1.0-plugins-base gstreamer1.0-plugins-good libdrm-dev \
+    libdrm-tests libglib2.0-dev libgstreamer-plugins-base1.0-dev \
+    libgstreamer1.0-dev libsoup-3.0-dev ninja-build pkg-config
 ```
 
 (Bookworm is too old: it ships cmake 3.25 and clang 14, while the project
@@ -109,8 +109,10 @@ output.
 Video is output directly via KMS/DRM using the vc4 driver (Raspberry Pi), so
 run from a virtual console where no X/Wayland compositor owns the display,
 with permission to access `/dev/dri` (root or membership in the `video`
-group). The GStreamer `v4l2src` and `kmssink` elements (gst-plugins-good and
-gst-plugins-bad) must be installed.
+group). The vc4 planes cannot scan out packed YUY2, so the output pipeline
+converts each frame to NV16 before `kmssink` (see docs/pi-setup.md). The
+GStreamer `v4l2src` (gst-plugins-good), `videoconvert` (gst-plugins-base),
+and `kmssink` (gst-plugins-bad) elements must be installed.
 
 Stop with Ctrl+C; the program prints how many frames its internal buffer
 dropped while running.

@@ -13,11 +13,27 @@ The output format is a property of the backend, not a global constant:
   subsampling), and it is the format empirically proven to scan out on vc4 —
   the `videotestsrc ! NV16 ! kmssink` run that closed #74/#5. A correctness
   reference must be the highest-fidelity path, so it must not discard chroma.
-- `kms-pisp` (the hardware path) targets **NV12** *if and only if* the PiSP's
-  tiled DMABUF output requires 4:2:0. Prefer NV16 here too if the converter can
-  emit tiled 4:2:2 — this is one of the open questions for the step 0 spike
-  below. NV12 discards half the vertical chroma resolution, so only accept it
-  when the hardware zero-copy path forces it.
+- `kms-pisp` (the hardware path) targets **NV12 SAND-tiled** by default, with
+  **YU16 LINEAR** as a lossless alternate. This was an open question for the
+  step 0 spike; it is now **resolved** by `gst-inspect-1.0 pispconvert` and
+  `modetest -M vc4 -p`:
+  - **NV16 is unreachable.** vc4 planes support it, but `pispconvert` cannot
+    emit NV16 — so semi-planar 4:2:2 is off the table on this path.
+  - **NV12** is emitted by `pispconvert` in a SAND-tiled DMABuf variant
+    (`NV12:0x0700000000000004`), and vc4 scans out the same tiled format. This
+    is the efficient path: zero-copy *and* tiled (lower scanout DRAM
+    bandwidth). Cost: 4:2:0, i.e. half the vertical chroma.
+  - **YU16** (planar 4:2:2) is emitted by `pispconvert` and scanned out by vc4,
+    but **LINEAR only** (no tiling modifier on either side). It is lossless
+    4:2:2 and still zero-copy DMABuf, but untiled (~33% more scanout bandwidth,
+    3 planes).
+
+  Default to NV12: the CV105 captures upstream content that is almost always
+  already 4:2:0, so YU16's fidelity edge is largely theoretical, and SAND
+  tiling leaves memory headroom for the preview branch and overlay
+  compositing. Keep YU16 selectable for the one case it helps — sharp colored
+  subtitle text, which is composited at 4:2:2 before conversion and can soften
+  under NV12's chroma subsampling. Decide with a visual A/B on real content.
 
 ## Main video path
 
@@ -51,12 +67,11 @@ point feeds both the HDMI and preview branches.
 
 Use `pispconvert` as the primary hardware-accelerated conversion backend.
 
-> **Unverified element name.** `pispconvert` has not been confirmed to exist as
-> a GStreamer element. docs/pi-setup.md records the hardware path as
-> `pispbe`/`v4l2convert` (the generic V4L2 mem2mem element driving the PiSP
-> backend node). The step 0 spike must resolve the actual element name before
-> the rest of this section is treated as final; substitute the real element
-> throughout if it differs.
+> **Element confirmed.** `pispconvert` exists (install with
+> `sudo apt install gstreamer1.0-pispconvert`; v1.4.0, from Raspberry Pi's
+> libpisp) and exposes two Always scaling source pads (`src0`/`src1`), so the
+> dual-output branching below is reachable. See docs/pi-setup.md for the full
+> `gst-inspect-1.0` findings.
 
 Target KMS caps:
 
@@ -74,6 +89,23 @@ framerate=60/1
 > plane IN_FORMATS blobs), and the modifier is what makes the path
 > zero-copy. Step 0 should record the exact caps strings that negotiate,
 > not just the fourcc.
+
+> **How to validate negotiation.** Pad templates advertise *capability*, not
+> what actually links. Run the leg with `gst-launch-1.0 -v` and read the caps
+> GStreamer prints on each pad after PAUSED — that is the negotiated result:
+>
+> ```sh
+> gst-launch-1.0 -v videotestsrc num-buffers=120 \
+>   ! video/x-raw,format=YUY2,width=1920,height=1080,framerate=60/1 \
+>   ! pispconvert \
+>   ! 'video/x-raw(memory:DMABuf),format=DMA_DRM,drm-format=NV12,width=1920,height=1080,framerate=60/1' \
+>   ! kmssink driver-name=vc4 force-modesetting=true
+> ```
+>
+> Check the caps on the `pispconvert`→`kmssink` link: a bare `drm-format=NV12`
+> means a copy, while `NV12:0x0700000000000004` (SAND modifier) confirms the
+> zero-copy tiled path. A `not-negotiated` (-4) error means the format/modifier
+> the plane wants was never offered — record what each side proposed.
 
 Conceptual GStreamer pipeline:
 
@@ -357,17 +389,15 @@ using the web controls.
 
 ## Implementation order
 
-0. Spike the hardware converter: confirm the real element name
-   (`gst-inspect-1.0 pispconvert`, else `v4l2convert` over the PiSP backend
-   node), whether it exposes multiple scaled source pads, and which formats and
-   DMABUF layouts it can emit (in particular, whether tiled NV16 is available
-   or the path forces NV12). The answers decide the format target and whether
-   the dual-output branching above is reachable. Also measure sustained
-   1080p60 conversion throughput and CPU cost with system-memory input —
-   the main path depends on it, making this the design's gating measurement.
-1. Install and verify the converter element from step 0.
-2. Test YUY2 to NV12 DMABUF conversion with `kmssink` (use NV16 if step 0 shows
-   tiled 4:2:2 is available).
+0. Spike the hardware converter — **done** (see docs/pi-setup.md): element is
+   `pispconvert` (`gstreamer1.0-pispconvert`), two scaling src pads, emits NV12
+   SAND-tiled and YU16 LINEAR; NV16 unreachable. Still to measure: sustained
+   1080p60 conversion throughput and CPU cost with system-memory input — the
+   main path depends on it, making this the design's gating measurement.
+1. Install the converter element (`sudo apt install gstreamer1.0-pispconvert`).
+2. Test YUY2 to NV12 SAND-tiled DMABUF conversion with `kmssink`; confirm the
+   negotiated modifier per the validation note above. (YU16 LINEAR is the
+   lossless alternate if colored-text fidelity needs it.)
 3. Add the `kms-pisp` output backend.
 4. Keep `kms-software` (NV16) as a fallback and correctness reference.
 5. Add subtitle rendering before conversion.

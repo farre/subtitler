@@ -85,6 +85,43 @@ gst-launch runs (Pi OS Lite console, no X11/Wayland):
   NV16 in software (videoconvert, #366), and the full passthrough displays
   live video on the Pi (verified on the appliance).
 
+## PiSP hardware converter (pispconvert)
+
+The hardware-accelerated conversion/scaling element for the `kms-pisp` output
+path (see docs/video-output.md) is installed with:
+
+```sh
+sudo apt install gstreamer1.0-pispconvert
+```
+
+It exists on the Pi 5 despite widespread claims to the contrary — confirmed via
+`gst-inspect-1.0 pispconvert`:
+
+- Factory "PiSP Hardware Image Converter", `primary` rank, v1.4.0,
+  `libgstpispconvert.so`, from Raspberry Pi's libpisp
+- Two Always scaling source pads (`src0`/`src1`) with per-output crop
+  (`crop0`/`crop1`), so the HDMI + lores-preview dual output is a single-pass
+  hardware capability
+- Emits **NV12** including the SAND-tiled DMABuf variant
+  (`NV12:0x0700000000000004`) for zero-copy into kmssink; it **cannot** emit
+  NV16, so the hardware path uses NV12 while the software reference stays NV16
+- Negotiation is capability, not fact: validate an actual link with
+  `gst-launch-1.0 -v` and read the caps/modifier printed after PAUSED
+
+Hardware-path format choice (from `modetest -M vc4 -p`): every plane scans out
+NV12 (LINEAR + Broadcom SAND) and YU16 (planar 4:2:2, **LINEAR only** — no
+tiling), and pispconvert can emit both. NV16/NV61 are in the plane list but
+pispconvert cannot produce them, so semi-planar 4:2:2 is unreachable.
+
+- **NV12 SAND-tiled** (default): zero-copy and tiled (lowest scanout DRAM
+  bandwidth), 2 planes, but 4:2:0 — half the vertical chroma. The CV105
+  captures upstream content that is usually already 4:2:0, so this loss is
+  mostly academic.
+- **YU16 LINEAR** (lossless alternate): full 4:2:2, still zero-copy DMABuf, but
+  untiled (~33% more scanout bandwidth) and 3 planes. Worth selecting only if a
+  visual A/B shows NV12 softening sharp colored subtitle text (the overlay
+  composites at 4:2:2 before conversion).
+
 ## Stability
 
 The passthrough ran for 30 minutes on the appliance with 0 dropped frames
