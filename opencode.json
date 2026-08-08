@@ -14,7 +14,9 @@
       "ninja*": "allow",
       "ctest*": "allow",
       "ls*": "allow",
-      "rg*": "allow"
+      "rg*": "allow",
+      "git add*": "allow",
+      "git commit*": "allow"
     }
   }
 }
