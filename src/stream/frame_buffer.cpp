@@ -1,0 +1,51 @@
+#include "stream/frame_buffer.h"
+
+namespace subtitler {
+bool FrameBuffer::push_latest(BufferPtr frame) {
+  {
+    std::lock_guard lock{mutex_};
+
+    if (closed_) {
+      return false;
+    }
+
+    if (frames_.size() == capacity_) {
+      frames_.pop_front();
+      ++dropped_frames_;
+    }
+
+    frames_.push_back(std::move(frame));
+  }
+
+  available_.notify_one();
+  return true;
+}
+
+std::optional<BufferPtr> FrameBuffer::pop(std::stop_token stop) {
+  std::unique_lock lock{mutex_};
+
+  available_.wait(lock, stop, [this] { return closed_ || !frames_.empty(); });
+
+  if (frames_.empty()) {
+    return std::nullopt;
+  }
+
+  auto frame = std::move(frames_.front());
+  frames_.pop_front();
+
+  return frame;
+}
+
+void FrameBuffer::close() {
+  {
+    std::lock_guard lock{mutex_};
+    closed_ = true;
+  }
+
+  available_.notify_all();
+}
+
+std::uint64_t FrameBuffer::dropped_frames() const noexcept {
+  return dropped_frames_.load(std::memory_order_relaxed);
+}
+}  // namespace subtitler

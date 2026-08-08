@@ -19,8 +19,8 @@
 #include <type_traits>
 #include <utility>
 
-#include "stream/deleters.h"
 #include "stream/description.h"
+#include "stream/frame_buffer.h"
 
 namespace {
 
@@ -38,84 +38,7 @@ volatile std::sig_atomic_t signal_received = 0;
 
 extern "C" void handle_signal(int) { signal_received = 1; }
 
-template <typename T>
-using GstPointer = std::unique_ptr<T, subtitler::GstDeleter<T>>;
-
-using BufferPtr = GstPointer<GstBuffer>;
-using ElementPtr = GstPointer<GstElement>;
-using BusPtr = GstPointer<GstBus>;
-using CapsPtr = GstPointer<GstCaps>;
-using ClockPtr = GstPointer<GstClock>;
-using MessagePtr = GstPointer<GstMessage>;
-using SamplePtr = GstPointer<GstSample>;
-using ErrorPtr = GstPointer<GError>;
-using CharPtr = GstPointer<gchar>;
-
-template <typename T>
-using GstView = subtitler::GstView<T>;
-
-class FrameBuffer {
- public:
-  explicit FrameBuffer(std::size_t capacity) : capacity_{capacity} {}
-
-  bool push_latest(BufferPtr frame) {
-    {
-      std::lock_guard lock{mutex_};
-
-      if (closed_) {
-        return false;
-      }
-
-      if (frames_.size() == capacity_) {
-        frames_.pop_front();
-        ++dropped_frames_;
-      }
-
-      frames_.push_back(std::move(frame));
-    }
-
-    available_.notify_one();
-    return true;
-  }
-
-  std::optional<BufferPtr> pop(std::stop_token stop) {
-    std::unique_lock lock{mutex_};
-
-    available_.wait(lock, stop, [this] { return closed_ || !frames_.empty(); });
-
-    if (frames_.empty()) {
-      return std::nullopt;
-    }
-
-    auto frame = std::move(frames_.front());
-    frames_.pop_front();
-
-    return frame;
-  }
-
-  void close() {
-    {
-      std::lock_guard lock{mutex_};
-      closed_ = true;
-    }
-
-    available_.notify_all();
-  }
-
-  std::uint64_t dropped_frames() const noexcept {
-    return dropped_frames_.load(std::memory_order_relaxed);
-  }
-
- private:
-  const std::size_t capacity_;
-
-  mutable std::mutex mutex_;
-  std::condition_variable_any available_;
-  std::deque<BufferPtr> frames_;
-
-  bool closed_ = false;
-  std::atomic_uint64_t dropped_frames_ = 0;
-};
+using namespace subtitler;
 
 std::optional<int> parse_integer(std::string_view text) {
   int value{};

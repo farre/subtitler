@@ -6,6 +6,8 @@
 #include <gst/gstelement.h>
 #include <gst/gstelementfactory.h>
 
+#include <memory>
+
 namespace subtitler {
 inline void gst_unref(GstBuffer* buffer) noexcept { gst_buffer_unref(buffer); }
 
@@ -63,4 +65,21 @@ struct GstBufferDeleter {
     }
   }
 };
+
+template <typename T>
+using GstPointer = std::unique_ptr<T, subtitler::GstDeleter<T>>;
+
+using BufferPtr = GstPointer<GstBuffer>;
+using ElementPtr = GstPointer<GstElement>;
+using BusPtr = GstPointer<GstBus>;
+using CapsPtr = GstPointer<GstCaps>;
+using ClockPtr = GstPointer<GstClock>;
+using MessagePtr = GstPointer<GstMessage>;
+using SamplePtr = GstPointer<GstSample>;
+using ErrorPtr = GstPointer<GError>;
+using CharPtr = GstPointer<gchar>;
+
+template <typename T>
+using GstView = subtitler::GstView<T>;
+
 }  // namespace subtitler
