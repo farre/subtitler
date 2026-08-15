@@ -15,7 +15,7 @@ using GstPointer = std::unique_ptr<T, subtitler::GstDeleter<T>>;
 
 namespace subtitler::probe {
 
-std::vector<ElementAvailability> probe_elements() {
+std::vector<ElementAvailability> ProbeElements() {
   gst_init(nullptr, nullptr);
 
   static const char* const elements[] = {

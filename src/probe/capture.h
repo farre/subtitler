@@ -22,8 +22,8 @@ struct VideoDevice {
 
 // Lists video capture devices (V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING,
 // metadata and mem2mem nodes excluded).
-std::vector<VideoDevice> list_video_devices();
+std::vector<VideoDevice> ListVideoDevices();
 
-std::vector<VideoMode> list_capture_modes(const std::string& path);
+std::vector<VideoMode> ListCaptureModes(const std::string& path);
 
 }  // namespace subtitler::probe

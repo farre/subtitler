@@ -14,7 +14,7 @@ namespace {
 template <typename T>
 using GstPointer = std::unique_ptr<T, subtitler::GstDeleter<T>>;
 
-void check_constructible(const std::string& description) {
+void CheckConstructible(const std::string& description) {
   GstPointer<GError> error;
   const GstPointer<GstElement> pipeline{
       gst_parse_launch(description.c_str(), std::out_ptr(error))};
@@ -33,7 +33,7 @@ TEST_CASE("capture pipeline description") {
 
   SUBCASE("contains the key capture properties") {
     const auto description =
-        subtitler::capture_pipeline_description("/dev/video0");
+        subtitler::CapturePipelineDescription("/dev/video0");
 
     CHECK(description.contains("v4l2src"));
     CHECK(description.contains("device=\"/dev/video0\""));
@@ -47,12 +47,12 @@ TEST_CASE("capture pipeline description") {
   }
 
   SUBCASE("substitutes the device") {
-    CHECK(subtitler::capture_pipeline_description("/dev/video42")
+    CHECK(subtitler::CapturePipelineDescription("/dev/video42")
               .contains("device=\"/dev/video42\""));
   }
 
   SUBCASE("is constructible") {
-    check_constructible(subtitler::capture_pipeline_description("/dev/video0"));
+    CheckConstructible(subtitler::CapturePipelineDescription("/dev/video0"));
   }
 }
 
@@ -60,7 +60,7 @@ TEST_CASE("output pipeline description") {
   gst_init(nullptr, nullptr);
 
   SUBCASE("contains the key output properties") {
-    const auto description = subtitler::output_pipeline_description(
+    const auto description = subtitler::OutputPipelineDescription(
         subtitler::OutputMode::kKmsSoftware, std::nullopt);
 
     CHECK(description.contains("appsrc"));
@@ -75,7 +75,7 @@ TEST_CASE("output pipeline description") {
   }
 
   SUBCASE("pisp pipeline has pispconvert and NV12 DMABuf") {
-    const auto description = subtitler::output_pipeline_description(
+    const auto description = subtitler::OutputPipelineDescription(
         subtitler::OutputMode::kKmsPisp, std::nullopt);
 
     CHECK(description.contains("pispconvert"));
@@ -84,36 +84,36 @@ TEST_CASE("output pipeline description") {
   }
 
   SUBCASE("omits connector-id without a connector") {
-    CHECK_FALSE(subtitler::output_pipeline_description(
+    CHECK_FALSE(subtitler::OutputPipelineDescription(
                     subtitler::OutputMode::kKmsSoftware, std::nullopt)
                     .contains("connector-id"));
   }
 
   SUBCASE("includes connector-id with a connector") {
-    CHECK(subtitler::output_pipeline_description(
+    CHECK(subtitler::OutputPipelineDescription(
               subtitler::OutputMode::kKmsSoftware, 7)
               .contains("connector-id=7"));
   }
 
   SUBCASE("is constructible") {
-    check_constructible(subtitler::output_pipeline_description(
+    CheckConstructible(subtitler::OutputPipelineDescription(
         subtitler::OutputMode::kKmsSoftware, std::nullopt));
-    check_constructible(subtitler::output_pipeline_description(
+    CheckConstructible(subtitler::OutputPipelineDescription(
         subtitler::OutputMode::kKmsSoftware, 7));
-    check_constructible(subtitler::output_pipeline_description(
+    CheckConstructible(subtitler::OutputPipelineDescription(
         subtitler::OutputMode::kNull, std::nullopt));
 
     GstPointer<GstElementFactory> pisp_factory{
         gst_element_factory_find("pispconvert")};
     if (pisp_factory != nullptr) {
-      check_constructible(subtitler::output_pipeline_description(
+      CheckConstructible(subtitler::OutputPipelineDescription(
           subtitler::OutputMode::kKmsPisp, std::nullopt));
     }
 
     GstPointer<GstElementFactory> gl_factory{
         gst_element_factory_find("glimagesink")};
     if (gl_factory != nullptr) {
-      check_constructible(subtitler::output_pipeline_description(
+      CheckConstructible(subtitler::OutputPipelineDescription(
           subtitler::OutputMode::kWindow, std::nullopt));
     }
   }

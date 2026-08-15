@@ -23,6 +23,6 @@ struct DrmInfo {
 };
 
 // Empty when no card for the driver exists.
-DrmInfo probe_drm(const std::string& driver_name);
+DrmInfo ProbeDrm(const std::string& driver_name);
 
 }  // namespace subtitler::probe

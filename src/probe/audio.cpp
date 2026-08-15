@@ -30,7 +30,7 @@ using PcmInfoPtr = std::unique_ptr<snd_pcm_info_t, PcmInfoDeleter>;
 
 namespace subtitler::probe {
 
-std::vector<AudioDevice> list_audio_devices() {
+std::vector<AudioDevice> ListAudioDevices() {
   std::vector<AudioDevice> devices;
 
   int card = -1;

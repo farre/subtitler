@@ -37,6 +37,7 @@ cmake --build --preset default
 
 ## Layout and conventions
 
+- Naming follows the Google C++ Style Guide: types and functions are `CamelCase`, constants are `kCamelCase`, variables are `snake_case` with a trailing `_` on class data members. snake_case is kept only where a name deliberately mirrors an external API (the `gst_unref` overloads in `deleters.h`, `Fd::get`/`release`/`reset`, `ResetGuard::release`).
 - All headers are private and live next to their sources under `src/`. The include root is `src/`, so includes look like `#include "stream/stream.h"`. The root `include/` directory is intentionally empty, reserved for a future public API — do not put headers there.
 - `src/stream/` builds the static lib `stream` (alias `subtitler::stream`), consumed only by the `subtitler` executable from `src/main.cpp`. New modules should follow the same `src/<module>/` pattern with their own CMakeLists.
 - `src/probe/` builds the `subtitler-probe` diagnostic executable (#94): capability probes via native APIs (GStreamer registry, V4L2 ioctls, libdrm, ALSA), a pipeline recommendation/negotiation check, text and `--json` output.

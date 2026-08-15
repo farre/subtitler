@@ -1,7 +1,7 @@
 #include "stream/frame_buffer.h"
 
 namespace subtitler {
-bool FrameBuffer::push_latest(BufferPtr frame) {
+bool FrameBuffer::PushLatest(BufferPtr frame) {
   {
     std::lock_guard lock{mutex_};
 
@@ -21,7 +21,7 @@ bool FrameBuffer::push_latest(BufferPtr frame) {
   return true;
 }
 
-std::optional<BufferPtr> FrameBuffer::pop(std::stop_token stop) {
+std::optional<BufferPtr> FrameBuffer::Pop(std::stop_token stop) {
   std::unique_lock lock{mutex_};
 
   available_.wait(lock, stop, [this] { return closed_ || !frames_.empty(); });
@@ -36,7 +36,7 @@ std::optional<BufferPtr> FrameBuffer::pop(std::stop_token stop) {
   return frame;
 }
 
-void FrameBuffer::close() {
+void FrameBuffer::Close() {
   {
     std::lock_guard lock{mutex_};
     closed_ = true;
@@ -45,7 +45,7 @@ void FrameBuffer::close() {
   available_.notify_all();
 }
 
-std::uint64_t FrameBuffer::dropped_frames() const noexcept {
+std::uint64_t FrameBuffer::DroppedFrames() const noexcept {
   return dropped_frames_.load(std::memory_order_relaxed);
 }
 }  // namespace subtitler

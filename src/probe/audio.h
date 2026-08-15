@@ -16,6 +16,6 @@ struct AudioDevice {
 };
 
 // Enumerates ALSA cards x PCM devices x streams via the libasound ctl API.
-std::vector<AudioDevice> list_audio_devices();
+std::vector<AudioDevice> ListAudioDevices();
 
 }  // namespace subtitler::probe

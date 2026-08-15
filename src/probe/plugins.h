@@ -10,6 +10,6 @@ struct ElementAvailability {
   bool available;
 };
 
-std::vector<ElementAvailability> probe_elements();
+std::vector<ElementAvailability> ProbeElements();
 
 }  // namespace subtitler::probe

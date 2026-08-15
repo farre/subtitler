@@ -15,10 +15,10 @@ enum class OutputMode {
   kNull,
 };
 
-std::string capture_pipeline_description(std::string_view device);
+std::string CapturePipelineDescription(std::string_view device);
 
-std::string output_pipeline_description(OutputMode mode,
-                                        std::optional<int> connector_id);
+std::string OutputPipelineDescription(OutputMode mode,
+                                      std::optional<int> connector_id);
 
 class Stream {
   struct Implementation;
@@ -36,7 +36,7 @@ class Stream {
   bool RestartOutput(OutputMode output_mode, std::optional<int> connector_id);
 
   bool Failed() const;
-  std::uint64_t dropped_frames() const;
+  std::uint64_t DroppedFrames() const;
 
  private:
   std::unique_ptr<Implementation> implementation_;

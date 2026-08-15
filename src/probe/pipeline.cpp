@@ -15,18 +15,19 @@ namespace {
 template <typename T>
 using GstPointer = std::unique_ptr<T, subtitler::GstDeleter<T>>;
 
-constexpr int width = 1920;
-constexpr int height = 1080;
-constexpr int frames_per_second = 60;
+constexpr int kWidth = 1920;
+constexpr int kHeight = 1080;
+constexpr int kFramesPerSecond = 60;
 
-bool has_mode(const std::vector<subtitler::probe::VideoMode>& modes,
-              std::string_view format) {
+bool HasMode(const std::vector<subtitler::probe::VideoMode>& modes,
+             std::string_view format) {
   for (const auto& mode : modes) {
-    if (mode.format != format || mode.width != width || mode.height != height) {
+    if (mode.format != format || mode.width != kWidth ||
+        mode.height != kHeight) {
       continue;
     }
     for (const int rate : mode.frame_rates) {
-      if (rate == frames_per_second) {
+      if (rate == kFramesPerSecond) {
         return true;
       }
     }
@@ -34,7 +35,7 @@ bool has_mode(const std::vector<subtitler::probe::VideoMode>& modes,
   return false;
 }
 
-bool has_element(
+bool HasElement(
     const std::vector<subtitler::probe::ElementAvailability>& elements,
     std::string_view name) {
   for (const auto& element : elements) {
@@ -49,7 +50,7 @@ bool has_element(
 // stepping — in practice all Pi 5 family boards except the later 2GB D0
 // model. There is no reliable userspace stepping readout, so match the whole
 // BCM2712 family via the processor nibble of the revision code.
-bool is_bcm2712() {
+bool IsBcm2712() {
   std::ifstream cpuinfo{"/proc/cpuinfo"};
   std::string line;
   while (std::getline(cpuinfo, line)) {
@@ -86,15 +87,15 @@ bool is_bcm2712() {
 
 namespace subtitler::probe {
 
-PipelinePlan recommend_pipeline(
-    const std::vector<VideoDevice>& devices,
-    const std::vector<std::vector<VideoMode>>& modes,
-    const std::vector<ElementAvailability>& elements, const DrmInfo& drm) {
+PipelinePlan RecommendPipeline(const std::vector<VideoDevice>& devices,
+                               const std::vector<std::vector<VideoMode>>& modes,
+                               const std::vector<ElementAvailability>& elements,
+                               const DrmInfo& drm) {
   PipelinePlan plan;
 
   std::optional<std::size_t> chosen;
   for (std::size_t i = 0; i < devices.size(); ++i) {
-    if (!has_mode(modes[i], "YUYV") && !has_mode(modes[i], "MJPG")) {
+    if (!HasMode(modes[i], "YUYV") && !HasMode(modes[i], "MJPG")) {
       continue;
     }
     if (devices[i].is_cv105) {
@@ -112,23 +113,23 @@ PipelinePlan recommend_pipeline(
   }
 
   plan.device_path = devices[*chosen].path;
-  plan.width = width;
-  plan.height = height;
-  plan.frame_rate = frames_per_second;
+  plan.width = kWidth;
+  plan.height = kHeight;
+  plan.frame_rate = kFramesPerSecond;
 
-  if (has_mode(modes[*chosen], "YUYV")) {
+  if (HasMode(modes[*chosen], "YUYV")) {
     plan.capture_format = "YUYV";
   } else {
     plan.capture_format = "MJPG";
     plan.needs_jpegdec = true;
-    if (!has_element(elements, "jpegdec")) {
+    if (!HasElement(elements, "jpegdec")) {
       plan.notes.emplace_back(
           "MJPG capture requires jpegdec, which is not installed");
     }
   }
 
-  const bool pisp = has_element(elements, "pispconvert");
-  if (pisp && !is_bcm2712()) {
+  const bool pisp = HasElement(elements, "pispconvert");
+  if (pisp && !IsBcm2712()) {
     plan.converter = "pispconvert";
     plan.kms_format = "NV12";
   } else {
@@ -142,11 +143,11 @@ PipelinePlan recommend_pipeline(
     }
   }
 
-  if (!has_element(elements, plan.converter)) {
+  if (!HasElement(elements, plan.converter)) {
     plan.notes.push_back(
         std::format("converter {} is not installed", plan.converter));
   }
-  if (!has_element(elements, "kmssink")) {
+  if (!HasElement(elements, "kmssink")) {
     plan.notes.emplace_back("kmssink is not installed");
   }
 
@@ -163,7 +164,7 @@ PipelinePlan recommend_pipeline(
   return plan;
 }
 
-void test_negotiation(PipelinePlan& plan) {
+void TestNegotiation(PipelinePlan& plan) {
   if (plan.device_path.empty() || plan.converter.empty()) {
     return;
   }

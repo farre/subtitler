@@ -32,13 +32,13 @@ struct PipelinePlan {
 
 // Recommends the capture/conversion/output pipeline per docs/video-output.md
 // and the #365 spike results.
-PipelinePlan recommend_pipeline(
-    const std::vector<VideoDevice>& devices,
-    const std::vector<std::vector<VideoMode>>& modes,
-    const std::vector<ElementAvailability>& elements, const DrmInfo& drm);
+PipelinePlan RecommendPipeline(const std::vector<VideoDevice>& devices,
+                               const std::vector<std::vector<VideoMode>>& modes,
+                               const std::vector<ElementAvailability>& elements,
+                               const DrmInfo& drm);
 
 // Drives the recommended minimal capture-to-output pipeline to PAUSED and
 // records whether caps negotiated. No-op without a vc4 DRM connector.
-void test_negotiation(PipelinePlan& plan);
+void TestNegotiation(PipelinePlan& plan);
 
 }  // namespace subtitler::probe

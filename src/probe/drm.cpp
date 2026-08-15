@@ -29,7 +29,7 @@ using ConnectorPtr = DrmPointer<drmModeConnector, drmModeFreeConnector>;
 using PlaneResPtr = DrmPointer<drmModePlaneRes, drmModeFreePlaneResources>;
 using PlanePtr = DrmPointer<drmModePlane, drmModeFreePlane>;
 
-std::string fourcc_to_string(std::uint32_t fourcc) {
+std::string FourccToString(std::uint32_t fourcc) {
   std::string result(4, '\0');
   for (int i = 0; i < 4; ++i) {
     result[i] = static_cast<char>((fourcc >> (8 * i)) & 0xff);
@@ -37,7 +37,7 @@ std::string fourcc_to_string(std::uint32_t fourcc) {
   return result;
 }
 
-subtitler::probe::Fd open_card(const std::string& driver_name) {
+subtitler::probe::Fd OpenCard(const std::string& driver_name) {
   for (int i = 0; i < 16; ++i) {
     const auto path = "/dev/dri/card" + std::to_string(i);
     subtitler::probe::Fd fd{open(path.c_str(), O_RDWR | O_CLOEXEC)};
@@ -57,8 +57,8 @@ subtitler::probe::Fd open_card(const std::string& driver_name) {
 
 namespace subtitler::probe {
 
-DrmInfo probe_drm(const std::string& driver_name) {
-  const Fd fd = open_card(driver_name);
+DrmInfo ProbeDrm(const std::string& driver_name) {
+  const Fd fd = OpenCard(driver_name);
   if (!fd) {
     return {};
   }
@@ -96,7 +96,7 @@ DrmInfo probe_drm(const std::string& driver_name) {
       }
       DrmPlane entry{.id = static_cast<int>(plane->plane_id), .formats = {}};
       for (std::uint32_t f = 0; f < plane->count_formats; ++f) {
-        entry.formats.push_back(fourcc_to_string(plane->formats[f]));
+        entry.formats.push_back(FourccToString(plane->formats[f]));
       }
       info.planes.push_back(std::move(entry));
     }

@@ -14,13 +14,13 @@ class FrameBuffer {
  public:
   explicit FrameBuffer(size_t capacity) : capacity_{capacity} {}
 
-  bool push_latest(BufferPtr frame);
+  bool PushLatest(BufferPtr frame);
 
-  std::optional<BufferPtr> pop(std::stop_token stop);
+  std::optional<BufferPtr> Pop(std::stop_token stop);
 
-  void close();
+  void Close();
 
-  std::uint64_t dropped_frames() const noexcept;
+  std::uint64_t DroppedFrames() const noexcept;
 
  private:
   const std::size_t capacity_;

@@ -13,7 +13,7 @@
 
 namespace {
 
-int xioctl(int fd, unsigned long request, void* arg) {
+int Xioctl(int fd, unsigned long request, void* arg) {
   int result;
   do {
     result = ioctl(fd, request, arg);
@@ -21,7 +21,7 @@ int xioctl(int fd, unsigned long request, void* arg) {
   return result;
 }
 
-std::string fourcc_to_string(std::uint32_t fourcc) {
+std::string FourccToString(std::uint32_t fourcc) {
   std::string result(4, '\0');
   for (int i = 0; i < 4; ++i) {
     result[i] = static_cast<char>((fourcc >> (8 * i)) & 0xff);
@@ -31,7 +31,7 @@ std::string fourcc_to_string(std::uint32_t fourcc) {
 
 // The CV105 identifies as UltraSemi "USB3 Video", VID:PID 345f:2130
 // (docs/pi-setup.md).
-bool is_cv105(const std::filesystem::path& device_name) {
+bool IsCv105(const std::filesystem::path& device_name) {
   std::ifstream modalias{"/sys/class/video4linux" / device_name / "device" /
                          "modalias"};
   std::string contents;
@@ -43,7 +43,7 @@ bool is_cv105(const std::filesystem::path& device_name) {
 
 namespace subtitler::probe {
 
-std::vector<VideoDevice> list_video_devices() {
+std::vector<VideoDevice> ListVideoDevices() {
   std::vector<VideoDevice> devices;
 
   for (const auto& entry : std::filesystem::directory_iterator{"/dev"}) {
@@ -58,7 +58,7 @@ std::vector<VideoDevice> list_video_devices() {
     }
 
     v4l2_capability caps{};
-    if (xioctl(fd.get(), VIDIOC_QUERYCAP, &caps) != 0) {
+    if (Xioctl(fd.get(), VIDIOC_QUERYCAP, &caps) != 0) {
       continue;
     }
 
@@ -75,14 +75,14 @@ std::vector<VideoDevice> list_video_devices() {
         .card = reinterpret_cast<const char*>(caps.card),
         .driver = reinterpret_cast<const char*>(caps.driver),
         .bus = reinterpret_cast<const char*>(caps.bus_info),
-        .is_cv105 = is_cv105(name),
+        .is_cv105 = IsCv105(name),
     });
   }
 
   return devices;
 }
 
-std::vector<VideoMode> list_capture_modes(const std::string& path) {
+std::vector<VideoMode> ListCaptureModes(const std::string& path) {
   const Fd fd{open(path.c_str(), O_RDWR | O_CLOEXEC)};
   if (!fd) {
     return {};
@@ -92,17 +92,17 @@ std::vector<VideoMode> list_capture_modes(const std::string& path) {
 
   v4l2_fmtdesc format{};
   format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  while (xioctl(fd.get(), VIDIOC_ENUM_FMT, &format) == 0) {
+  while (Xioctl(fd.get(), VIDIOC_ENUM_FMT, &format) == 0) {
     v4l2_frmsizeenum size{};
     size.pixel_format = format.pixelformat;
-    while (xioctl(fd.get(), VIDIOC_ENUM_FRAMESIZES, &size) == 0) {
+    while (Xioctl(fd.get(), VIDIOC_ENUM_FRAMESIZES, &size) == 0) {
       if (size.type != V4L2_FRMSIZE_TYPE_DISCRETE) {
         ++size.index;
         continue;
       }
 
       VideoMode mode{
-          .format = fourcc_to_string(format.pixelformat),
+          .format = FourccToString(format.pixelformat),
           .width = static_cast<int>(size.discrete.width),
           .height = static_cast<int>(size.discrete.height),
           .frame_rates = {},
@@ -112,7 +112,7 @@ std::vector<VideoMode> list_capture_modes(const std::string& path) {
       interval.pixel_format = format.pixelformat;
       interval.width = size.discrete.width;
       interval.height = size.discrete.height;
-      while (xioctl(fd.get(), VIDIOC_ENUM_FRAMEINTERVALS, &interval) == 0) {
+      while (Xioctl(fd.get(), VIDIOC_ENUM_FRAMEINTERVALS, &interval) == 0) {
         if (interval.type == V4L2_FRMIVAL_TYPE_DISCRETE &&
             interval.discrete.numerator != 0) {
           mode.frame_rates.push_back(static_cast<int>(

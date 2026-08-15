@@ -23,21 +23,21 @@ namespace {
 
 using namespace subtitler;
 
-constexpr int width = 1920;
-constexpr int height = 1080;
-constexpr int frames_per_second = 60;
-constexpr auto frame_duration = GST_SECOND / frames_per_second;
-constexpr std::uint64_t output_latency_frames = 3;
-constexpr auto target_latency = output_latency_frames * frame_duration;
-constexpr std::size_t frame_buffer_capacity = 4;
+constexpr int kWidth = 1920;
+constexpr int kHeight = 1080;
+constexpr int kFramesPerSecond = 60;
+constexpr auto kFrameDuration = GST_SECOND / kFramesPerSecond;
+constexpr std::uint64_t kOutputLatencyFrames = 3;
+constexpr auto kTargetLatency = kOutputLatencyFrames * kFrameDuration;
+constexpr std::size_t kFrameBufferCapacity = 4;
 
 // No-signal screen: solid pink, BT.601 limited range.
-constexpr std::uint8_t pink_y = 106;
-constexpr std::uint8_t pink_u = 202;
-constexpr std::uint8_t pink_v = 222;
+constexpr std::uint8_t kPinkY = 106;
+constexpr std::uint8_t kPinkU = 202;
+constexpr std::uint8_t kPinkV = 222;
 
-ElementPtr parse_pipeline(std::string_view name,
-                          const std::string& description) {
+ElementPtr ParsePipeline(std::string_view name,
+                         const std::string& description) {
   ErrorPtr error;
 
   ElementPtr pipeline =
@@ -53,7 +53,7 @@ ElementPtr parse_pipeline(std::string_view name,
   return nullptr;
 }
 
-void print_bus_error(std::string_view pipeline_name, MessagePtr& message) {
+void PrintBusError(std::string_view pipeline_name, MessagePtr& message) {
   ErrorPtr error;
   CharPtr debug;
 
@@ -69,7 +69,7 @@ void print_bus_error(std::string_view pipeline_name, MessagePtr& message) {
   }
 }
 
-bool poll_bus(BusPtr& bus, std::string_view pipeline_name) {
+bool PollBus(BusPtr& bus, std::string_view pipeline_name) {
   if (bus == nullptr) {
     return true;
   }
@@ -85,7 +85,7 @@ bool poll_bus(BusPtr& bus, std::string_view pipeline_name) {
   const auto type = GST_MESSAGE_TYPE(message.get());
 
   if (type == GST_MESSAGE_ERROR) {
-    print_bus_error(pipeline_name, message);
+    PrintBusError(pipeline_name, message);
   } else {
     std::println("{} pipeline reached EOS", pipeline_name);
   }
@@ -93,8 +93,8 @@ bool poll_bus(BusPtr& bus, std::string_view pipeline_name) {
   return false;
 }
 
-GstClockTime output_running_time(GstView<GstElement> output_pipeline,
-                                 GstView<GstClock> output_clock) {
+GstClockTime OutputRunningTime(GstView<GstElement> output_pipeline,
+                               GstView<GstClock> output_clock) {
   const auto now = gst_clock_get_time(output_clock);
   const auto base = gst_element_get_base_time(output_pipeline);
 
@@ -105,9 +105,9 @@ GstClockTime output_running_time(GstView<GstElement> output_pipeline,
   return now - base;
 }
 
-BufferPtr make_pink_frame() {
-  BufferPtr buffer =
-      BufferPtr{gst_buffer_new_allocate(nullptr, width * height * 2, nullptr)};
+BufferPtr MakePinkFrame() {
+  BufferPtr buffer = BufferPtr{
+      gst_buffer_new_allocate(nullptr, kWidth * kHeight * 2, nullptr)};
 
   if (buffer == nullptr) {
     return nullptr;
@@ -121,10 +121,10 @@ BufferPtr make_pink_frame() {
 
   // YUY2 packs two pixels as Y U Y V.
   for (std::size_t i = 0; i + 4 <= info.size; i += 4) {
-    info.data[i] = pink_y;
-    info.data[i + 1] = pink_u;
-    info.data[i + 2] = pink_y;
-    info.data[i + 3] = pink_v;
+    info.data[i] = kPinkY;
+    info.data[i + 1] = kPinkU;
+    info.data[i + 2] = kPinkY;
+    info.data[i + 3] = kPinkV;
   }
 
   gst_buffer_unmap(buffer.get(), &info);
@@ -136,7 +136,7 @@ BufferPtr make_pink_frame() {
 
 namespace subtitler {
 
-std::string capture_pipeline_description(std::string_view device) {
+std::string CapturePipelineDescription(std::string_view device) {
   return std::format(
       "v4l2src "
       "device=\"{}\" "
@@ -152,11 +152,11 @@ std::string capture_pipeline_description(std::string_view device) {
       "sync=false "
       "max-buffers=2 "
       "drop=true",
-      device, width, height, frames_per_second);
+      device, kWidth, kHeight, kFramesPerSecond);
 }
 
-std::string output_pipeline_description(OutputMode mode,
-                                        std::optional<int> connector_id) {
+std::string OutputPipelineDescription(OutputMode mode,
+                                      std::optional<int> connector_id) {
   const auto connector = connector_id
                              ? std::format(" connector-id={}", *connector_id)
                              : std::string{};
@@ -187,7 +187,7 @@ std::string output_pipeline_description(OutputMode mode,
           "force-modesetting=true "
           "sync=true"
           "{}",
-          base, width, height, frames_per_second, connector);
+          base, kWidth, kHeight, kFramesPerSecond, connector);
 
     case OutputMode::kKmsSoftware:
       return std::format(
@@ -204,7 +204,7 @@ std::string output_pipeline_description(OutputMode mode,
           "force-modesetting=true "
           "sync=true"
           "{}",
-          base, width, height, frames_per_second, connector);
+          base, kWidth, kHeight, kFramesPerSecond, connector);
 
     case OutputMode::kWindow:
       return std::format(
@@ -246,12 +246,12 @@ struct Stream::Implementation {
     return capture_failed_.load() || output_failed_.load();
   }
 
-  std::uint64_t dropped_frames() const { return frames_.dropped_frames(); }
+  std::uint64_t DroppedFrames() const { return frames_.DroppedFrames(); }
 
   // Guards the pipelines, buses, threads, and capture_state_ below.
   std::mutex mutex_;
 
-  FrameBuffer frames_{frame_buffer_capacity};
+  FrameBuffer frames_{kFrameBufferCapacity};
 
   std::atomic_bool capture_active_ = false;
   std::atomic_bool capture_failed_ = false;
@@ -294,7 +294,7 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
   ResetGuard reset{capture_pipeline_, capture_sink_, capture_bus_};
 
   capture_pipeline_ =
-      parse_pipeline("capture", capture_pipeline_description(device));
+      ParsePipeline("capture", CapturePipelineDescription(device));
 
   if (!capture_pipeline_) {
     std::println(stderr, "Couldn't create capture pipeline");
@@ -365,16 +365,16 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
       }
 
       if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(copied.get()))) {
-        GST_BUFFER_PTS(copied.get()) = fallback_frame_number * frame_duration;
+        GST_BUFFER_PTS(copied.get()) = fallback_frame_number * kFrameDuration;
       }
 
       if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DURATION(copied.get()))) {
-        GST_BUFFER_DURATION(copied.get()) = frame_duration;
+        GST_BUFFER_DURATION(copied.get()) = kFrameDuration;
       }
 
       ++fallback_frame_number;
 
-      if (!frames_.push_latest(std::move(copied))) {
+      if (!frames_.PushLatest(std::move(copied))) {
         break;
       }
     }
@@ -408,8 +408,8 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
 
   ResetGuard reset{output_pipeline_, output_source_, output_bus_};
 
-  output_pipeline_ = parse_pipeline(
-      "output", output_pipeline_description(output_mode, connector_id));
+  output_pipeline_ = ParsePipeline(
+      "output", OutputPipelineDescription(output_mode, connector_id));
 
   if (!output_pipeline_) {
     std::println(stderr, "Couldn't create output pipeline");
@@ -431,8 +431,8 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
 
     auto caps = CapsPtr{gst_caps_new_simple(
         "video/x-raw", "format", G_TYPE_STRING, "YUY2", "width", G_TYPE_INT,
-        width, "height", G_TYPE_INT, height, "framerate", GST_TYPE_FRACTION,
-        frames_per_second, 1, nullptr)};
+        kWidth, "height", G_TYPE_INT, kHeight, "framerate", GST_TYPE_FRACTION,
+        kFramesPerSecond, 1, nullptr)};
 
     gst_app_src_set_caps(source, caps.get());
   }
@@ -471,7 +471,7 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
     GstClockTime previous_capture_pts = GST_CLOCK_TIME_NONE;
 
     while (!stop.stop_requested()) {
-      auto frame_result = frames_.pop(stop);
+      auto frame_result = frames_.Pop(stop);
 
       if (!frame_result) {
         break;
@@ -496,7 +496,7 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
         capture_anchor = capture_pts;
 
         output_anchor =
-            output_running_time(pipeline, clock.get()) + target_latency;
+            OutputRunningTime(pipeline, clock.get()) + kTargetLatency;
       }
 
       const auto elapsed = capture_pts - *capture_anchor;
@@ -534,23 +534,23 @@ void Stream::Implementation::RunScreensaver(std::stop_token stop) {
   std::uint64_t frame_number = 0;
 
   while (!stop.stop_requested()) {
-    BufferPtr frame = make_pink_frame();
+    BufferPtr frame = MakePinkFrame();
 
     if (frame == nullptr) {
       std::println(stderr, "Could not allocate no-signal frame");
       break;
     }
 
-    GST_BUFFER_PTS(frame.get()) = frame_number * frame_duration;
-    GST_BUFFER_DURATION(frame.get()) = frame_duration;
+    GST_BUFFER_PTS(frame.get()) = frame_number * kFrameDuration;
+    GST_BUFFER_DURATION(frame.get()) = kFrameDuration;
 
     ++frame_number;
 
-    if (!frames_.push_latest(std::move(frame))) {
+    if (!frames_.PushLatest(std::move(frame))) {
       break;
     }
 
-    next_frame += std::chrono::nanoseconds{frame_duration};
+    next_frame += std::chrono::nanoseconds{kFrameDuration};
     std::this_thread::sleep_until(next_frame);
   }
 }
@@ -566,7 +566,7 @@ void Stream::Implementation::Stop() {
     output_thread_.request_stop();
   }
 
-  frames_.close();
+  frames_.Close();
 
   // Changing state unblocks pending appsink/appsrc operations.
   if (capture_pipeline_ != nullptr) {
@@ -591,8 +591,8 @@ void Stream::Implementation::Stop() {
 void Stream::Implementation::Poll() {
   std::lock_guard lock{mutex_};
 
-  const bool capture_bus_ok = poll_bus(capture_bus_, "capture");
-  poll_bus(output_bus_, "output");
+  const bool capture_bus_ok = PollBus(capture_bus_, "capture");
+  PollBus(output_bus_, "output");
 
   if (capture_state_ == CaptureState::kCapturing &&
       (!capture_bus_ok || !capture_active_.load())) {
@@ -624,8 +624,8 @@ bool Stream::Implementation::Initialize(const std::string& device,
                                         OutputMode output_mode,
                                         std::optional<int> connector_id) {
   std::println("Capture pipeline:\n{}\n\nOutput pipeline:\n{}\n",
-               capture_pipeline_description(device),
-               output_pipeline_description(output_mode, connector_id));
+               CapturePipelineDescription(device),
+               OutputPipelineDescription(output_mode, connector_id));
 
   return StartOutput(output_mode, connector_id) && StartCapture(device);
 }
@@ -667,8 +667,8 @@ bool Stream::RestartOutput(OutputMode output_mode,
 
 bool Stream::Failed() const { return implementation_->Failed(); }
 
-std::uint64_t Stream::dropped_frames() const {
-  return implementation_->dropped_frames();
+std::uint64_t Stream::DroppedFrames() const {
+  return implementation_->DroppedFrames();
 }
 
 }  // namespace subtitler

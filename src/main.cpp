@@ -14,9 +14,9 @@ namespace {
 
 volatile std::sig_atomic_t signal_received = 0;
 
-extern "C" void handle_signal(int) { signal_received = 1; }
+extern "C" void HandleSignal(int) { signal_received = 1; }
 
-std::optional<int> parse_integer(std::string_view text) {
+std::optional<int> ParseInteger(std::string_view text) {
   int value{};
 
   const auto [end, error] =
@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
       device = arg;
       ++positional;
     } else if (positional == 1) {
-      connector_id = parse_integer(arg);
+      connector_id = ParseInteger(arg);
 
       if (!connector_id) {
         std::println(stderr, "Invalid DRM connector ID: {}", arg);
@@ -80,8 +80,8 @@ int main(int argc, char** argv) {
     }
   }
 
-  std::signal(SIGINT, handle_signal);
-  std::signal(SIGTERM, handle_signal);
+  std::signal(SIGINT, HandleSignal);
+  std::signal(SIGTERM, HandleSignal);
 
   auto stream = subtitler::Stream::Create(device, output_mode, connector_id);
 
@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
   stream->Stop();
 
   std::println("Stopped. Application buffer dropped {} frames.",
-               stream->dropped_frames());
+               stream->DroppedFrames());
 
   return stream->Failed() ? EXIT_FAILURE : EXIT_SUCCESS;
 }
