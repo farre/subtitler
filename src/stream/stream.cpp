@@ -132,6 +132,19 @@ BufferPtr MakePinkFrame() {
   return buffer;
 }
 
+BufferPtr CopyCapturedBuffer(GstView<GstSample> sample) {
+  // gst_sample_get_buffer is transfer-none.
+  const GstView<GstBuffer> captured = gst_sample_get_buffer(sample);
+
+  if (captured == nullptr) {
+    std::println(stderr, "Captured sample contained no buffer");
+
+    return nullptr;
+  }
+
+  return BufferPtr{gst_buffer_copy_deep(captured)};
+}
+
 }  // namespace
 
 namespace subtitler {
@@ -218,7 +231,7 @@ std::string OutputPipelineDescription(OutputMode mode,
       return std::format("{}! fakesink sync=true", base);
   }
 
-  return "";
+  std::unreachable();
 }
 
 struct Stream::Implementation {
@@ -240,7 +253,14 @@ struct Stream::Implementation {
 
   void Poll();
 
+  void RunCapture(std::stop_token stop);
+  void RunOutput(std::stop_token stop);
   void RunScreensaver(std::stop_token stop);
+
+  // Tears down one pipeline and its thread. The lock argument proves the
+  // caller holds mutex_.
+  void StopCapturePipeline(const std::lock_guard<std::mutex>&);
+  void StopOutputPipeline(const std::lock_guard<std::mutex>&);
 
   bool Failed() const {
     return capture_failed_.load() || output_failed_.load();
@@ -275,21 +295,7 @@ struct Stream::Implementation {
 bool Stream::Implementation::StartCapture(const std::string& device) {
   std::lock_guard lock{mutex_};
 
-  if (capture_thread_.joinable()) {
-    capture_thread_.request_stop();
-
-    // Changing state unblocks pending appsink operations.
-    if (capture_pipeline_ != nullptr) {
-      gst_element_set_state(capture_pipeline_.get(), GST_STATE_NULL);
-    }
-
-    capture_thread_.join();
-    capture_bus_.reset();
-    capture_sink_.reset();
-    capture_pipeline_.reset();
-  }
-
-  capture_state_ = CaptureState::kStopped;
+  StopCapturePipeline(lock);
 
   ResetGuard reset{capture_pipeline_, capture_sink_, capture_bus_};
 
@@ -324,63 +330,8 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
   capture_active_.store(true);
   capture_failed_.store(false);
 
-  capture_thread_ = std::jthread{[this](std::stop_token stop) {
-    const auto sink = GstView<GstAppSink>{GST_APP_SINK(capture_sink_.get())};
-
-    std::uint64_t fallback_frame_number = 0;
-
-    while (!stop.stop_requested()) {
-      SamplePtr sample =
-          SamplePtr{gst_app_sink_try_pull_sample(sink, 100 * GST_MSECOND)};
-
-      if (sample == nullptr) {
-        if (gst_app_sink_is_eos(sink)) {
-          break;
-        }
-
-        continue;
-      }
-
-      auto copy_sample = [](SamplePtr& sample) -> BufferPtr {
-        // gst_sample_get_buffer is transfer-none.
-        const GstView<GstBuffer> captured = gst_sample_get_buffer(sample.get());
-        if (captured == nullptr) {
-          std::println(stderr, "Captured sample contained no buffer");
-
-          return nullptr;
-        }
-
-        return BufferPtr{gst_buffer_copy_deep(captured)};
-      };
-
-      // This creates application-owned memory rather than
-      // retaining a reference to a V4L2 driver buffer.
-      BufferPtr copied = copy_sample(sample);
-
-      if (copied == nullptr) {
-        std::println(stderr, "Could not copy captured frame");
-
-        capture_failed_.store(true);
-        break;
-      }
-
-      if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(copied.get()))) {
-        GST_BUFFER_PTS(copied.get()) = fallback_frame_number * kFrameDuration;
-      }
-
-      if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DURATION(copied.get()))) {
-        GST_BUFFER_DURATION(copied.get()) = kFrameDuration;
-      }
-
-      ++fallback_frame_number;
-
-      if (!frames_.PushLatest(std::move(copied))) {
-        break;
-      }
-    }
-
-    capture_active_.store(false);
-  }};
+  capture_thread_ =
+      std::jthread{[this](std::stop_token stop) { RunCapture(stop); }};
 
   capture_state_ = CaptureState::kCapturing;
 
@@ -388,23 +339,57 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
   return true;
 }
 
+void Stream::Implementation::RunCapture(std::stop_token stop) {
+  const auto sink = GstView<GstAppSink>{GST_APP_SINK(capture_sink_.get())};
+
+  std::uint64_t fallback_frame_number = 0;
+
+  while (!stop.stop_requested()) {
+    SamplePtr sample =
+        SamplePtr{gst_app_sink_try_pull_sample(sink, 100 * GST_MSECOND)};
+
+    if (sample == nullptr) {
+      if (gst_app_sink_is_eos(sink)) {
+        break;
+      }
+
+      continue;
+    }
+
+    // This creates application-owned memory rather than
+    // retaining a reference to a V4L2 driver buffer.
+    BufferPtr copied = CopyCapturedBuffer(sample.get());
+
+    if (copied == nullptr) {
+      std::println(stderr, "Could not copy captured frame");
+
+      capture_failed_.store(true);
+      break;
+    }
+
+    if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(copied.get()))) {
+      GST_BUFFER_PTS(copied.get()) = fallback_frame_number * kFrameDuration;
+    }
+
+    if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DURATION(copied.get()))) {
+      GST_BUFFER_DURATION(copied.get()) = kFrameDuration;
+    }
+
+    ++fallback_frame_number;
+
+    if (!frames_.PushLatest(std::move(copied))) {
+      break;
+    }
+  }
+
+  capture_active_.store(false);
+}
+
 bool Stream::Implementation::StartOutput(OutputMode output_mode,
                                          std::optional<int> connector_id) {
   std::lock_guard lock{mutex_};
 
-  if (output_thread_.joinable()) {
-    output_thread_.request_stop();
-
-    // Changing state unblocks pending appsrc operations.
-    if (output_pipeline_ != nullptr) {
-      gst_element_set_state(output_pipeline_.get(), GST_STATE_NULL);
-    }
-
-    output_thread_.join();
-    output_bus_.reset();
-    output_source_.reset();
-    output_pipeline_.reset();
-  }
+  StopOutputPipeline(lock);
 
   ResetGuard reset{output_pipeline_, output_source_, output_bus_};
 
@@ -451,82 +436,84 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
 
   output_failed_.store(false);
 
-  output_thread_ = std::jthread{[this](std::stop_token stop) {
-    // The casts add no references; the views are non-owning and the
-    // ElementPtrs remain the sole owners.
-    const auto pipeline = GstView<GstElement>{output_pipeline_.get()};
-    const auto source = GstView<GstAppSrc>{GST_APP_SRC(output_source_.get())};
-
-    ClockPtr clock = ClockPtr{gst_element_get_clock(pipeline)};
-
-    if (clock == nullptr) {
-      std::println(stderr, "Output pipeline has no clock");
-
-      output_failed_.store(true);
-      return;
-    }
-
-    std::optional<GstClockTime> capture_anchor;
-    std::optional<GstClockTime> output_anchor;
-    GstClockTime previous_capture_pts = GST_CLOCK_TIME_NONE;
-
-    while (!stop.stop_requested()) {
-      auto frame_result = frames_.Pop(stop);
-
-      if (!frame_result) {
-        break;
-      }
-
-      auto frame = std::move(*frame_result);
-
-      const auto capture_pts = GST_BUFFER_PTS(frame.get());
-
-      if (!GST_CLOCK_TIME_IS_VALID(capture_pts)) {
-        std::println(stderr, "Buffered frame has no timestamp");
-
-        output_failed_.store(true);
-        break;
-      }
-
-      const bool timestamp_discontinuity =
-          GST_CLOCK_TIME_IS_VALID(previous_capture_pts) &&
-          capture_pts < previous_capture_pts;
-
-      if (!capture_anchor || timestamp_discontinuity) {
-        capture_anchor = capture_pts;
-
-        output_anchor =
-            OutputRunningTime(pipeline, clock.get()) + kTargetLatency;
-      }
-
-      const auto elapsed = capture_pts - *capture_anchor;
-
-      GST_BUFFER_PTS(frame.get()) = *output_anchor + elapsed;
-
-      GST_BUFFER_DTS(frame.get()) = GST_CLOCK_TIME_NONE;
-
-      previous_capture_pts = capture_pts;
-
-      // gst_app_src_push_buffer takes ownership.
-      const auto result = gst_app_src_push_buffer(source, frame.release());
-
-      if (result != GST_FLOW_OK) {
-        if (!stop.stop_requested()) {
-          std::println(stderr, "appsrc rejected frame: {}",
-                       static_cast<int>(result));
-
-          output_failed_.store(true);
-        }
-
-        break;
-      }
-    }
-
-    gst_app_src_end_of_stream(source);
-  }};
+  output_thread_ =
+      std::jthread{[this](std::stop_token stop) { RunOutput(stop); }};
 
   reset.release();
   return true;
+}
+
+void Stream::Implementation::RunOutput(std::stop_token stop) {
+  // The casts add no references; the views are non-owning and the
+  // ElementPtrs remain the sole owners.
+  const auto pipeline = GstView<GstElement>{output_pipeline_.get()};
+  const auto source = GstView<GstAppSrc>{GST_APP_SRC(output_source_.get())};
+
+  ClockPtr clock = ClockPtr{gst_element_get_clock(pipeline)};
+
+  if (clock == nullptr) {
+    std::println(stderr, "Output pipeline has no clock");
+
+    output_failed_.store(true);
+    return;
+  }
+
+  std::optional<GstClockTime> capture_anchor;
+  std::optional<GstClockTime> output_anchor;
+  GstClockTime previous_capture_pts = GST_CLOCK_TIME_NONE;
+
+  while (!stop.stop_requested()) {
+    auto frame_result = frames_.Pop(stop);
+
+    if (!frame_result) {
+      break;
+    }
+
+    auto frame = std::move(*frame_result);
+
+    const auto capture_pts = GST_BUFFER_PTS(frame.get());
+
+    if (!GST_CLOCK_TIME_IS_VALID(capture_pts)) {
+      std::println(stderr, "Buffered frame has no timestamp");
+
+      output_failed_.store(true);
+      break;
+    }
+
+    const bool timestamp_discontinuity =
+        GST_CLOCK_TIME_IS_VALID(previous_capture_pts) &&
+        capture_pts < previous_capture_pts;
+
+    if (!capture_anchor || timestamp_discontinuity) {
+      capture_anchor = capture_pts;
+
+      output_anchor = OutputRunningTime(pipeline, clock.get()) + kTargetLatency;
+    }
+
+    const auto elapsed = capture_pts - *capture_anchor;
+
+    GST_BUFFER_PTS(frame.get()) = *output_anchor + elapsed;
+
+    GST_BUFFER_DTS(frame.get()) = GST_CLOCK_TIME_NONE;
+
+    previous_capture_pts = capture_pts;
+
+    // gst_app_src_push_buffer takes ownership.
+    const auto result = gst_app_src_push_buffer(source, frame.release());
+
+    if (result != GST_FLOW_OK) {
+      if (!stop.stop_requested()) {
+        std::println(stderr, "appsrc rejected frame: {}",
+                     static_cast<int>(result));
+
+        output_failed_.store(true);
+      }
+
+      break;
+    }
+  }
+
+  gst_app_src_end_of_stream(source);
 }
 
 void Stream::Implementation::RunScreensaver(std::stop_token stop) {
@@ -555,37 +542,46 @@ void Stream::Implementation::RunScreensaver(std::stop_token stop) {
   }
 }
 
-void Stream::Implementation::Stop() {
-  std::lock_guard lock{mutex_};
-
+void Stream::Implementation::StopCapturePipeline(
+    const std::lock_guard<std::mutex>&) {
   if (capture_thread_.joinable()) {
     capture_thread_.request_stop();
-  }
 
-  if (output_thread_.joinable()) {
-    output_thread_.request_stop();
-  }
+    // Changing state unblocks pending appsink operations.
+    if (capture_pipeline_ != nullptr) {
+      gst_element_set_state(capture_pipeline_.get(), GST_STATE_NULL);
+    }
 
-  frames_.Close();
-
-  // Changing state unblocks pending appsink/appsrc operations.
-  if (capture_pipeline_ != nullptr) {
-    gst_element_set_state(capture_pipeline_.get(), GST_STATE_NULL);
-  }
-
-  if (output_pipeline_ != nullptr) {
-    gst_element_set_state(output_pipeline_.get(), GST_STATE_NULL);
-  }
-
-  if (capture_thread_.joinable()) {
     capture_thread_.join();
-  }
 
-  if (output_thread_.joinable()) {
-    output_thread_.join();
+    ResetGuard reset{capture_pipeline_, capture_sink_, capture_bus_};
   }
 
   capture_state_ = CaptureState::kStopped;
+}
+
+void Stream::Implementation::StopOutputPipeline(
+    const std::lock_guard<std::mutex>&) {
+  if (output_thread_.joinable()) {
+    output_thread_.request_stop();
+
+    // Changing state unblocks pending appsrc operations.
+    if (output_pipeline_ != nullptr) {
+      gst_element_set_state(output_pipeline_.get(), GST_STATE_NULL);
+    }
+
+    output_thread_.join();
+
+    ResetGuard reset{output_pipeline_, output_source_, output_bus_};
+  }
+}
+
+void Stream::Implementation::Stop() {
+  std::lock_guard lock{mutex_};
+
+  frames_.Close();
+  StopCapturePipeline(lock);
+  StopOutputPipeline(lock);
 }
 
 void Stream::Implementation::Poll() {
@@ -598,18 +594,7 @@ void Stream::Implementation::Poll() {
       (!capture_bus_ok || !capture_active_.load())) {
     // Capture is gone; drop the pipeline and switch the capture thread
     // over to the no-signal screen.
-    capture_thread_.request_stop();
-
-    if (capture_pipeline_ != nullptr) {
-      gst_element_set_state(capture_pipeline_.get(), GST_STATE_NULL);
-    }
-
-    capture_thread_.join();
-    capture_bus_.reset();
-    capture_sink_.reset();
-    capture_pipeline_.reset();
-
-    capture_state_ = CaptureState::kStopped;
+    StopCapturePipeline(lock);
   }
 
   if (capture_state_ == CaptureState::kStopped) {

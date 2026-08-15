@@ -1,5 +1,7 @@
 #include "stream/frame_buffer.h"
 
+#include <utility>
+
 namespace subtitler {
 bool FrameBuffer::PushLatest(BufferPtr frame) {
   {
