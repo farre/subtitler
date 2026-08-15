@@ -19,7 +19,12 @@ has no milestone ordering — so keep prefixes sequential when adding or
 inserting milestones.
 
 ## Technology
+
 C++26 is allowed! We use CMake and ninja.
+
+## Philosophy
+
+We follow YAGNI and IWYU.
 
 ## Build
 
