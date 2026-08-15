@@ -1,5 +1,3 @@
-#include "stream/description.h"
-
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 #include <gst/gst.h>
@@ -9,6 +7,7 @@
 #include <utility>
 
 #include "stream/deleters.h"
+#include "stream/stream.h"
 
 namespace {
 

@@ -1,6 +1,5 @@
 add_library(
     stream
-    description.cpp
     frame_buffer.cpp
     stream.cpp
 )
@@ -14,6 +13,7 @@ target_link_libraries(
     stream
     PRIVATE
     PkgConfig::GSTREAMER
+    subtitler::utils
 )
 
 target_include_directories(

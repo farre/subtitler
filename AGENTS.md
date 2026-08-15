@@ -6,7 +6,9 @@ Headless HDMI capture appliance (C++26 + GStreamer): grabs 1080p60 video from a
 V4L2 device and outputs it via DRM/KMS. Planned but NOT yet implemented: SRT
 subtitle overlay, web controls, config file loading, systemd unit
 (`config/subtitler.example.json` and `config/subtidlerd.service` are both
-empty placeholders). Current code is the low-latency passthrough only.
+empty placeholders). Current code is the low-latency passthrough plus a pink
+no-signal fallback: when the capture side stops, the frame buffer is kept
+stocked with generated pink frames and output keeps running.
 
 ## GitHub milestones
 
@@ -35,22 +37,24 @@ cmake --build --preset default
 
 ## Layout and conventions
 
-- All headers are private and live next to their sources under `src/`. The include root is `src/`, so includes look like `#include "stream/description.h"`. The root `include/` directory is intentionally empty, reserved for a future public API — do not put headers there.
+- All headers are private and live next to their sources under `src/`. The include root is `src/`, so includes look like `#include "stream/stream.h"`. The root `include/` directory is intentionally empty, reserved for a future public API — do not put headers there.
 - `src/stream/` builds the static lib `stream` (alias `subtitler::stream`), consumed only by the `subtitler` executable from `src/main.cpp`. New modules should follow the same `src/<module>/` pattern with their own CMakeLists.
 - `src/probe/` builds the `subtitler-probe` diagnostic executable (#94): capability probes via native APIs (GStreamer registry, V4L2 ioctls, libdrm, ALSA), a pipeline recommendation/negotiation check, text and `--json` output.
-- `src/stream/stream.cpp` and `stream.h` are empty placeholders still listed as lib sources — the lib today is only `description.cpp` + `deleters.h`.
+- `src/utils/` is a header-only INTERFACE lib `utils` (alias `subtitler::utils`) with shared utilities, currently `reset_guard.h` (`ResetGuard`).
+- `src/stream/stream.{h,cpp}` holds the `Stream` class (pimpl): it owns the capture/output pipelines, the two worker threads (one capture-side, one output-side), and the `FrameBuffer`. Pipeline description strings are free functions in the same files (tested by `tests/description_tests.cpp`); `main.cpp` is only argument parsing, signal handling, and the poll loop. When capture dies (EOS/error), `Stream::Poll` tears the capture pipeline down and the capture-side thread switches to feeding pink no-signal frames — the output side just renders whatever the frame buffer contains. `RestartCapture`/`RestartOutput` are restart-safe entry points reserved for the future web UI; nothing restarts automatically, so there are no restart loops.
+- `src/stream/` also has `frame_buffer.*` (the app-owned frame queue between the threads) and `deleters.h`.
 - `tests/` holds the doctest unit tests. Libs expose nothing publicly, so test targets set their own `target_include_directories` for `src/`.
 - `docs/` holds appliance documentation (e.g. `docs/pi-setup.md`, the verified Pi 5 + CV105 hardware profile). The README stays the how-to; docs/ is the record — don't duplicate commands between them.
 - `cmake/CompilerWarnings.cmake` is an **empty placeholder**; warning flags (`-Wall -Wextra -Wpedantic`) are set directly on targets in the root `CMakeLists.txt`. Don't grep the module file for warning config.
 - `cmake/Sanitizers.cmake` holds the optional sanitizers: `SUBTITLER_ENABLE_ASAN` / `SUBTITLER_ENABLE_UBSAN` (both default OFF), applied directory-scope so tests are instrumented too. Build them via the `asan-ubsan` configure/build/test presets (binary dir `build/asan-ubsan`).
 - `cmake/Dependencies.cmake` declares GLib, libsoup, and Threads that nothing links yet — intentional (libsoup is for the planned web UI). Don't prune them as "unused".
-- Wrap GStreamer objects with the RAII deleters in `src/stream/deleters.h` (see the `GstPointer` aliases in `main.cpp`) instead of raw `gst_*_unref` calls. Non-owning references (GObject casts, transfer-none getters) use `GstView<T>` — never wrap those in an owning `GstPointer`; the double-unref this causes was #134.
+- Wrap GStreamer objects with the RAII deleters in `src/stream/deleters.h` (see the `GstPointer` aliases used throughout `src/stream/stream.cpp`) instead of raw `gst_*_unref` calls. Non-owning references (GObject casts, transfer-none getters) use `GstView<T>` — never wrap those in an owning `GstPointer`; the double-unref this causes was #134.
 - Installation covers the `subtitler` and `subtitler-probe` binaries (`install(TARGETS ...)` + GNUInstallDirs in the root CMakeLists). When `config/subtidlerd.service` and `config/subtitler.example.json` get implemented, add install rules for them too.
 
 ## Gotchas
 
-- Resolution/format constants (1080p60 YUY2) are **duplicated** in `src/main.cpp` and `src/stream/description.cpp` — change both together or capture/output caps mismatch.
-- The KMS output pipelines hardcode `kmssink driver-name=vc4` (Raspberry Pi). Output mode is selected with `--output=software|pisp|window|null` (`OutputMode` in `src/stream/description.h`); the `kms` modes need a real V4L2 capture device and a KMS display — don't use them as a smoke test on a dev machine; build-only verification is the norm. `window` (glimagesink) and `null` (fakesink) are the dev-machine modes. The `pisp` mode is currently blocked upstream — pispconvert renders NV12 output blue on BCM2712C1 (raspberrypi/libpisp#76, see docs/pi-setup.md); `software` is the default.
+- Resolution/format constants (1080p60 YUY2) live once in `src/stream/stream.cpp`; `src/probe/pipeline.cpp` keeps its own copies for its standalone negotiation checks. They may move to the config file once that exists.
+- The KMS output pipelines hardcode `kmssink driver-name=vc4` (Raspberry Pi). Output mode is selected with `--output=software|pisp|window|null` (`OutputMode` in `src/stream/stream.h`); the `kms` modes need a real V4L2 capture device and a KMS display — don't use them as a smoke test on a dev machine; build-only verification is the norm. `window` (glimagesink) and `null` (fakesink) are the dev-machine modes. The `pisp` mode is currently blocked upstream — pispconvert renders NV12 output blue on BCM2712C1 (raspberrypi/libpisp#76, see docs/pi-setup.md); `software` is the default.
 - No vc4 plane supports packed 4:2:2 (no YUYV/UYVY/YVYU/VYUY — verified via `modetest -p`), so captured YUY2 frames **cannot be scanned out directly**: a conversion step (e.g. YUY2→NV16) before kmssink is mandatory. The empirical gst-launch confirmation pair is still pending; hardware profile in `docs/pi-setup.md`.
 - Usage: `subtitler [video-device] [connector-id] [--output=software|pisp|window|null]` (defaults: `/dev/video0`, auto connector, software NV16 output).
 
