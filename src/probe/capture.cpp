@@ -10,6 +10,7 @@
 #include <fstream>
 
 #include "probe/fd.h"
+#include "probe/fourcc.h"
 
 namespace {
 
@@ -18,14 +19,6 @@ int Xioctl(int fd, unsigned long request, void* arg) {
   do {
     result = ioctl(fd, request, arg);
   } while (result == -1 && errno == EINTR);
-  return result;
-}
-
-std::string FourccToString(std::uint32_t fourcc) {
-  std::string result(4, '\0');
-  for (int i = 0; i < 4; ++i) {
-    result[i] = static_cast<char>((fourcc >> (8 * i)) & 0xff);
-  }
   return result;
 }
 

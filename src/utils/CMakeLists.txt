@@ -2,6 +2,7 @@ add_library(
     utils
     INTERFACE
     reset_guard.h
+    unique_ptr.h
 )
 
 add_library(

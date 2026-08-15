@@ -4,38 +4,22 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
-#include <memory>
+#include <cstdint>
 #include <string>
 
 #include "probe/fd.h"
+#include "probe/fourcc.h"
+#include "utils/unique_ptr.h"
 
 namespace {
 
-template <typename T, void (*Free)(T*)>
-struct DrmDeleter {
-  void operator()(T* object) const noexcept {
-    if (object != nullptr) {
-      Free(object);
-    }
-  }
-};
+using subtitler::UniquePtr;
 
-template <typename T, void (*Free)(T*)>
-using DrmPointer = std::unique_ptr<T, DrmDeleter<T, Free>>;
-
-using VersionPtr = DrmPointer<drmVersion, drmFreeVersion>;
-using ResPtr = DrmPointer<drmModeRes, drmModeFreeResources>;
-using ConnectorPtr = DrmPointer<drmModeConnector, drmModeFreeConnector>;
-using PlaneResPtr = DrmPointer<drmModePlaneRes, drmModeFreePlaneResources>;
-using PlanePtr = DrmPointer<drmModePlane, drmModeFreePlane>;
-
-std::string FourccToString(std::uint32_t fourcc) {
-  std::string result(4, '\0');
-  for (int i = 0; i < 4; ++i) {
-    result[i] = static_cast<char>((fourcc >> (8 * i)) & 0xff);
-  }
-  return result;
-}
+using VersionPtr = UniquePtr<drmVersion, drmFreeVersion>;
+using ResPtr = UniquePtr<drmModeRes, drmModeFreeResources>;
+using ConnectorPtr = UniquePtr<drmModeConnector, drmModeFreeConnector>;
+using PlaneResPtr = UniquePtr<drmModePlaneRes, drmModeFreePlaneResources>;
+using PlanePtr = UniquePtr<drmModePlane, drmModeFreePlane>;
 
 subtitler::probe::Fd OpenCard(const std::string& driver_name) {
   for (int i = 0; i < 16; ++i) {

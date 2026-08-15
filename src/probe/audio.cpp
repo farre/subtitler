@@ -3,28 +3,17 @@
 #include <alsa/asoundlib.h>
 
 #include <format>
-#include <memory>
 #include <utility>
+
+#include "utils/unique_ptr.h"
 
 namespace {
 
-struct CtlDeleter {
-  void operator()(snd_ctl_t* ctl) const { snd_ctl_close(ctl); }
-};
+using subtitler::UniquePtr;
 
-struct CardInfoDeleter {
-  void operator()(snd_ctl_card_info_t* info) const {
-    snd_ctl_card_info_free(info);
-  }
-};
-
-struct PcmInfoDeleter {
-  void operator()(snd_pcm_info_t* info) const { snd_pcm_info_free(info); }
-};
-
-using CtlPtr = std::unique_ptr<snd_ctl_t, CtlDeleter>;
-using CardInfoPtr = std::unique_ptr<snd_ctl_card_info_t, CardInfoDeleter>;
-using PcmInfoPtr = std::unique_ptr<snd_pcm_info_t, PcmInfoDeleter>;
+using CtlPtr = UniquePtr<snd_ctl_t, snd_ctl_close>;
+using CardInfoPtr = UniquePtr<snd_ctl_card_info_t, snd_ctl_card_info_free>;
+using PcmInfoPtr = UniquePtr<snd_pcm_info_t, snd_pcm_info_free>;
 
 }  // namespace
 

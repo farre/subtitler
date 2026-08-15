@@ -2,16 +2,7 @@
 
 #include <gst/gst.h>
 
-#include <memory>
-
 #include "stream/deleters.h"
-
-namespace {
-
-template <typename T>
-using GstPointer = std::unique_ptr<T, subtitler::GstDeleter<T>>;
-
-}  // namespace
 
 namespace subtitler::probe {
 

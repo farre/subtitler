@@ -11,6 +11,8 @@
 #include "probe/plugins.h"
 #include "probe/report.h"
 
+using namespace subtitler::probe;
+
 namespace {
 
 constexpr std::string_view kKmsDriver = "vc4";
@@ -21,6 +23,30 @@ int Usage(const char* program) {
                "plugins | drm | pipeline]",
                program);
   return EXIT_FAILURE;
+}
+
+struct ProbeResults {
+  std::vector<VideoDevice> devices;
+  std::vector<std::vector<VideoMode>> modes;
+  std::vector<ElementAvailability> elements;
+  DrmInfo drm;
+  PipelinePlan plan;
+};
+
+ProbeResults RunProbes() {
+  ProbeResults results;
+
+  results.devices = ListVideoDevices();
+  for (const auto& device : results.devices) {
+    results.modes.push_back(ListCaptureModes(device.path));
+  }
+  results.elements = ProbeElements();
+  results.drm = ProbeDrm(std::string{kKmsDriver});
+  results.plan = RecommendPipeline(results.devices, results.modes,
+                                   results.elements, results.drm);
+  TestNegotiation(results.plan);
+
+  return results;
 }
 
 }  // namespace
@@ -41,37 +67,28 @@ int main(int argc, char** argv) {
     return Usage(argv[0]);
   }
 
-  using namespace subtitler::probe;
-
   if (args.empty()) {
-    const auto devices = ListVideoDevices();
-    std::vector<std::vector<VideoMode>> modes;
-    for (const auto& device : devices) {
-      modes.push_back(ListCaptureModes(device.path));
-    }
+    const auto results = RunProbes();
     const auto audio = ListAudioDevices();
-    const auto elements = ProbeElements();
-    const auto drm = ProbeDrm(std::string{kKmsDriver});
-    auto plan = RecommendPipeline(devices, modes, elements, drm);
-    TestNegotiation(plan);
 
     if (json) {
       std::println(
           "{{\"video_devices\": {}, \"audio_capture\": {}, "
           "\"audio_playback\": {}, \"gstreamer_elements\": {}, \"drm\": {}, "
           "\"recommendation\": {}}}",
-          DevicesToJson(devices, modes), AudioToJson(audio, true),
-          AudioToJson(audio, false), ElementsToJson(elements), DrmToJson(drm),
-          PipelineToJson(plan));
+          DevicesToJson(results.devices, results.modes),
+          AudioToJson(audio, true), AudioToJson(audio, false),
+          ElementsToJson(results.elements), DrmToJson(results.drm),
+          PipelineToJson(results.plan));
     } else {
-      PrintDevicesText(devices);
-      for (std::size_t i = 0; i < devices.size(); ++i) {
-        PrintModesText(devices[i].path, modes[i]);
+      PrintDevicesText(results.devices);
+      for (std::size_t i = 0; i < results.devices.size(); ++i) {
+        PrintModesText(results.devices[i].path, results.modes[i]);
       }
       PrintAudioText(audio);
-      PrintElementsText(elements);
-      PrintDrmText(drm);
-      PrintPipelineText(plan);
+      PrintElementsText(results.elements);
+      PrintDrmText(results.drm);
+      PrintPipelineText(results.plan);
     }
     return EXIT_SUCCESS;
   }
@@ -130,20 +147,12 @@ int main(int argc, char** argv) {
   }
 
   if (args[0] == "pipeline" && args.size() == 1) {
-    const auto devices = ListVideoDevices();
-    std::vector<std::vector<VideoMode>> modes;
-    for (const auto& device : devices) {
-      modes.push_back(ListCaptureModes(device.path));
-    }
-    const auto elements = ProbeElements();
-    const auto drm = ProbeDrm(std::string{kKmsDriver});
-    auto plan = RecommendPipeline(devices, modes, elements, drm);
-    TestNegotiation(plan);
+    const auto results = RunProbes();
 
     if (json) {
-      std::println("{}", PipelineToJson(plan));
+      std::println("{}", PipelineToJson(results.plan));
     } else {
-      PrintPipelineText(plan);
+      PrintPipelineText(results.plan);
     }
     return EXIT_SUCCESS;
   }

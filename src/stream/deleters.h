@@ -23,10 +23,6 @@ inline void gst_unref(GstBus* bus) noexcept { gst_object_unref(bus); }
 
 inline void gst_unref(GstCaps* caps) noexcept { gst_caps_unref(caps); }
 
-inline void gst_unref(GstAppSink* object) noexcept { gst_object_unref(object); }
-
-inline void gst_unref(GstAppSrc* object) noexcept { gst_object_unref(object); }
-
 inline void gst_unref(GstClock* clock) noexcept { gst_object_unref(clock); }
 
 inline void gst_unref(GstMessage* message) noexcept {
@@ -58,14 +54,6 @@ struct GstDeleter {
 template <typename T>
 using GstView = T*;
 
-struct GstBufferDeleter {
-  void operator()(GstBuffer* buffer) const noexcept {
-    if (buffer != nullptr) {
-      gst_buffer_unref(buffer);
-    }
-  }
-};
-
 template <typename T>
 using GstPointer = std::unique_ptr<T, subtitler::GstDeleter<T>>;
 
@@ -78,8 +66,5 @@ using MessagePtr = GstPointer<GstMessage>;
 using SamplePtr = GstPointer<GstSample>;
 using ErrorPtr = GstPointer<GError>;
 using CharPtr = GstPointer<gchar>;
-
-template <typename T>
-using GstView = subtitler::GstView<T>;
 
 }  // namespace subtitler

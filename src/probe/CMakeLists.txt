@@ -15,6 +15,7 @@ target_link_libraries(
     PkgConfig::ALSA
     PkgConfig::GSTREAMER
     PkgConfig::LIBDRM
+    subtitler::utils
 )
 
 target_include_directories(

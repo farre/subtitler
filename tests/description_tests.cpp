@@ -11,12 +11,9 @@
 
 namespace {
 
-template <typename T>
-using GstPointer = std::unique_ptr<T, subtitler::GstDeleter<T>>;
-
 void CheckConstructible(const std::string& description) {
-  GstPointer<GError> error;
-  const GstPointer<GstElement> pipeline{
+  subtitler::GstPointer<GError> error;
+  const subtitler::GstPointer<GstElement> pipeline{
       gst_parse_launch(description.c_str(), std::out_ptr(error))};
 
   // gst_parse_launch can return a partially built pipeline on failure;
@@ -103,14 +100,14 @@ TEST_CASE("output pipeline description") {
     CheckConstructible(subtitler::OutputPipelineDescription(
         subtitler::OutputMode::kNull, std::nullopt));
 
-    GstPointer<GstElementFactory> pisp_factory{
+    subtitler::GstPointer<GstElementFactory> pisp_factory{
         gst_element_factory_find("pispconvert")};
     if (pisp_factory != nullptr) {
       CheckConstructible(subtitler::OutputPipelineDescription(
           subtitler::OutputMode::kKmsPisp, std::nullopt));
     }
 
-    GstPointer<GstElementFactory> gl_factory{
+    subtitler::GstPointer<GstElementFactory> gl_factory{
         gst_element_factory_find("glimagesink")};
     if (gl_factory != nullptr) {
       CheckConstructible(subtitler::OutputPipelineDescription(

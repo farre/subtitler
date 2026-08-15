@@ -2,6 +2,7 @@
 
 #include <gst/gst.h>
 
+#include <algorithm>
 #include <charconv>
 #include <format>
 #include <fstream>
@@ -12,38 +13,25 @@
 
 namespace {
 
-template <typename T>
-using GstPointer = std::unique_ptr<T, subtitler::GstDeleter<T>>;
-
 constexpr int kWidth = 1920;
 constexpr int kHeight = 1080;
 constexpr int kFramesPerSecond = 60;
 
 bool HasMode(const std::vector<subtitler::probe::VideoMode>& modes,
              std::string_view format) {
-  for (const auto& mode : modes) {
-    if (mode.format != format || mode.width != kWidth ||
-        mode.height != kHeight) {
-      continue;
-    }
-    for (const int rate : mode.frame_rates) {
-      if (rate == kFramesPerSecond) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return std::ranges::any_of(modes, [format](const auto& mode) {
+    return mode.format == format && mode.width == kWidth &&
+           mode.height == kHeight &&
+           std::ranges::contains(mode.frame_rates, kFramesPerSecond);
+  });
 }
 
 bool HasElement(
     const std::vector<subtitler::probe::ElementAvailability>& elements,
     std::string_view name) {
-  for (const auto& element : elements) {
-    if (element.name == name) {
-      return element.available;
-    }
-  }
-  return false;
+  const auto found = std::ranges::find(
+      elements, name, &subtitler::probe::ElementAvailability::name);
+  return found != elements.end() && found->available;
 }
 
 // raspberrypi/libpisp#76 (NV12 output renders blue) affects the BCM2712C1
