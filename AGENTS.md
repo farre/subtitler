@@ -24,7 +24,7 @@ C++26 is allowed! We use CMake and ninja.
 
 ## Philosophy
 
-We follow YAGNI and IWYU.
+We follow YAGNI and IWYU. If possible also TDD.
 
 ## Build
 
