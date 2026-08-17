@@ -31,6 +31,14 @@ constexpr std::uint64_t kOutputLatencyFrames = 3;
 constexpr auto kTargetLatency = kOutputLatencyFrames * kFrameDuration;
 constexpr std::size_t kFrameBufferCapacity = 4;
 
+// CV105 audio: S16_LE 48 kHz stereo only (docs/pi-setup.md). Bit-transparent
+// passthrough: no element may touch the samples.
+constexpr std::string_view kAudioDevice = "hw:CARD=Video,DEV=0";
+constexpr int kAudioRate = 48000;
+constexpr int kAudioChannels = 2;
+constexpr std::uint64_t kAudioBytesPerFrame = kAudioChannels * 2;
+constexpr std::size_t kAudioBufferCapacity = 8;
+
 // No-signal screen: solid pink, BT.601 limited range.
 constexpr std::uint8_t kPinkY = 106;
 constexpr std::uint8_t kPinkU = 202;
@@ -149,7 +157,15 @@ BufferPtr CopyCapturedBuffer(GstView<GstSample> sample) {
 
 namespace subtitler {
 
-std::string CapturePipelineDescription(std::string_view device) {
+std::string CapturePipelineDescription(std::string_view device, bool audio) {
+  auto description = VideoCapturePipelineDescription(device);
+  if (audio) {
+    description += " " + AudioCapturePipelineDescription(kAudioDevice);
+  }
+  return description;
+}
+
+std::string VideoCapturePipelineDescription(std::string_view device) {
   return std::format(
       "v4l2src "
       "device=\"{}\" "
@@ -166,6 +182,25 @@ std::string CapturePipelineDescription(std::string_view device) {
       "max-buffers=2 "
       "drop=true",
       device, kWidth, kHeight, kFramesPerSecond);
+}
+
+std::string AudioCapturePipelineDescription(std::string_view device) {
+  // A single linear chain so that a tee for the whisper tap (#19) can be
+  // inserted without touching the passthrough path.
+  return std::format(
+      "alsasrc "
+      "device=\"{}\" "
+      "do-timestamp=true "
+      "! audio/x-raw,"
+      "format=S16LE,"
+      "rate={},"
+      "channels={} "
+      "! appsink "
+      "name=capture_audio_sink "
+      "sync=false "
+      "max-buffers=8 "
+      "drop=true",
+      device, kAudioRate, kAudioChannels);
 }
 
 std::string OutputPipelineDescription(OutputMode mode,
@@ -242,7 +277,7 @@ struct Stream::Implementation {
   };
 
   bool Initialize(const std::string& device, OutputMode output_mode,
-                  std::optional<int> connector_id);
+                  std::optional<int> connector_id, bool audio);
 
   ~Implementation() { Stop(); }
 
@@ -254,6 +289,7 @@ struct Stream::Implementation {
   void Poll();
 
   void RunCapture(std::stop_token stop);
+  void RunAudioCapture(std::stop_token stop);
   void RunOutput(std::stop_token stop);
   void RunScreensaver(std::stop_token stop);
 
@@ -272,15 +308,19 @@ struct Stream::Implementation {
   std::mutex mutex_;
 
   FrameBuffer frames_{kFrameBufferCapacity};
+  FrameBuffer audio_{kAudioBufferCapacity};
 
   std::atomic_bool capture_active_ = false;
   std::atomic_bool capture_failed_ = false;
   std::atomic_bool output_failed_ = false;
 
+  bool audio_enabled_ = false;
+
   CaptureState capture_state_ = CaptureState::kStopped;
 
   ElementPtr capture_pipeline_;
   ElementPtr capture_sink_;
+  ElementPtr capture_audio_sink_;
   BusPtr capture_bus_;
 
   ElementPtr output_pipeline_;
@@ -289,6 +329,9 @@ struct Stream::Implementation {
 
   // Runs either the capture or the screensaver loop, never both.
   std::jthread capture_thread_;
+  // Drains the audio branch while capturing; joinable only when audio is
+  // enabled.
+  std::jthread audio_thread_;
   std::jthread output_thread_;
 };
 
@@ -297,10 +340,11 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
 
   StopCapturePipeline(lock);
 
-  ResetGuard reset{capture_pipeline_, capture_sink_, capture_bus_};
+  ResetGuard reset{capture_pipeline_, capture_sink_, capture_audio_sink_,
+                   capture_bus_};
 
-  capture_pipeline_ =
-      ParsePipeline("capture", CapturePipelineDescription(device));
+  capture_pipeline_ = ParsePipeline(
+      "capture", CapturePipelineDescription(device, audio_enabled_));
 
   if (!capture_pipeline_) {
     std::println(stderr, "Couldn't create capture pipeline");
@@ -313,6 +357,16 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
   if (!capture_sink_) {
     std::println(stderr, "Couldn't find appsink");
     return false;
+  }
+
+  if (audio_enabled_) {
+    capture_audio_sink_ = ElementPtr{gst_bin_get_by_name(
+        GST_BIN(capture_pipeline_.get()), "capture_audio_sink")};
+
+    if (!capture_audio_sink_) {
+      std::println(stderr, "Couldn't find audio appsink");
+      return false;
+    }
   }
 
   capture_bus_ = BusPtr{gst_element_get_bus(capture_pipeline_.get())};
@@ -332,6 +386,11 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
 
   capture_thread_ =
       std::jthread{[this](std::stop_token stop) { RunCapture(stop); }};
+
+  if (audio_enabled_) {
+    audio_thread_ =
+        std::jthread{[this](std::stop_token stop) { RunAudioCapture(stop); }};
+  }
 
   capture_state_ = CaptureState::kCapturing;
 
@@ -378,6 +437,54 @@ void Stream::Implementation::RunCapture(std::stop_token stop) {
     ++fallback_frame_number;
 
     if (!frames_.PushLatest(std::move(copied))) {
+      break;
+    }
+  }
+
+  capture_active_.store(false);
+}
+
+void Stream::Implementation::RunAudioCapture(std::stop_token stop) {
+  const auto sink =
+      GstView<GstAppSink>{GST_APP_SINK(capture_audio_sink_.get())};
+
+  std::uint64_t fallback_sample_number = 0;
+
+  while (!stop.stop_requested()) {
+    SamplePtr sample =
+        SamplePtr{gst_app_sink_try_pull_sample(sink, 100 * GST_MSECOND)};
+
+    if (sample == nullptr) {
+      if (gst_app_sink_is_eos(sink)) {
+        break;
+      }
+
+      continue;
+    }
+
+    BufferPtr copied = CopyCapturedBuffer(sample.get());
+
+    if (copied == nullptr) {
+      std::println(stderr, "Could not copy captured audio");
+
+      capture_failed_.store(true);
+      break;
+    }
+
+    const auto frames = gst_buffer_get_size(copied.get()) / kAudioBytesPerFrame;
+
+    if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(copied.get()))) {
+      GST_BUFFER_PTS(copied.get()) =
+          fallback_sample_number * GST_SECOND / kAudioRate;
+    }
+
+    if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DURATION(copied.get()))) {
+      GST_BUFFER_DURATION(copied.get()) = frames * GST_SECOND / kAudioRate;
+    }
+
+    fallback_sample_number += frames;
+
+    if (!audio_.PushLatest(std::move(copied))) {
       break;
     }
   }
@@ -546,6 +653,7 @@ void Stream::Implementation::StopCapturePipeline(
     const std::lock_guard<std::mutex>&) {
   if (capture_thread_.joinable()) {
     capture_thread_.request_stop();
+    audio_thread_.request_stop();
 
     // Changing state unblocks pending appsink operations.
     if (capture_pipeline_ != nullptr) {
@@ -554,7 +662,12 @@ void Stream::Implementation::StopCapturePipeline(
 
     capture_thread_.join();
 
-    ResetGuard reset{capture_pipeline_, capture_sink_, capture_bus_};
+    if (audio_thread_.joinable()) {
+      audio_thread_.join();
+    }
+
+    ResetGuard reset{capture_pipeline_, capture_sink_, capture_audio_sink_,
+                     capture_bus_};
   }
 
   capture_state_ = CaptureState::kStopped;
@@ -580,6 +693,7 @@ void Stream::Implementation::Stop() {
   std::lock_guard lock{mutex_};
 
   frames_.Close();
+  audio_.Close();
   StopCapturePipeline(lock);
   StopOutputPipeline(lock);
 }
@@ -607,9 +721,12 @@ void Stream::Implementation::Poll() {
 
 bool Stream::Implementation::Initialize(const std::string& device,
                                         OutputMode output_mode,
-                                        std::optional<int> connector_id) {
+                                        std::optional<int> connector_id,
+                                        bool audio) {
+  audio_enabled_ = audio;
+
   std::println("Capture pipeline:\n{}\n\nOutput pipeline:\n{}\n",
-               CapturePipelineDescription(device),
+               CapturePipelineDescription(device, audio_enabled_),
                OutputPipelineDescription(output_mode, connector_id));
 
   return StartOutput(output_mode, connector_id) && StartCapture(device);
@@ -620,7 +737,8 @@ Stream::~Stream() = default;
 /* static */
 std::unique_ptr<Stream> Stream::Create(const std::string& device,
                                        OutputMode output_mode,
-                                       std::optional<int> connector_id) {
+                                       std::optional<int> connector_id,
+                                       bool audio) {
   static bool gst_initialized = false;
   if (!gst_initialized) {
     gst_initialized = true;
@@ -628,7 +746,7 @@ std::unique_ptr<Stream> Stream::Create(const std::string& device,
   }
 
   auto implementation = std::make_unique<Implementation>();
-  if (!implementation->Initialize(device, output_mode, connector_id)) {
+  if (!implementation->Initialize(device, output_mode, connector_id, audio)) {
     return nullptr;
   }
 

@@ -35,12 +35,13 @@ int main(int argc, char** argv) {
   std::string device = "/dev/video0";
   subtitler::OutputMode output_mode = subtitler::OutputMode::kKmsSoftware;
   std::optional<int> connector_id;
+  bool audio = true;
   int positional = 0;
 
   const auto usage = [&] {
     std::println(stderr,
                  "Usage: {} [video-device] [connector-id] "
-                 "[--output=software|pisp|window|null]",
+                 "[--output=software|pisp|window|null] [--no-audio]",
                  argv[0]);
   };
 
@@ -58,6 +59,8 @@ int main(int argc, char** argv) {
       output_mode = subtitler::OutputMode::kWindow;
     } else if (arg == "--output=null") {
       output_mode = subtitler::OutputMode::kNull;
+    } else if (arg == "--no-audio") {
+      audio = false;
     } else if (arg.starts_with("--")) {
       std::println(stderr, "Unknown option: {}", arg);
       usage();
@@ -83,7 +86,8 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, HandleSignal);
   std::signal(SIGTERM, HandleSignal);
 
-  auto stream = subtitler::Stream::Create(device, output_mode, connector_id);
+  auto stream =
+      subtitler::Stream::Create(device, output_mode, connector_id, audio);
 
   if (!stream) {
     std::println(stderr, "Failed to create stream");

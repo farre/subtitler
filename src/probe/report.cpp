@@ -91,6 +91,16 @@ void PrintAudioText(const std::vector<AudioDevice>& devices) {
           "hw:CARD={},DEV={}  {}{}", device.card_id, device.device,
           device.card_name,
           device.device_name.empty() ? "" : " — " + device.device_name);
+      if (capture && device.capture_caps) {
+        const auto& caps = *device.capture_caps;
+        std::vector<std::string> rates;
+        for (const unsigned int rate : caps.rates) {
+          rates.push_back(std::to_string(rate));
+        }
+        std::println("  formats: {}", Join(caps.formats, ", "));
+        std::println("  rates: {}", Join(rates, ", "));
+        std::println("  channels: {}-{}", caps.min_channels, caps.max_channels);
+      }
     }
     if (!any) {
       std::println("(none found)");
@@ -212,10 +222,27 @@ std::string AudioToJson(const std::vector<AudioDevice>& devices, bool capture) {
     }
     result += std::format(
         "{}{{\"device\": \"hw:CARD={},DEV={}\", \"card_id\": \"{}\", "
-        "\"card_name\": \"{}\", \"device_name\": \"{}\"}}",
+        "\"card_name\": \"{}\", \"device_name\": \"{}\"",
         first ? "" : ", ", device.card_id, device.device,
         EscapeJson(device.card_id), EscapeJson(device.card_name),
         EscapeJson(device.device_name));
+    if (capture && device.capture_caps) {
+      const auto& caps = *device.capture_caps;
+      std::string formats;
+      std::string rates;
+      for (const auto& format : caps.formats) {
+        formats += (formats.empty() ? "" : ", ") +
+                   std::format("\"{}\"", EscapeJson(format));
+      }
+      for (const unsigned int rate : caps.rates) {
+        rates += (rates.empty() ? "" : ", ") + std::to_string(rate);
+      }
+      result += std::format(
+          ", \"caps\": {{\"formats\": [{}], \"rates\": [{}], "
+          "\"min_channels\": {}, \"max_channels\": {}}}",
+          formats, rates, caps.min_channels, caps.max_channels);
+    }
+    result += "}";
     first = false;
   }
   return result + "]";

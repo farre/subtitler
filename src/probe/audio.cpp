@@ -3,6 +3,7 @@
 #include <alsa/asoundlib.h>
 
 #include <format>
+#include <optional>
 #include <utility>
 
 #include "utils/unique_ptr.h"
@@ -10,10 +11,72 @@
 namespace {
 
 using subtitler::UniquePtr;
+using subtitler::probe::PcmCaps;
 
 using CtlPtr = UniquePtr<snd_ctl_t, snd_ctl_close>;
 using CardInfoPtr = UniquePtr<snd_ctl_card_info_t, snd_ctl_card_info_free>;
 using PcmInfoPtr = UniquePtr<snd_pcm_info_t, snd_pcm_info_free>;
+using PcmPtr = UniquePtr<snd_pcm_t, snd_pcm_close>;
+using HwParamsPtr = UniquePtr<snd_pcm_hw_params_t, snd_pcm_hw_params_free>;
+using FormatMaskPtr =
+    UniquePtr<snd_pcm_format_mask_t, snd_pcm_format_mask_free>;
+
+constexpr unsigned int kStandardRates[] = {8000,  11025,  16000, 22050,
+                                           32000, 44100,  48000, 88200,
+                                           96000, 176400, 192000};
+
+std::optional<PcmCaps> QueryPcmCaps(const std::string& card_id, int device,
+                                    snd_pcm_stream_t stream) {
+  const auto name = std::format("hw:CARD={},DEV={}", card_id, device);
+
+  snd_pcm_t* raw_pcm = nullptr;
+  if (snd_pcm_open(&raw_pcm, name.c_str(), stream, SND_PCM_NONBLOCK) < 0) {
+    return std::nullopt;
+  }
+  const PcmPtr pcm{raw_pcm};
+
+  snd_pcm_hw_params_t* raw_params = nullptr;
+  if (snd_pcm_hw_params_malloc(&raw_params) < 0) {
+    return std::nullopt;
+  }
+  const HwParamsPtr params{raw_params};
+
+  if (snd_pcm_hw_params_any(pcm.get(), params.get()) < 0) {
+    return std::nullopt;
+  }
+
+  PcmCaps caps;
+
+  snd_pcm_format_mask_t* raw_mask = nullptr;
+  if (snd_pcm_format_mask_malloc(&raw_mask) < 0) {
+    return std::nullopt;
+  }
+  const FormatMaskPtr mask{raw_mask};
+
+  snd_pcm_hw_params_get_format_mask(params.get(), mask.get());
+  for (int format = 0; format <= SND_PCM_FORMAT_LAST; ++format) {
+    const auto value = static_cast<snd_pcm_format_t>(format);
+    if (snd_pcm_format_mask_test(mask.get(), value) != 0) {
+      caps.formats.emplace_back(snd_pcm_format_name(value));
+    }
+  }
+
+  for (const unsigned int rate : kStandardRates) {
+    if (snd_pcm_hw_params_test_rate(pcm.get(), params.get(), rate, 0) == 0) {
+      caps.rates.push_back(rate);
+    }
+  }
+
+  unsigned int min_channels = 0;
+  unsigned int max_channels = 0;
+  if (snd_pcm_hw_params_get_channels_min(params.get(), &min_channels) == 0 &&
+      snd_pcm_hw_params_get_channels_max(params.get(), &max_channels) == 0) {
+    caps.min_channels = min_channels;
+    caps.max_channels = max_channels;
+  }
+
+  return caps;
+}
 
 }  // namespace
 
@@ -73,6 +136,8 @@ std::vector<AudioDevice> ListAudioDevices() {
 
         if (stream == SND_PCM_STREAM_CAPTURE) {
           entry.capture = true;
+          entry.capture_caps =
+              QueryPcmCaps(entry.card_id, device, SND_PCM_STREAM_CAPTURE);
         } else {
           entry.playback = true;
         }

@@ -54,6 +54,11 @@ Audio:
 - ALSA card 0 device 0 ("USB3 Video" / "USB Audio"), one capture subdevice
 - Address as `hw:CARD=Video,DEV=0` — the card name is stable across reboots,
   the numeric index is not
+- PCM capabilities (queried via `subtitler-probe audio`, which reads
+  `snd_pcm_hw_params` on the raw `hw:` device): S16_LE only, 48000 Hz only,
+  exactly 2 channels. The capture pipeline pins
+  `audio/x-raw,format=S16LE,rate=48000,channels=2` accordingly — no
+  conversion elements, the passthrough path stays bit-transparent.
 
 Kernel log:
 

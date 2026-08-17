@@ -30,7 +30,7 @@ TEST_CASE("capture pipeline description") {
 
   SUBCASE("contains the key capture properties") {
     const auto description =
-        subtitler::CapturePipelineDescription("/dev/video0");
+        subtitler::VideoCapturePipelineDescription("/dev/video0");
 
     CHECK(description.contains("v4l2src"));
     CHECK(description.contains("device=\"/dev/video0\""));
@@ -44,12 +44,47 @@ TEST_CASE("capture pipeline description") {
   }
 
   SUBCASE("substitutes the device") {
-    CHECK(subtitler::CapturePipelineDescription("/dev/video42")
+    CHECK(subtitler::VideoCapturePipelineDescription("/dev/video42")
               .contains("device=\"/dev/video42\""));
   }
 
+  SUBCASE("audio branch contains the key audio properties") {
+    const auto description =
+        subtitler::AudioCapturePipelineDescription("hw:CARD=Video,DEV=0");
+
+    CHECK(description.contains("alsasrc"));
+    CHECK(description.contains("device=\"hw:CARD=Video,DEV=0\""));
+    CHECK(description.contains("do-timestamp=true"));
+    CHECK(description.contains("audio/x-raw"));
+    CHECK(description.contains("format=S16LE"));
+    CHECK(description.contains("rate=48000"));
+    CHECK(description.contains("channels=2"));
+    CHECK(description.contains("appsink"));
+    CHECK(description.contains("name=capture_audio_sink"));
+  }
+
+  SUBCASE("audio branch is optional") {
+    const auto with_audio =
+        subtitler::CapturePipelineDescription("/dev/video0", true);
+    const auto without_audio =
+        subtitler::CapturePipelineDescription("/dev/video0", false);
+
+    CHECK(with_audio.contains("alsasrc"));
+    CHECK(with_audio.contains("v4l2src"));
+    CHECK_FALSE(without_audio.contains("alsasrc"));
+    CHECK(without_audio.contains("v4l2src"));
+  }
+
   SUBCASE("is constructible") {
-    CheckConstructible(subtitler::CapturePipelineDescription("/dev/video0"));
+    CheckConstructible(
+        subtitler::CapturePipelineDescription("/dev/video0", false));
+
+    subtitler::GstPointer<GstElementFactory> alsa_factory{
+        gst_element_factory_find("alsasrc")};
+    if (alsa_factory != nullptr) {
+      CheckConstructible(
+          subtitler::CapturePipelineDescription("/dev/video0", true));
+    }
   }
 }
 

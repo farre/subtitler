@@ -97,7 +97,7 @@ output.
 ## Running
 
 ```sh
-./build/subtitler [video-device] [connector-id] [--output=software|pisp|window|null]
+./build/subtitler [video-device] [connector-id] [--output=software|pisp|window|null] [--no-audio]
 ```
 
 - `video-device` — V4L2 capture device (default `/dev/video0`). It must
@@ -113,6 +113,8 @@ output.
     zero-copy via `kmssink`. Pi 5 only.
   - `window` — `glimagesink`, for dev machines with a display server.
   - `null` — `fakesink`, for headless testing.
+- `--no-audio` — omit the CV105 ALSA capture branch (`hw:CARD=Video,DEV=0`)
+  from the capture pipeline, for machines without the CV105's audio device.
 
 The KMS modes output directly via KMS/DRM using the vc4 driver (Raspberry
 Pi), so run from a virtual console where no X/Wayland compositor owns the

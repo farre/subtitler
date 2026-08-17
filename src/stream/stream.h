@@ -15,7 +15,12 @@ enum class OutputMode {
   kNull,
 };
 
-std::string CapturePipelineDescription(std::string_view device);
+// The full capture pipeline: video branch plus, when audio is true, the
+// audio branch. The branches are separate functions so machines without
+// the capture device's ALSA card can run video-only.
+std::string CapturePipelineDescription(std::string_view device, bool audio);
+std::string VideoCapturePipelineDescription(std::string_view device);
+std::string AudioCapturePipelineDescription(std::string_view device);
 
 std::string OutputPipelineDescription(OutputMode mode,
                                       std::optional<int> connector_id);
@@ -26,7 +31,8 @@ class Stream {
  public:
   static std::unique_ptr<Stream> Create(const std::string& device,
                                         OutputMode output_mode,
-                                        std::optional<int> connector_id);
+                                        std::optional<int> connector_id,
+                                        bool audio);
   ~Stream();
 
   void Poll();
