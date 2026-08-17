@@ -5,6 +5,9 @@ include(doctest)
 add_executable(
     stream_tests
     description_tests.cpp
+    frame_buffer_tests.cpp
+    integration_tests.cpp
+    output_anchor_tests.cpp
 )
 
 target_link_libraries(

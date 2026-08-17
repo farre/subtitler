@@ -2,7 +2,6 @@
 
 #include <gst/gst.h>
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -18,6 +17,7 @@
 
 #include "stream/deleters.h"
 #include "stream/frame_buffer.h"
+#include "stream/output_anchor.h"
 #include "utils/reset_guard.h"
 
 namespace {
@@ -117,48 +117,6 @@ GstClockTime OutputRunningTime(GstView<GstElement> output_pipeline,
 
   return now - base;
 }
-
-// Maps capture-domain timestamps onto the output pipeline's running time.
-// Sinks render at PTS + the pipeline's configured latency, so the anchor
-// subtracts that latency (pinned to kTargetLatency in StartOutput) to
-// keep the end-to-end delay at kTargetLatency. Re-anchors on timestamp
-// discontinuities and latency reconfiguration.
-class OutputAnchor {
- public:
-  GstClockTime Map(GstClockTime capture_pts, GstClockTime output_now,
-                   GstClockTime pipeline_latency) {
-    if (!GST_CLOCK_TIME_IS_VALID(pipeline_latency)) {
-      pipeline_latency = 0;
-    }
-
-    if (pipeline_latency != latency_) {
-      latency_ = pipeline_latency;
-      capture_.reset();
-    }
-
-    const bool discontinuity = GST_CLOCK_TIME_IS_VALID(previous_capture_pts_) &&
-                               capture_pts < previous_capture_pts_;
-
-    if (!capture_ || discontinuity) {
-      capture_ = capture_pts;
-
-      const auto target = static_cast<std::int64_t>(output_now) +
-                          kTargetLatency - static_cast<std::int64_t>(latency_);
-      output_ = static_cast<GstClockTime>(std::max<std::int64_t>(target, 0));
-    }
-
-    previous_capture_pts_ = capture_pts;
-
-    return *output_ + (capture_pts - *capture_);
-  }
-
- private:
-  std::optional<GstClockTime> capture_;
-  std::optional<GstClockTime> output_;
-  GstClockTime previous_capture_pts_ = GST_CLOCK_TIME_NONE;
-  GstClockTime latency_ = 0;
-};
-
 BufferPtr MakePinkFrame() {
   BufferPtr buffer = BufferPtr{
       gst_buffer_new_allocate(nullptr, kWidth * kHeight * 2, nullptr)};
@@ -649,7 +607,6 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
   }
 
   output_bus_ = BusPtr{gst_element_get_bus(output_pipeline_.get())};
-
   {
     // Pin the pipeline clock to the system clock. Otherwise adding the
     // alsasink makes the pipeline adopt the audio ring-buffer clock,
@@ -707,7 +664,7 @@ void Stream::Implementation::RunOutput(std::stop_token stop) {
     return;
   }
 
-  OutputAnchor anchor;
+  OutputAnchor anchor{kTargetLatency};
 
   while (!stop.stop_requested()) {
     auto frame_result = frames_.Pop(stop);
@@ -767,7 +724,7 @@ void Stream::Implementation::RunAudioOutput(std::stop_token stop) {
     return;
   }
 
-  OutputAnchor anchor;
+  OutputAnchor anchor{kTargetLatency};
 
   while (!stop.stop_requested()) {
     auto chunk_result = audio_.Pop(stop);

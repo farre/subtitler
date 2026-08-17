@@ -1,6 +1,7 @@
 add_library(
     stream
     frame_buffer.cpp
+    output_anchor.cpp
     stream.cpp
 )
 
