@@ -20,6 +20,9 @@ class FrameBuffer {
 
   std::optional<BufferPtr> Pop(std::stop_token stop);
 
+  // Discards any queued frames without closing the buffer.
+  void Flush();
+
   void Close();
 
   std::uint64_t DroppedFrames() const noexcept;

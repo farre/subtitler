@@ -36,12 +36,14 @@ int main(int argc, char** argv) {
   subtitler::OutputMode output_mode = subtitler::OutputMode::kKmsSoftware;
   std::optional<int> connector_id;
   bool audio = true;
+  std::optional<std::string> audio_output_device;
   int positional = 0;
 
   const auto usage = [&] {
     std::println(stderr,
                  "Usage: {} [video-device] [connector-id] "
-                 "[--output=software|pisp|window|null] [--no-audio]",
+                 "[--output=software|pisp|window|null] [--no-audio] "
+                 "[--audio-output-device=<alsa-device>]",
                  argv[0]);
   };
 
@@ -61,6 +63,9 @@ int main(int argc, char** argv) {
       output_mode = subtitler::OutputMode::kNull;
     } else if (arg == "--no-audio") {
       audio = false;
+    } else if (arg.starts_with("--audio-output-device=")) {
+      audio_output_device = std::string{
+          arg.substr(std::string_view{"--audio-output-device="}.size())};
     } else if (arg.starts_with("--")) {
       std::println(stderr, "Unknown option: {}", arg);
       usage();
@@ -86,8 +91,8 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, HandleSignal);
   std::signal(SIGTERM, HandleSignal);
 
-  auto stream =
-      subtitler::Stream::Create(device, output_mode, connector_id, audio);
+  auto stream = subtitler::Stream::Create(device, output_mode, connector_id,
+                                          audio, audio_output_device);
 
   if (!stream) {
     std::println(stderr, "Failed to create stream");

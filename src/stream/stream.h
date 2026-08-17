@@ -22,17 +22,24 @@ std::string CapturePipelineDescription(std::string_view device, bool audio);
 std::string VideoCapturePipelineDescription(std::string_view device);
 std::string AudioCapturePipelineDescription(std::string_view device);
 
-std::string OutputPipelineDescription(OutputMode mode,
-                                      std::optional<int> connector_id);
+// The full output pipeline: video branch plus, when audio_device is set,
+// the audio branch playing through that ALSA device.
+std::string OutputPipelineDescription(
+    OutputMode mode, std::optional<int> connector_id,
+    std::optional<std::string_view> audio_device);
+std::string VideoOutputPipelineDescription(OutputMode mode,
+                                           std::optional<int> connector_id);
+std::string AudioOutputPipelineDescription(std::string_view device);
 
 class Stream {
   struct Implementation;
 
  public:
-  static std::unique_ptr<Stream> Create(const std::string& device,
-                                        OutputMode output_mode,
-                                        std::optional<int> connector_id,
-                                        bool audio);
+  // A null audio_output_device selects the built-in vc4-hdmi default.
+  static std::unique_ptr<Stream> Create(
+      const std::string& device, OutputMode output_mode,
+      std::optional<int> connector_id, bool audio,
+      const std::optional<std::string>& audio_output_device);
   ~Stream();
 
   void Poll();

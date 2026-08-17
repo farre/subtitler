@@ -38,6 +38,11 @@ std::optional<BufferPtr> FrameBuffer::Pop(std::stop_token stop) {
   return frame;
 }
 
+void FrameBuffer::Flush() {
+  std::lock_guard lock{mutex_};
+  frames_.clear();
+}
+
 void FrameBuffer::Close() {
   {
     std::lock_guard lock{mutex_};

@@ -92,7 +92,7 @@ TEST_CASE("output pipeline description") {
   gst_init(nullptr, nullptr);
 
   SUBCASE("contains the key output properties") {
-    const auto description = subtitler::OutputPipelineDescription(
+    const auto description = subtitler::VideoOutputPipelineDescription(
         subtitler::OutputMode::kKmsSoftware, std::nullopt);
 
     CHECK(description.contains("appsrc"));
@@ -107,7 +107,7 @@ TEST_CASE("output pipeline description") {
   }
 
   SUBCASE("pisp pipeline has pispconvert and NV12 DMABuf") {
-    const auto description = subtitler::OutputPipelineDescription(
+    const auto description = subtitler::VideoOutputPipelineDescription(
         subtitler::OutputMode::kKmsPisp, std::nullopt);
 
     CHECK(description.contains("pispconvert"));
@@ -116,37 +116,71 @@ TEST_CASE("output pipeline description") {
   }
 
   SUBCASE("omits connector-id without a connector") {
-    CHECK_FALSE(subtitler::OutputPipelineDescription(
+    CHECK_FALSE(subtitler::VideoOutputPipelineDescription(
                     subtitler::OutputMode::kKmsSoftware, std::nullopt)
                     .contains("connector-id"));
   }
 
   SUBCASE("includes connector-id with a connector") {
-    CHECK(subtitler::OutputPipelineDescription(
+    CHECK(subtitler::VideoOutputPipelineDescription(
               subtitler::OutputMode::kKmsSoftware, 7)
               .contains("connector-id=7"));
   }
 
+  SUBCASE("audio branch contains the key audio properties") {
+    const auto description =
+        subtitler::AudioOutputPipelineDescription("hw:CARD=vc4hdmi0,DEV=0");
+
+    CHECK(description.contains("appsrc"));
+    CHECK(description.contains("name=output_audio_source"));
+    CHECK(description.contains("is-live=true"));
+    CHECK(description.contains("format=time"));
+    CHECK(description.contains("alsasink"));
+    CHECK(description.contains("device=\"hw:CARD=vc4hdmi0,DEV=0\""));
+    CHECK(description.contains("slave-method=skew"));
+  }
+
+  SUBCASE("audio branch is optional") {
+    const auto with_audio = subtitler::OutputPipelineDescription(
+        subtitler::OutputMode::kKmsSoftware, std::nullopt,
+        "hw:CARD=vc4hdmi0,DEV=0");
+    const auto without_audio = subtitler::OutputPipelineDescription(
+        subtitler::OutputMode::kKmsSoftware, std::nullopt, std::nullopt);
+
+    CHECK(with_audio.contains("alsasink"));
+    CHECK(with_audio.contains("kmssink"));
+    CHECK_FALSE(without_audio.contains("alsasink"));
+    CHECK(without_audio.contains("kmssink"));
+  }
+
   SUBCASE("is constructible") {
     CheckConstructible(subtitler::OutputPipelineDescription(
-        subtitler::OutputMode::kKmsSoftware, std::nullopt));
+        subtitler::OutputMode::kKmsSoftware, std::nullopt, std::nullopt));
     CheckConstructible(subtitler::OutputPipelineDescription(
-        subtitler::OutputMode::kKmsSoftware, 7));
+        subtitler::OutputMode::kKmsSoftware, 7, std::nullopt));
     CheckConstructible(subtitler::OutputPipelineDescription(
-        subtitler::OutputMode::kNull, std::nullopt));
+        subtitler::OutputMode::kNull, std::nullopt, std::nullopt));
+
+    subtitler::GstPointer<GstElementFactory> alsa_factory{
+        gst_element_factory_find("alsasink")};
+    if (alsa_factory != nullptr) {
+      CheckConstructible(subtitler::OutputPipelineDescription(
+          subtitler::OutputMode::kNull, std::nullopt,
+          "hw:CARD=vc4hdmi0,DEV=0"));
+    }
 
     subtitler::GstPointer<GstElementFactory> pisp_factory{
         gst_element_factory_find("pispconvert")};
     if (pisp_factory != nullptr) {
       CheckConstructible(subtitler::OutputPipelineDescription(
-          subtitler::OutputMode::kKmsPisp, std::nullopt));
+          subtitler::OutputMode::kKmsPisp, std::nullopt, std::nullopt));
     }
 
     subtitler::GstPointer<GstElementFactory> gl_factory{
         gst_element_factory_find("glimagesink")};
     if (gl_factory != nullptr) {
       CheckConstructible(subtitler::OutputPipelineDescription(
-          subtitler::OutputMode::kWindow, std::nullopt));
+          subtitler::OutputMode::kWindow, std::nullopt, std::nullopt));
     }
   }
 }

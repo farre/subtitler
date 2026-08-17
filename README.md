@@ -97,7 +97,7 @@ output.
 ## Running
 
 ```sh
-./build/subtitler [video-device] [connector-id] [--output=software|pisp|window|null] [--no-audio]
+./build/subtitler [video-device] [connector-id] [--output=software|pisp|window|null] [--no-audio] [--audio-output-device=<alsa-device>]
 ```
 
 - `video-device` — V4L2 capture device (default `/dev/video0`). It must
@@ -113,8 +113,13 @@ output.
     zero-copy via `kmssink`. Pi 5 only.
   - `window` — `glimagesink`, for dev machines with a display server.
   - `null` — `fakesink`, for headless testing.
-- `--no-audio` — omit the CV105 ALSA capture branch (`hw:CARD=Video,DEV=0`)
-  from the capture pipeline, for machines without the CV105's audio device.
+- `--no-audio` — omit the audio branches entirely (CV105 ALSA capture on
+  `hw:CARD=Video,DEV=0` and HDMI audio output), for machines without the
+  CV105's audio device.
+- `--audio-output-device` — ALSA playback device for the audio output branch
+  (default `hw:CARD=vc4hdmi0,DEV=0`, the Pi's vc4-hdmi). Captured HDMI audio
+  is forwarded bit-transparently (S16LE/48kHz/stereo, `slave-method=skew`
+  drift correction).
 
 The KMS modes output directly via KMS/DRM using the vc4 driver (Raspberry
 Pi), so run from a virtual console where no X/Wayland compositor owns the
