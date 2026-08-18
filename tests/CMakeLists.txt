@@ -33,3 +33,26 @@ target_include_directories(
 )
 
 doctest_discover_tests(stream_tests)
+
+add_executable(
+    web_tests
+    preview_frame_buffer_tests.cpp
+)
+
+target_link_libraries(
+    web_tests
+    PRIVATE
+    subtitler::utils
+    doctest::doctest
+    Threads::Threads
+)
+
+target_compile_options(
+    web_tests
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+doctest_discover_tests(web_tests)
