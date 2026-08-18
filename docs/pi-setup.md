@@ -70,6 +70,12 @@ Kernel log:
 Note: `/dev/video19`-`/dev/video35` are the Pi's own pispbe (ISP) and
 rpi-hevc-dec nodes, not the CV105.
 
+Signal-loss behavior (verified): on HDMI input loss the CV105 does not EOS —
+it keeps streaming black frames and silent audio, so the pink no-signal
+screen triggers only on device loss or streaming errors, not on source
+absence. USB replug re-enumerates with the same stable `CARD=Video` name;
+the app resumes after a restart (no automatic recovery yet).
+
 ## Display output (DRM/KMS)
 
 Verified on the vc4 driver with modetest/gst-inspect-1.0 and live
