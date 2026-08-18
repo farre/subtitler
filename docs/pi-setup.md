@@ -90,6 +90,31 @@ gst-launch runs (Pi OS Lite console, no X11/Wayland):
   NV16 in software (videoconvert, #366), and the full passthrough displays
   live video on the Pi (verified on the appliance).
 
+## Audio output (vc4-hdmi)
+
+Verified on the Pi 5 (kernel 6.18.39+rpt-rpi-2712) with an LG TV SSCR2 on
+HDMI-A-2:
+
+- ALSA cards `vc4hdmi0` ↔ HDMI-A-1 and `vc4hdmi1` ↔ HDMI-A-2 (physical port
+  order), addressed as `CARD=vc4hdmiN` — stable across reboots, like the
+  CV105's `CARD=Video`; the numeric index is not.
+- The MAI DAI accepts exactly one sample format, `IEC958_SUBFRAME_LE`
+  (`drivers/gpu/drm/vc4/vc4_hdmi.c`, rpi-6.18.y), so raw `hw:` playback
+  rejects every linear format at hwparams with EINVAL. Playback must go
+  through alsa-lib's plug layer: `plughw:CARD=vc4hdmiN,DEV=0`. The
+  S16_LE → IEC958-subframe conversion is lossless zero-padding — the
+  passthrough stays bit-transparent.
+- Opening a port with no display attached fails `snd_pcm_open` with
+  ENOTSUPP, so the app probes vc4hdmi0..1 at startup and defaults to the
+  first port that opens — the connected one. With two displays attached,
+  select the port explicitly with `--audio-output-device`.
+- Test display ELD (`/proc/asound/card<N>/eld#0`): LPCM 2ch,
+  32/44.1/48/96/192 kHz at 16/20/24-bit.
+- End-to-end verified: CV105 capture → kmssink + alsasink plays source
+  audio on the TV with 0 dropped frames over a 20 s run (#127, #128).
+- Requires the `gstreamer1.0-alsa` package (alsasrc/alsasink) — not pulled
+  in by the plugins-base/good/bad packages.
+
 ## PiSP hardware converter (pispconvert)
 
 The hardware-accelerated conversion/scaling element for the `kms-pisp` output

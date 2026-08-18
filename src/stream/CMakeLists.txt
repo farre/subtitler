@@ -13,6 +13,7 @@ add_library(
 target_link_libraries(
     stream
     PRIVATE
+    PkgConfig::ALSA
     PkgConfig::GSTREAMER
     subtitler::utils
 )

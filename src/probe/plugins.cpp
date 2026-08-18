@@ -10,8 +10,9 @@ std::vector<ElementAvailability> ProbeElements() {
   gst_init(nullptr, nullptr);
 
   static const char* const elements[] = {
-      "v4l2src", "appsink", "appsrc",  "textoverlay",  "pispconvert",
-      "kmssink", "jpegenc", "jpegdec", "videoconvert", "v4l2convert",
+      "v4l2src", "appsink",  "appsrc",       "textoverlay",
+      "alsasrc", "alsasink", "kmssink",      "pispconvert",
+      "jpegenc", "jpegdec",  "videoconvert", "v4l2convert",
   };
 
   std::vector<ElementAvailability> result;

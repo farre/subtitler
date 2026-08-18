@@ -35,7 +35,7 @@ class Stream {
   struct Implementation;
 
  public:
-  // A null audio_output_device selects the built-in vc4-hdmi default.
+  // A null audio_output_device auto-detects the connected vc4-hdmi port.
   static std::unique_ptr<Stream> Create(
       const std::string& device, OutputMode output_mode,
       std::optional<int> connector_id, bool audio,

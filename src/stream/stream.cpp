@@ -1,5 +1,6 @@
 #include "stream/stream.h"
 
+#include <alsa/asoundlib.h>
 #include <gst/gst.h>
 
 #include <atomic>
@@ -35,8 +36,6 @@ constexpr std::size_t kFrameBufferCapacity = 4;
 // CV105 audio: S16_LE 48 kHz stereo only (docs/pi-setup.md). Bit-transparent
 // passthrough: no element may touch the samples.
 constexpr std::string_view kAudioDevice = "hw:CARD=Video,DEV=0";
-// The Pi's vc4-hdmi ALSA playback device; pending verification in #127.
-constexpr std::string_view kAudioOutputDevice = "hw:CARD=vc4hdmi0,DEV=0";
 constexpr int kAudioRate = 48000;
 constexpr int kAudioChannels = 2;
 constexpr std::uint64_t kAudioBytesPerFrame = kAudioChannels * 2;
@@ -48,6 +47,23 @@ constexpr std::uint64_t kSilenceFramesPerChunk = kAudioRate / kFramesPerSecond;
 constexpr std::uint8_t kPinkY = 106;
 constexpr std::uint8_t kPinkU = 202;
 constexpr std::uint8_t kPinkV = 222;
+
+// vc4-hdmi playback accepts only IEC958 subframes, so address it through
+// alsa-lib's plug layer. Opening a port with no display attached fails with
+// ENOTSUPP, so the first port that opens is the connected one.
+std::string DefaultAudioOutputDevice() {
+  for (int port = 0; port < 2; ++port) {
+    const auto probe = std::format("hw:CARD=vc4hdmi{},DEV=0", port);
+    snd_pcm_t* pcm = nullptr;
+    if (snd_pcm_open(&pcm, probe.c_str(), SND_PCM_STREAM_PLAYBACK,
+                     SND_PCM_NONBLOCK) == 0) {
+      snd_pcm_close(pcm);
+      return std::format("plughw:CARD=vc4hdmi{},DEV=0", port);
+    }
+  }
+
+  return "plughw:CARD=vc4hdmi0,DEV=0";
+}
 
 ElementPtr ParsePipeline(std::string_view name,
                          const std::string& description) {
@@ -900,8 +916,10 @@ bool Stream::Implementation::Initialize(
     std::optional<int> connector_id, bool audio,
     const std::optional<std::string>& audio_output_device) {
   audio_enabled_ = audio;
-  audio_output_device_ =
-      audio_output_device.value_or(std::string{kAudioOutputDevice});
+  if (audio_enabled_) {
+    audio_output_device_ =
+        audio_output_device.value_or(DefaultAudioOutputDevice());
+  }
 
   const std::optional<std::string_view> branch_device =
       audio_enabled_

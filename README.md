@@ -14,10 +14,11 @@ On a 64-bit trixie-based Raspberry Pi OS, everything above — plus the test
 framework and runtime GStreamer plugins — installs with:
 
 ```sh
-sudo apt install clang cmake doctest-dev gstreamer1.0-plugins-bad \
-    gstreamer1.0-plugins-base gstreamer1.0-plugins-good libasound2-dev \
-    libdrm-dev libdrm-tests libglib2.0-dev libgstreamer-plugins-base1.0-dev \
-    libgstreamer1.0-dev libsoup-3.0-dev ninja-build pkg-config
+sudo apt install clang cmake doctest-dev gstreamer1.0-alsa \
+    gstreamer1.0-plugins-bad gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good libasound2-dev libdrm-dev libdrm-tests \
+    libglib2.0-dev libgstreamer-plugins-base1.0-dev libgstreamer1.0-dev \
+    libsoup-3.0-dev ninja-build pkg-config
 ```
 
 (Bookworm is too old: it ships cmake 3.25 and clang 14, while the project
