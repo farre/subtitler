@@ -335,6 +335,9 @@ struct Stream::Implementation {
     kScreensaver,
   };
 
+  Implementation(std::size_t frame_capacity, std::size_t audio_capacity)
+      : frames_(frame_capacity), audio_(audio_capacity) {}
+
   bool Initialize(const std::string& device, OutputMode output_mode,
                   std::optional<int> connector_id, bool audio,
                   const std::optional<std::string>& audio_output_device,
@@ -369,8 +372,8 @@ struct Stream::Implementation {
   // Guards the pipelines, buses, threads, and capture_state_ below.
   std::mutex mutex_;
 
-  FrameBuffer frames_{kFrameBufferCapacity};
-  FrameBuffer audio_{kAudioBufferCapacity};
+  FrameBuffer frames_;
+  FrameBuffer audio_;
 
   std::atomic_bool capture_active_ = false;
   std::atomic_bool capture_failed_ = false;
@@ -928,8 +931,9 @@ bool Stream::Implementation::Initialize(
   audio_enabled_ = audio;
   audio_offset_ = audio_offset_ms * GST_MSECOND;
   if (audio_enabled_) {
+    // Not value_or: the default must not be probed when a device is given.
     audio_output_device_ =
-        audio_output_device.value_or(DefaultAudioOutputDevice());
+        audio_output_device ? *audio_output_device : DefaultAudioOutputDevice();
   }
 
   const std::optional<std::string_view> branch_device =
@@ -959,7 +963,19 @@ std::unique_ptr<Stream> Stream::Create(
     gst_init(nullptr, nullptr);
   }
 
-  auto implementation = std::make_unique<Implementation>();
+  // The counter-stream delay from --audio-offset needs the extra frames
+  // (or ~10 ms audio chunks) in flight; make room for them.
+  const auto extra_video_frames =
+      static_cast<std::size_t>((audio_offset_ms < 0 ? -audio_offset_ms : 0) *
+                                   kFramesPerSecond +
+                               999) /
+      1000;
+  const auto extra_audio_chunks =
+      static_cast<std::size_t>(audio_offset_ms > 0 ? audio_offset_ms : 0) / 10;
+
+  auto implementation = std::make_unique<Implementation>(
+      kFrameBufferCapacity + extra_video_frames,
+      kAudioBufferCapacity + extra_audio_chunks);
   if (!implementation->Initialize(device, output_mode, connector_id, audio,
                                   audio_output_device, audio_offset_ms)) {
     return nullptr;
