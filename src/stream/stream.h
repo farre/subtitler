@@ -36,10 +36,13 @@ class Stream {
 
  public:
   // A null audio_output_device auto-detects the connected vc4-hdmi port.
+  // audio_offset_ms shifts audio timestamps at output: positive delays
+  // audio, negative advances it.
   static std::unique_ptr<Stream> Create(
       const std::string& device, OutputMode output_mode,
       std::optional<int> connector_id, bool audio,
-      const std::optional<std::string>& audio_output_device);
+      const std::optional<std::string>& audio_output_device,
+      std::int64_t audio_offset_ms = 0);
   ~Stream();
 
   void Poll();

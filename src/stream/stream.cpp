@@ -3,6 +3,7 @@
 #include <alsa/asoundlib.h>
 #include <gst/gst.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -337,7 +338,8 @@ struct Stream::Implementation {
 
   bool Initialize(const std::string& device, OutputMode output_mode,
                   std::optional<int> connector_id, bool audio,
-                  const std::optional<std::string>& audio_output_device);
+                  const std::optional<std::string>& audio_output_device,
+                  std::int64_t audio_offset_ms);
 
   ~Implementation() { Stop(); }
 
@@ -377,6 +379,8 @@ struct Stream::Implementation {
 
   bool audio_enabled_ = false;
   std::string audio_output_device_;
+  // Signed nanoseconds added to audio timestamps at output re-anchoring.
+  std::int64_t audio_offset_ = 0;
 
   CaptureState capture_state_ = CaptureState::kStopped;
 
@@ -760,9 +764,12 @@ void Stream::Implementation::RunAudioOutput(std::stop_token stop) {
       break;
     }
 
-    GST_BUFFER_PTS(chunk.get()) =
+    const auto mapped = static_cast<std::int64_t>(
         anchor.Map(capture_pts, OutputRunningTime(pipeline, clock.get()),
-                   gst_pipeline_get_latency(GST_PIPELINE(pipeline)));
+                   gst_pipeline_get_latency(GST_PIPELINE(pipeline))));
+
+    GST_BUFFER_PTS(chunk.get()) = static_cast<GstClockTime>(
+        std::max(mapped + audio_offset_, std::int64_t{0}));
 
     GST_BUFFER_DTS(chunk.get()) = GST_CLOCK_TIME_NONE;
 
@@ -914,8 +921,10 @@ void Stream::Implementation::Poll() {
 bool Stream::Implementation::Initialize(
     const std::string& device, OutputMode output_mode,
     std::optional<int> connector_id, bool audio,
-    const std::optional<std::string>& audio_output_device) {
+    const std::optional<std::string>& audio_output_device,
+    std::int64_t audio_offset_ms) {
   audio_enabled_ = audio;
+  audio_offset_ = audio_offset_ms * GST_MSECOND;
   if (audio_enabled_) {
     audio_output_device_ =
         audio_output_device.value_or(DefaultAudioOutputDevice());
@@ -940,7 +949,8 @@ Stream::~Stream() = default;
 std::unique_ptr<Stream> Stream::Create(
     const std::string& device, OutputMode output_mode,
     std::optional<int> connector_id, bool audio,
-    const std::optional<std::string>& audio_output_device) {
+    const std::optional<std::string>& audio_output_device,
+    std::int64_t audio_offset_ms) {
   static bool gst_initialized = false;
   if (!gst_initialized) {
     gst_initialized = true;
@@ -949,7 +959,7 @@ std::unique_ptr<Stream> Stream::Create(
 
   auto implementation = std::make_unique<Implementation>();
   if (!implementation->Initialize(device, output_mode, connector_id, audio,
-                                  audio_output_device)) {
+                                  audio_output_device, audio_offset_ms)) {
     return nullptr;
   }
 

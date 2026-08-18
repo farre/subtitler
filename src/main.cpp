@@ -37,13 +37,15 @@ int main(int argc, char** argv) {
   std::optional<int> connector_id;
   bool audio = true;
   std::optional<std::string> audio_output_device;
+  int audio_offset_ms = 0;
   int positional = 0;
 
   const auto usage = [&] {
     std::println(stderr,
                  "Usage: {} [video-device] [connector-id] "
                  "[--output=software|pisp|window|null] [--no-audio] "
-                 "[--audio-output-device=<alsa-device>]",
+                 "[--audio-output-device=<alsa-device>] "
+                 "[--audio-offset=<ms>]",
                  argv[0]);
   };
 
@@ -66,6 +68,14 @@ int main(int argc, char** argv) {
     } else if (arg.starts_with("--audio-output-device=")) {
       audio_output_device = std::string{
           arg.substr(std::string_view{"--audio-output-device="}.size())};
+    } else if (arg.starts_with("--audio-offset=")) {
+      const auto offset =
+          ParseInteger(arg.substr(std::string_view{"--audio-offset="}.size()));
+      if (!offset) {
+        std::println(stderr, "Invalid audio offset: {}", arg);
+        return EXIT_FAILURE;
+      }
+      audio_offset_ms = *offset;
     } else if (arg.starts_with("--")) {
       std::println(stderr, "Unknown option: {}", arg);
       usage();
@@ -91,8 +101,9 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, HandleSignal);
   std::signal(SIGTERM, HandleSignal);
 
-  auto stream = subtitler::Stream::Create(device, output_mode, connector_id,
-                                          audio, audio_output_device);
+  auto stream =
+      subtitler::Stream::Create(device, output_mode, connector_id, audio,
+                                audio_output_device, audio_offset_ms);
 
   if (!stream) {
     std::println(stderr, "Failed to create stream");
