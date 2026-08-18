@@ -3,7 +3,6 @@
 #include <alsa/asoundlib.h>
 #include <gst/gst.h>
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -684,7 +683,11 @@ void Stream::Implementation::RunOutput(std::stop_token stop) {
     return;
   }
 
-  OutputAnchor anchor{kTargetLatency};
+  // Advancing audio can't move a buffer earlier than its arrival; it is
+  // realized by delaying video, keeping every render deadline feasible.
+  const auto video_delay =
+      audio_offset_ < 0 ? static_cast<GstClockTime>(-audio_offset_) : 0;
+  OutputAnchor anchor{kTargetLatency + video_delay};
 
   while (!stop.stop_requested()) {
     auto frame_result = frames_.Pop(stop);
@@ -744,7 +747,9 @@ void Stream::Implementation::RunAudioOutput(std::stop_token stop) {
     return;
   }
 
-  OutputAnchor anchor{kTargetLatency};
+  const auto audio_delay =
+      audio_offset_ > 0 ? static_cast<GstClockTime>(audio_offset_) : 0;
+  OutputAnchor anchor{kTargetLatency + audio_delay};
 
   while (!stop.stop_requested()) {
     auto chunk_result = audio_.Pop(stop);
@@ -764,12 +769,9 @@ void Stream::Implementation::RunAudioOutput(std::stop_token stop) {
       break;
     }
 
-    const auto mapped = static_cast<std::int64_t>(
+    GST_BUFFER_PTS(chunk.get()) =
         anchor.Map(capture_pts, OutputRunningTime(pipeline, clock.get()),
-                   gst_pipeline_get_latency(GST_PIPELINE(pipeline))));
-
-    GST_BUFFER_PTS(chunk.get()) = static_cast<GstClockTime>(
-        std::max(mapped + audio_offset_, std::int64_t{0}));
+                   gst_pipeline_get_latency(GST_PIPELINE(pipeline)));
 
     GST_BUFFER_DTS(chunk.get()) = GST_CLOCK_TIME_NONE;
 
