@@ -19,6 +19,7 @@
 #include "stream/deleters.h"
 #include "stream/frame_buffer.h"
 #include "stream/output_anchor.h"
+#include "stream/preview_gate.h"
 #include "utils/reset_guard.h"
 
 namespace {
@@ -47,6 +48,15 @@ constexpr std::uint64_t kSilenceFramesPerChunk = kAudioRate / kFramesPerSecond;
 constexpr std::uint8_t kPinkY = 106;
 constexpr std::uint8_t kPinkU = 202;
 constexpr std::uint8_t kPinkV = 222;
+
+// MJPEG web preview (#376): one shared encoder branch, teed off the appsrc
+// output — the point where the subtitle overlay will sit — so the preview
+// shows composited video in a format jpegenc accepts (NV16/SAND DMABuf are
+// unreachable for it).
+constexpr int kPreviewWidth = 640;
+constexpr int kPreviewHeight = 360;
+constexpr int kPreviewFramesPerSecond = 10;
+constexpr int kPreviewJpegQuality = 75;
 
 // vc4-hdmi playback accepts only IEC958 subframes, so address it through
 // alsa-lib's plug layer. Opening a port with no display attached fails with
@@ -240,12 +250,47 @@ std::string AudioCapturePipelineDescription(std::string_view device) {
 
 std::string OutputPipelineDescription(
     OutputMode mode, std::optional<int> connector_id,
-    std::optional<std::string_view> audio_device) {
-  auto description = VideoOutputPipelineDescription(mode, connector_id);
+    std::optional<std::string_view> audio_device, bool preview) {
+  auto description = VideoOutputPipelineDescription(mode, connector_id, preview);
   if (audio_device) {
     description += " " + AudioOutputPipelineDescription(*audio_device);
   }
   return description;
+}
+
+// The preview side of the output tee. The leaky queue is the only coupling
+// to the HDMI branch and never blocks it; the gate installed on the queue
+// (InstallPreviewGate) drops all branch buffers until a web client
+// activates the preview (#384). async=false is load-bearing: with the gate
+// closed the appsink starves, and a starving sink's preroll would
+// otherwise block the whole pipeline (HDMI included) from reaching
+// PLAYING.
+std::string PreviewOutputPipelineDescription() {
+  return std::format(
+      "output_tee. "
+      "! queue "
+      "name=preview_queue "
+      "max-size-buffers=1 "
+      "max-size-bytes=0 "
+      "max-size-time=0 "
+      "leaky=downstream "
+      "! videoscale "
+      "! video/x-raw,"
+      "width={},"
+      "height={} "
+      "! videorate "
+      "! video/x-raw,"
+      "framerate={}/1 "
+      "! jpegenc "
+      "quality={} "
+      "! appsink "
+      "name=preview_sink "
+      "sync=false "
+      "async=false "
+      "max-buffers=1 "
+      "drop=true",
+      kPreviewWidth, kPreviewHeight, kPreviewFramesPerSecond,
+      kPreviewJpegQuality);
 }
 
 std::string AudioOutputPipelineDescription(std::string_view device) {
@@ -263,7 +308,8 @@ std::string AudioOutputPipelineDescription(std::string_view device) {
 }
 
 std::string VideoOutputPipelineDescription(OutputMode mode,
-                                           std::optional<int> connector_id) {
+                                           std::optional<int> connector_id,
+                                           bool preview) {
   const auto connector = connector_id
                              ? std::format(" connector-id={}", *connector_id)
                              : std::string{};
@@ -276,10 +322,11 @@ std::string VideoOutputPipelineDescription(OutputMode mode,
       "block=true "
       "max-buffers=2 ");
 
+  std::string tail;
+
   switch (mode) {
     case OutputMode::kKmsPisp:
-      return std::format(
-          "{}"
+      tail = std::format(
           "! pispconvert "
           "name=converter "
           "output-buffer-count=4 "
@@ -294,11 +341,11 @@ std::string VideoOutputPipelineDescription(OutputMode mode,
           "force-modesetting=true "
           "sync=true"
           "{}",
-          base, kWidth, kHeight, kFramesPerSecond, connector);
+          kWidth, kHeight, kFramesPerSecond, connector);
+      break;
 
     case OutputMode::kKmsSoftware:
-      return std::format(
-          "{}"
+      tail = std::format(
           "! videoconvert "
           "n-threads=4 "
           "! video/x-raw,"
@@ -311,21 +358,34 @@ std::string VideoOutputPipelineDescription(OutputMode mode,
           "force-modesetting=true "
           "sync=true"
           "{}",
-          base, kWidth, kHeight, kFramesPerSecond, connector);
+          kWidth, kHeight, kFramesPerSecond, connector);
+      break;
 
     case OutputMode::kWindow:
-      return std::format(
-          "{}"
+      tail = std::format(
           "! videoconvert "
           "n-threads=4 "
-          "! glimagesink sync=true",
-          base);
+          "! glimagesink sync=true");
+      break;
 
     case OutputMode::kNull:
-      return std::format("{}! fakesink sync=true", base);
+      tail = "! fakesink sync=true";
+      break;
   }
 
-  std::unreachable();
+  if (!preview) {
+    return base + tail;
+  }
+
+  // The tee sits right after the appsrc, where the subtitle overlay will
+  // be inserted, so the preview taps composited video (#379). Every tee
+  // branch needs its own queue: without one the clock-synced sink blocks
+  // the tee's streaming thread in preroll and the pipeline deadlocks.
+  // Sized 1 and not leaky so HDMI frames are never dropped here.
+  return std::format(
+      "{}! tee name=output_tee output_tee. "
+      "! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 {} {}",
+      base, tail, PreviewOutputPipelineDescription());
 }
 
 struct Stream::Implementation {
@@ -341,7 +401,7 @@ struct Stream::Implementation {
   bool Initialize(const std::string& device, OutputMode output_mode,
                   std::optional<int> connector_id, bool audio,
                   const std::optional<std::string>& audio_output_device,
-                  std::int64_t audio_offset_ms);
+                  std::int64_t audio_offset_ms, bool preview);
 
   ~Implementation() { Stop(); }
 
@@ -357,6 +417,11 @@ struct Stream::Implementation {
   void RunOutput(std::stop_token stop);
   void RunAudioOutput(std::stop_token stop);
   void RunScreensaver(std::stop_token stop);
+  void RunPreview(std::stop_token stop);
+
+  void SetPreviewActive(bool active);
+
+  PreviewFrameBuffer& PreviewFrames() { return preview_frames_; }
 
   // Tears down one pipeline and its thread. The lock argument proves the
   // caller holds mutex_.
@@ -384,6 +449,12 @@ struct Stream::Implementation {
   // Signed nanoseconds added to audio timestamps at output re-anchoring.
   std::int64_t audio_offset_ = 0;
 
+  // Set at Initialize: whether the output pipeline has a preview branch.
+  bool preview_enabled_ = false;
+  // Read by the preview gate's pad probe on the streaming thread.
+  std::atomic_bool preview_active_ = false;
+  PreviewFrameBuffer preview_frames_;
+
   CaptureState capture_state_ = CaptureState::kStopped;
 
   ElementPtr capture_pipeline_;
@@ -394,6 +465,8 @@ struct Stream::Implementation {
   ElementPtr output_pipeline_;
   ElementPtr output_source_;
   ElementPtr output_audio_source_;
+  ElementPtr preview_sink_;
+  ElementPtr preview_queue_;
   BusPtr output_bus_;
 
   // Runs either the capture or the screensaver loop, never both.
@@ -405,6 +478,9 @@ struct Stream::Implementation {
   // Feeds the audio branch of the output pipeline; joinable only when
   // audio is enabled.
   std::jthread audio_output_thread_;
+  // Drains the preview appsink into preview_frames_; joinable only when
+  // the preview branch is enabled.
+  std::jthread preview_thread_;
 };
 
 bool Stream::Implementation::StartCapture(const std::string& device) {
@@ -571,7 +647,7 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
   StopOutputPipeline(lock);
 
   ResetGuard reset{output_pipeline_, output_source_, output_audio_source_,
-                   output_bus_};
+                   preview_sink_, preview_queue_, output_bus_};
 
   const std::optional<std::string_view> audio_device =
       audio_enabled_
@@ -579,8 +655,8 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
           : std::nullopt;
 
   output_pipeline_ = ParsePipeline(
-      "output",
-      OutputPipelineDescription(output_mode, connector_id, audio_device));
+      "output", OutputPipelineDescription(output_mode, connector_id,
+                                          audio_device, preview_enabled_));
 
   if (!output_pipeline_) {
     std::println(stderr, "Couldn't create output pipeline");
@@ -628,6 +704,22 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
     gst_app_src_set_caps(source, caps.get());
   }
 
+  if (preview_enabled_) {
+    preview_sink_ = ElementPtr{gst_bin_get_by_name(
+        GST_BIN(output_pipeline_.get()), "preview_sink")};
+    preview_queue_ = ElementPtr{gst_bin_get_by_name(
+        GST_BIN(output_pipeline_.get()), "preview_queue")};
+
+    if (!preview_sink_ || !preview_queue_) {
+      std::println(stderr, "Couldn't find preview branch elements");
+      return false;
+    }
+
+    // The gate drops all preview branch buffers while there are no web
+    // clients, so no JPEG encoding happens without watchers (#384).
+    InstallPreviewGate(preview_queue_.get(), preview_active_);
+  }
+
   output_bus_ = BusPtr{gst_element_get_bus(output_pipeline_.get())};
   {
     // Pin the pipeline clock to the system clock. Otherwise adding the
@@ -665,6 +757,11 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
   if (audio_enabled_) {
     audio_output_thread_ =
         std::jthread{[this](std::stop_token stop) { RunAudioOutput(stop); }};
+  }
+
+  if (preview_enabled_) {
+    preview_thread_ =
+        std::jthread{[this](std::stop_token stop) { RunPreview(stop); }};
   }
 
   reset.release();
@@ -796,6 +893,48 @@ void Stream::Implementation::RunAudioOutput(std::stop_token stop) {
   gst_app_src_end_of_stream(source);
 }
 
+void Stream::Implementation::RunPreview(std::stop_token stop) {
+  const auto sink = GstView<GstAppSink>{GST_APP_SINK(preview_sink_.get())};
+
+  while (!stop.stop_requested()) {
+    SamplePtr sample =
+        SamplePtr{gst_app_sink_try_pull_sample(sink, 100 * GST_MSECOND)};
+
+    if (sample == nullptr) {
+      if (gst_app_sink_is_eos(sink)) {
+        break;
+      }
+
+      continue;
+    }
+
+    // gst_sample_get_buffer is transfer-none.
+    const GstView<GstBuffer> encoded = gst_sample_get_buffer(sample.get());
+
+    GstMapInfo info;
+
+    if (encoded == nullptr ||
+        !gst_buffer_map(encoded, &info, GST_MAP_READ)) {
+      std::println(stderr, "Could not read encoded preview frame");
+      continue;
+    }
+
+    const auto* begin = reinterpret_cast<const std::byte*>(info.data);
+    auto data = std::make_shared<const std::vector<std::byte>>(
+        begin, begin + info.size);
+
+    gst_buffer_unmap(encoded, &info);
+
+    // Never write to HTTP sockets from here: the web module waits on the
+    // frame buffer and does its own I/O.
+    preview_frames_.Store(GST_BUFFER_PTS(encoded), std::move(data));
+  }
+}
+
+void Stream::Implementation::SetPreviewActive(bool active) {
+  preview_active_.store(active);
+}
+
 void Stream::Implementation::RunScreensaver(std::stop_token stop) {
   auto next_frame = std::chrono::steady_clock::now();
   std::uint64_t frame_number = 0;
@@ -876,8 +1015,9 @@ void Stream::Implementation::StopOutputPipeline(
   if (output_thread_.joinable()) {
     output_thread_.request_stop();
     audio_output_thread_.request_stop();
+    preview_thread_.request_stop();
 
-    // Changing state unblocks pending appsrc operations.
+    // Changing state unblocks pending appsrc and appsink operations.
     if (output_pipeline_ != nullptr) {
       gst_element_set_state(output_pipeline_.get(), GST_STATE_NULL);
     }
@@ -888,8 +1028,12 @@ void Stream::Implementation::StopOutputPipeline(
       audio_output_thread_.join();
     }
 
+    if (preview_thread_.joinable()) {
+      preview_thread_.join();
+    }
+
     ResetGuard reset{output_pipeline_, output_source_, output_audio_source_,
-                     output_bus_};
+                     preview_sink_, preview_queue_, output_bus_};
   }
 }
 
@@ -927,9 +1071,10 @@ bool Stream::Implementation::Initialize(
     const std::string& device, OutputMode output_mode,
     std::optional<int> connector_id, bool audio,
     const std::optional<std::string>& audio_output_device,
-    std::int64_t audio_offset_ms) {
+    std::int64_t audio_offset_ms, bool preview) {
   audio_enabled_ = audio;
   audio_offset_ = audio_offset_ms * GST_MSECOND;
+  preview_enabled_ = preview;
   if (audio_enabled_) {
     // Not value_or: the default must not be probed when a device is given.
     audio_output_device_ =
@@ -944,7 +1089,8 @@ bool Stream::Implementation::Initialize(
   std::println(
       "Capture pipeline:\n{}\n\nOutput pipeline:\n{}\n",
       CapturePipelineDescription(device, audio_enabled_),
-      OutputPipelineDescription(output_mode, connector_id, branch_device));
+      OutputPipelineDescription(output_mode, connector_id, branch_device,
+                                preview_enabled_));
 
   return StartOutput(output_mode, connector_id) && StartCapture(device);
 }
@@ -956,7 +1102,7 @@ std::unique_ptr<Stream> Stream::Create(
     const std::string& device, OutputMode output_mode,
     std::optional<int> connector_id, bool audio,
     const std::optional<std::string>& audio_output_device,
-    std::int64_t audio_offset_ms) {
+    std::int64_t audio_offset_ms, bool preview) {
   static bool gst_initialized = false;
   if (!gst_initialized) {
     gst_initialized = true;
@@ -977,7 +1123,8 @@ std::unique_ptr<Stream> Stream::Create(
       kFrameBufferCapacity + extra_video_frames,
       kAudioBufferCapacity + extra_audio_chunks);
   if (!implementation->Initialize(device, output_mode, connector_id, audio,
-                                  audio_output_device, audio_offset_ms)) {
+                                  audio_output_device, audio_offset_ms,
+                                  preview)) {
     return nullptr;
   }
 
@@ -989,6 +1136,14 @@ std::unique_ptr<Stream> Stream::Create(
 void Stream::Poll() { implementation_->Poll(); }
 
 void Stream::Stop() { implementation_->Stop(); }
+
+PreviewFrameBuffer& Stream::PreviewFrames() {
+  return implementation_->PreviewFrames();
+}
+
+void Stream::SetPreviewActive(bool active) {
+  implementation_->SetPreviewActive(active);
+}
 
 bool Stream::RestartCapture(const std::string& device) {
   return implementation_->StartCapture(device);

@@ -8,6 +8,7 @@ add_executable(
     frame_buffer_tests.cpp
     integration_tests.cpp
     output_anchor_tests.cpp
+    output_pipeline_tests.cpp
 )
 
 target_link_libraries(

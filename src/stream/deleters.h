@@ -15,6 +15,8 @@ inline void gst_unref(GstElement* element) noexcept {
   gst_object_unref(element);
 }
 
+inline void gst_unref(GstPad* pad) noexcept { gst_object_unref(pad); }
+
 inline void gst_unref(GstElementFactory* factory) noexcept {
   gst_object_unref(factory);
 }
@@ -30,6 +32,10 @@ inline void gst_unref(GstMessage* message) noexcept {
 }
 
 inline void gst_unref(GstSample* sample) noexcept { gst_sample_unref(sample); }
+
+inline void gst_unref(GstIterator* iterator) noexcept {
+  gst_iterator_free(iterator);
+}
 
 inline void gst_unref(GError* error) noexcept { g_error_free(error); }
 
@@ -63,7 +69,9 @@ using BusPtr = GstPointer<GstBus>;
 using CapsPtr = GstPointer<GstCaps>;
 using ClockPtr = GstPointer<GstClock>;
 using MessagePtr = GstPointer<GstMessage>;
+using PadPtr = GstPointer<GstPad>;
 using SamplePtr = GstPointer<GstSample>;
+using IteratorPtr = GstPointer<GstIterator>;
 using ErrorPtr = GstPointer<GError>;
 using CharPtr = GstPointer<gchar>;
 

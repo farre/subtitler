@@ -153,6 +153,42 @@ TEST_CASE("output pipeline description") {
     CHECK(without_audio.contains("kmssink"));
   }
 
+  SUBCASE("preview branch is optional") {
+    const auto plain = subtitler::VideoOutputPipelineDescription(
+        subtitler::OutputMode::kKmsSoftware, std::nullopt);
+    const auto preview = subtitler::VideoOutputPipelineDescription(
+        subtitler::OutputMode::kKmsSoftware, std::nullopt, true);
+
+    CHECK_FALSE(plain.contains("output_tee"));
+    CHECK_FALSE(plain.contains("preview_sink"));
+    CHECK(preview.contains("output_tee"));
+    CHECK(preview.contains("preview_sink"));
+  }
+
+  SUBCASE("preview branch contains the key preview properties") {
+    const auto description = subtitler::VideoOutputPipelineDescription(
+        subtitler::OutputMode::kKmsSoftware, std::nullopt, true);
+
+    CHECK(description.contains("tee name=output_tee"));
+    CHECK(description.contains("leaky=downstream"));
+    CHECK(description.contains("max-size-buffers=1"));
+    // The HDMI branch's queue must not be leaky: frame drops would be
+    // silent. It directly precedes the conversion tail.
+    CHECK(description.contains("max-size-time=0 ! videoconvert"));
+    CHECK(description.contains("name=preview_queue"));
+    CHECK(description.contains("videoscale"));
+    CHECK(description.contains("width=640"));
+    CHECK(description.contains("height=360"));
+    CHECK(description.contains("videorate"));
+    CHECK(description.contains("framerate=10/1"));
+    CHECK(description.contains("jpegenc"));
+    CHECK(description.contains("quality=75"));
+    CHECK(description.contains("appsink"));
+    CHECK(description.contains("name=preview_sink"));
+    // Load-bearing: a starving sink's preroll would block the pipeline.
+    CHECK(description.contains("async=false"));
+  }
+
   SUBCASE("is constructible") {
     CheckConstructible(subtitler::OutputPipelineDescription(
         subtitler::OutputMode::kKmsSoftware, std::nullopt, std::nullopt));
@@ -181,6 +217,13 @@ TEST_CASE("output pipeline description") {
     if (gl_factory != nullptr) {
       CheckConstructible(subtitler::OutputPipelineDescription(
           subtitler::OutputMode::kWindow, std::nullopt, std::nullopt));
+    }
+
+    subtitler::GstPointer<GstElementFactory> jpeg_factory{
+        gst_element_factory_find("jpegenc")};
+    if (jpeg_factory != nullptr) {
+      CheckConstructible(subtitler::OutputPipelineDescription(
+          subtitler::OutputMode::kNull, std::nullopt, std::nullopt, true));
     }
   }
 }

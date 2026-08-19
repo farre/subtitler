@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 
+#include "utils/preview_frame.h"
+
 namespace subtitler {
 
 enum class OutputMode {
@@ -23,12 +25,15 @@ std::string VideoCapturePipelineDescription(std::string_view device);
 std::string AudioCapturePipelineDescription(std::string_view device);
 
 // The full output pipeline: video branch plus, when audio_device is set,
-// the audio branch playing through that ALSA device.
+// the audio branch playing through that ALSA device. When preview is true
+// the video branch tees off a gated JPEG preview branch for the web
+// interface.
 std::string OutputPipelineDescription(
     OutputMode mode, std::optional<int> connector_id,
-    std::optional<std::string_view> audio_device);
+    std::optional<std::string_view> audio_device, bool preview = false);
 std::string VideoOutputPipelineDescription(OutputMode mode,
-                                           std::optional<int> connector_id);
+                                           std::optional<int> connector_id,
+                                           bool preview = false);
 std::string AudioOutputPipelineDescription(std::string_view device);
 
 class Stream {
@@ -43,7 +48,7 @@ class Stream {
       const std::string& device, OutputMode output_mode,
       std::optional<int> connector_id, bool audio,
       const std::optional<std::string>& audio_output_device,
-      std::int64_t audio_offset_ms = 0);
+      std::int64_t audio_offset_ms = 0, bool preview = false);
   ~Stream();
 
   void Poll();
@@ -51,6 +56,14 @@ class Stream {
 
   bool RestartCapture(const std::string& device);
   bool RestartOutput(OutputMode output_mode, std::optional<int> connector_id);
+
+  // The latest encoded preview frame, fed while the preview branch is
+  // active. The web server reads from this buffer.
+  PreviewFrameBuffer& PreviewFrames();
+
+  // Opens (true) or closes (false) the preview branch's gate. Closed is
+  // the default, so no JPEG encoding happens without web clients.
+  void SetPreviewActive(bool active);
 
   bool Failed() const;
   std::uint64_t DroppedFrames() const;
