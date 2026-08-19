@@ -111,9 +111,9 @@ TEST_CASE("output pipeline preview branch") {
   REQUIRE(main_sink != nullptr);
 
   // The production gate (#379): drops preview branch buffers while
-  // inactive. Flipping the atomic is what Stream::SetPreviewActive does.
-  std::atomic_bool gate_active = false;
-  subtitler::InstallPreviewGate(preview_queue.get(), gate_active);
+  // inactive and keeps every 6th frame while active.
+  subtitler::PreviewGate gate{6};
+  subtitler::InstallPreviewGate(preview_queue.get(), gate);
 
   const auto app_src = GstView<GstAppSrc>{GST_APP_SRC(source.get())};
   const auto app_sink = GstView<GstAppSink>{GST_APP_SINK(preview_sink.get())};
@@ -175,12 +175,19 @@ TEST_CASE("output pipeline preview branch") {
   CHECK(preview_frames.load() == 0);
 
   const auto main_before = main_frames.load();
-  gate_active.store(true);
+  gate.active.store(true);
+
+  // A gap with no preview input, like a closed-gate period. The gate
+  // decimates rather than rate-converts, so there is no cadence to go
+  // stale: exactly every 6th of the 60 pushed frames may pass.
+  std::this_thread::sleep_for(std::chrono::seconds{2});
 
   push(60);
 
   CHECK(main_frames.load() > main_before + 50);
   CHECK(preview_frames.load() > 0);
+  INFO("preview produced ", preview_frames.load(), " frames for ~1 s");
+  CHECK(preview_frames.load() <= 15);
 
   gst_element_set_state(pipeline.get(), GST_STATE_NULL);
 }

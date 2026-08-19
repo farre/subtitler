@@ -354,10 +354,11 @@ std::string OutputPipelineDescription(
 // The preview side of the output tee. The leaky queue is the only coupling
 // to the HDMI branch and never blocks it; the gate installed on the queue
 // (InstallPreviewGate) drops all branch buffers until a web client
-// activates the preview (#384). async=false is load-bearing: with the gate
-// closed the appsink starves, and a starving sink's preroll would
-// otherwise block the whole pipeline (HDMI included) from reaching
-// PLAYING.
+// activates the preview and decimates 60 fps to the preview rate while
+// active, so the whole branch idles when unwatched (#384). async=false is
+// load-bearing: with the gate closed the appsink starves, and a starving
+// sink's preroll would otherwise block the whole pipeline (HDMI included)
+// from reaching PLAYING.
 std::string PreviewOutputPipelineDescription() {
   return std::format(
       "output_tee. "
@@ -371,9 +372,6 @@ std::string PreviewOutputPipelineDescription() {
       "! video/x-raw,"
       "width={},"
       "height={} "
-      "! videorate "
-      "! video/x-raw,"
-      "framerate={}/1 "
       "! jpegenc "
       "quality={} "
       "! appsink "
@@ -382,8 +380,7 @@ std::string PreviewOutputPipelineDescription() {
       "async=false "
       "max-buffers=1 "
       "drop=true",
-      kPreviewWidth, kPreviewHeight, kPreviewFramesPerSecond,
-      kPreviewJpegQuality);
+      kPreviewWidth, kPreviewHeight, kPreviewJpegQuality);
 }
 
 std::string AudioOutputPipelineDescription(std::string_view device) {
@@ -544,8 +541,8 @@ struct Stream::Implementation {
 
   // Set at Initialize: whether the output pipeline has a preview branch.
   bool preview_enabled_ = false;
-  // Read by the preview gate's pad probe on the streaming thread.
-  std::atomic_bool preview_active_ = false;
+  // Shared with the preview gate's pad probe on the streaming thread.
+  PreviewGate preview_gate_{kFramesPerSecond / kPreviewFramesPerSecond};
   PreviewFrameBuffer preview_frames_;
 
   CaptureState capture_state_ = CaptureState::kStopped;
@@ -810,7 +807,7 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
 
     // The gate drops all preview branch buffers while there are no web
     // clients, so no JPEG encoding happens without watchers (#384).
-    InstallPreviewGate(preview_queue_.get(), preview_active_);
+    InstallPreviewGate(preview_queue_.get(), preview_gate_);
   }
 
   output_bus_ = BusPtr{gst_element_get_bus(output_pipeline_.get())};
@@ -1025,7 +1022,7 @@ void Stream::Implementation::RunPreview(std::stop_token stop) {
 }
 
 void Stream::Implementation::SetPreviewActive(bool active) {
-  preview_active_.store(active);
+  preview_gate_.active.store(active);
 }
 
 void Stream::Implementation::RunScreensaver(std::stop_token stop) {

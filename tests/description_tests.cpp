@@ -179,8 +179,6 @@ TEST_CASE("output pipeline description") {
     CHECK(description.contains("videoscale"));
     CHECK(description.contains("width=640"));
     CHECK(description.contains("height=360"));
-    CHECK(description.contains("videorate"));
-    CHECK(description.contains("framerate=10/1"));
     CHECK(description.contains("jpegenc"));
     CHECK(description.contains("quality=75"));
     CHECK(description.contains("appsink"));
