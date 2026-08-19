@@ -50,6 +50,7 @@ target_link_libraries(
     PRIVATE
     PkgConfig::GSTREAMER
     stream
+    web
 )
 
 target_include_directories(

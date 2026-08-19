@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace subtitler {
@@ -16,9 +17,13 @@ class WebServer {
 
  public:
   // Binds all interfaces on port. Returns nullptr when the port cannot be
-  // bound. frames must outlive the server.
-  static std::unique_ptr<WebServer> Create(std::uint16_t port,
-                                           PreviewFrameBuffer& frames);
+  // bound. frames must outlive the server. preview_activation is called
+  // (on the server's io thread) when the MJPEG client count transitions
+  // between zero and nonzero, so no JPEG encoding happens without
+  // watchers.
+  static std::unique_ptr<WebServer> Create(
+      std::uint16_t port, PreviewFrameBuffer& frames,
+      std::function<void(bool)> preview_activation = {});
   ~WebServer();
 
  private:

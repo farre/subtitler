@@ -1,10 +1,12 @@
 #include <doctest/doctest.h>
 #include <libsoup/soup.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -89,6 +91,55 @@ Response HttpGet(std::uint16_t port, std::string_view path) {
   }
 
   return response;
+}
+
+// A held-open MJPEG connection.
+struct MjpegClient {
+  ~MjpegClient() { Close(); }
+
+  guint Connect(std::uint16_t port) {
+    message.reset(
+        soup_message_new("GET", Url(port, "/api/preview.mjpeg").c_str()));
+    stream.reset(
+        soup_session_send(session.get(), message.get(), nullptr, nullptr));
+
+    return stream != nullptr ? soup_message_get_status(message.get()) : 0;
+  }
+
+  void Close() {
+    stream.reset();
+    soup_session_abort(session.get());
+  }
+
+  GObjectPtr<SoupSession> session{soup_session_new()};
+  GObjectPtr<SoupMessage> message;
+  GObjectPtr<GInputStream> stream;
+};
+
+// Feeds frames like the real encoder does while the gate is open. The
+// server detects disconnects only on write (an idle chunked response
+// schedules no I/O), so disconnect assertions need frames flowing.
+struct FrameFeeder {
+  explicit FrameFeeder(subtitler::PreviewFrameBuffer& frames)
+      : thread{[this, &frames](std::stop_token stop) {
+          while (!stop.stop_requested()) {
+            frames.Store(1000, FakeJpeg(std::byte{0x33}));
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+          }
+        }} {}
+
+  std::jthread thread;
+};
+
+bool WaitFor(const std::function<bool()>& condition) {
+  for (int i = 0; i < 200; ++i) {
+    if (condition()) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+  }
+
+  return false;
 }
 
 }  // namespace
@@ -201,5 +252,58 @@ TEST_CASE("web server preview endpoints") {
 
     g_input_stream_close(stream.get(), nullptr, nullptr);
     soup_session_abort(session.get());
+  }
+}
+
+TEST_CASE("web server preview client limits and activation") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+  frames.Store(1000, FakeJpeg(std::byte{0x11}));
+
+  std::atomic_int activation_calls = 0;
+  std::atomic_bool gate_active = false;
+
+  auto server = subtitler::WebServer::Create(
+      port, frames, [&](bool active) {
+        gate_active.store(active);
+        ++activation_calls;
+      });
+  REQUIRE(server != nullptr);
+
+  SUBCASE("activation toggles with the client count") {
+    FrameFeeder feeder{frames};
+
+    MjpegClient client;
+    CHECK(client.Connect(port) == SOUP_STATUS_OK);
+
+    CHECK(WaitFor([&] { return activation_calls.load() == 1; }));
+    CHECK(gate_active.load());
+
+    client.Close();
+
+    CHECK(WaitFor([&] { return !gate_active.load(); }));
+    CHECK(WaitFor([&] { return activation_calls.load() == 2; }));
+  }
+
+  SUBCASE("the fifth MJPEG client is rejected") {
+    FrameFeeder feeder{frames};
+
+    MjpegClient clients[4];
+
+    for (auto& client : clients) {
+      CHECK(client.Connect(port) == SOUP_STATUS_OK);
+    }
+
+    CHECK(WaitFor([&] { return gate_active.load(); }));
+
+    const auto response = HttpGet(port, "/api/preview.mjpeg");
+    CHECK(response.status == SOUP_STATUS_SERVICE_UNAVAILABLE);
+
+    for (auto& client : clients) {
+      client.Close();
+    }
+
+    CHECK(WaitFor([&] { return !gate_active.load(); }));
   }
 }

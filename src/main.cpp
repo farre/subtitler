@@ -9,8 +9,11 @@
 #include <thread>
 
 #include "stream/stream.h"
+#include "web/web_server.h"
 
 namespace {
+
+constexpr std::uint16_t kWebPort = 8080;
 
 volatile std::sig_atomic_t signal_received = 0;
 
@@ -38,6 +41,7 @@ int main(int argc, char** argv) {
   bool audio = true;
   std::optional<std::string> audio_output_device;
   int audio_offset_ms = 0;
+  bool web = false;
   int positional = 0;
 
   const auto usage = [&] {
@@ -45,7 +49,7 @@ int main(int argc, char** argv) {
                  "Usage: {} [video-device] [connector-id] "
                  "[--output=software|pisp|window|null] [--no-audio] "
                  "[--audio-output-device=<alsa-device>] "
-                 "[--audio-offset=<ms>]",
+                 "[--audio-offset=<ms>] [--web]",
                  argv[0]);
   };
 
@@ -65,6 +69,8 @@ int main(int argc, char** argv) {
       output_mode = subtitler::OutputMode::kNull;
     } else if (arg == "--no-audio") {
       audio = false;
+    } else if (arg == "--web") {
+      web = true;
     } else if (arg.starts_with("--audio-output-device=")) {
       audio_output_device = std::string{
           arg.substr(std::string_view{"--audio-output-device="}.size())};
@@ -103,11 +109,28 @@ int main(int argc, char** argv) {
 
   auto stream =
       subtitler::Stream::Create(device, output_mode, connector_id, audio,
-                                audio_output_device, audio_offset_ms);
+                                audio_output_device, audio_offset_ms, web);
 
   if (!stream) {
     std::println(stderr, "Failed to create stream");
     return EXIT_FAILURE;
+  }
+
+  // Declared after stream, so it is destroyed first: the server reads from
+  // the stream-owned preview frame buffer and flips its preview gate.
+  std::unique_ptr<subtitler::WebServer> web_server;
+
+  if (web) {
+    web_server = subtitler::WebServer::Create(
+        kWebPort, stream->PreviewFrames(),
+        [&stream](bool active) { stream->SetPreviewActive(active); });
+
+    if (!web_server) {
+      std::println(stderr, "Failed to start the web server");
+      return EXIT_FAILURE;
+    }
+
+    std::println("Web interface available on port {}", kWebPort);
   }
 
   while (!signal_received) {

@@ -22,6 +22,7 @@ using namespace subtitler;
 
 // Per docs/video-output.md.
 constexpr std::string_view kBoundary = "frame";
+constexpr std::size_t kMaxClients = 4;
 
 constexpr std::string_view kIndexPage =
     "<!doctype html>\n"
@@ -77,8 +78,9 @@ struct subtitler::WebServer::Implementation {
     std::uint64_t sequence;
   };
 
-  Implementation(std::uint16_t port, PreviewFrameBuffer& frames)
-      : frames_{frames} {
+  Implementation(std::uint16_t port, PreviewFrameBuffer& frames,
+                 std::function<void(bool)> preview_activation)
+      : frames_{frames}, preview_activation_{std::move(preview_activation)} {
     std::promise<bool> ready;
 
     io_thread_ = std::jthread{[this, port, &ready] { Run(port, ready); }};
@@ -228,11 +230,16 @@ struct subtitler::WebServer::Implementation {
 
   static void OnFinished(SoupServerMessage*, gpointer user_data) {
     auto* client = static_cast<Client*>(user_data);
+    auto& self = *client->owner;
 
-    std::erase_if(client->owner->clients_,
-                  [client](const auto& holder) {
-                    return holder.get() == client;
-                  });
+    std::erase_if(self.clients_, [client](const auto& holder) {
+      return holder.get() == client;
+    });
+
+    // The last client went away; stop the JPEG encoder.
+    if (self.clients_.empty() && self.preview_activation_) {
+      self.preview_activation_(false);
+    }
   }
 
   static void HandleIndex(SoupServer*, SoupServerMessage* message,
@@ -273,12 +280,23 @@ struct subtitler::WebServer::Implementation {
                           const char*, GHashTable*, gpointer user_data) {
     auto& self = *static_cast<Implementation*>(user_data);
 
+    if (self.clients_.size() >= kMaxClients) {
+      soup_server_message_set_status(message, SOUP_STATUS_SERVICE_UNAVAILABLE,
+                                     nullptr);
+      return;
+    }
+
     auto client = std::make_unique<Client>();
     client->owner = &self;
     client->message = message;
 
     auto* raw_client = client.get();
     self.clients_.push_back(std::move(client));
+
+    // The first client starts the JPEG encoder.
+    if (self.clients_.size() == 1 && self.preview_activation_) {
+      self.preview_activation_(true);
+    }
 
     g_signal_connect(message, "wrote-chunk", G_CALLBACK(OnWroteChunk),
                      raw_client);
@@ -310,6 +328,7 @@ struct subtitler::WebServer::Implementation {
   }
 
   PreviewFrameBuffer& frames_;
+  std::function<void(bool)> preview_activation_;
 
   // These three are created, used, and destroyed on the io thread; the
   // destructor only calls g_main_loop_quit on loop_ from the outside.
@@ -327,10 +346,12 @@ struct subtitler::WebServer::Implementation {
 namespace subtitler {
 
 /* static */
-std::unique_ptr<WebServer> WebServer::Create(std::uint16_t port,
-                                             PreviewFrameBuffer& frames) {
+std::unique_ptr<WebServer> WebServer::Create(
+    std::uint16_t port, PreviewFrameBuffer& frames,
+    std::function<void(bool)> preview_activation) {
   auto server = std::make_unique<WebServer>();
-  server->implementation_ = std::make_unique<Implementation>(port, frames);
+  server->implementation_ = std::make_unique<Implementation>(
+      port, frames, std::move(preview_activation));
 
   if (!server->implementation_->started_) {
     return nullptr;
