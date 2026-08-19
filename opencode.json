@@ -15,8 +15,12 @@
       "ctest*": "allow",
       "ls*": "allow",
       "rg*": "allow",
+      "head*": "allow",
+      "tail*": "allow",
       "git add*": "allow",
-      "git commit*": "allow"
+      "git commit*": "allow",
+      "wc*": "allow",
+      "cat*": "allow"
     }
   }
 }
