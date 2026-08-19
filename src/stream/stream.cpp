@@ -167,8 +167,8 @@ bool PollBus(GstView<GstBus> bus, GstView<GstElement> pipeline,
 }
 
 BufferPtr MakeSolidFrame(int width, int height) {
-  BufferPtr buffer = BufferPtr{
-      gst_buffer_new_allocate(nullptr, width * height * 2, nullptr)};
+  BufferPtr buffer =
+      BufferPtr{gst_buffer_new_allocate(nullptr, width * height * 2, nullptr)};
 
   if (buffer == nullptr) {
     return nullptr;
@@ -221,7 +221,8 @@ std::shared_ptr<const std::vector<std::byte>> EncodePlaceholderJpeg() {
       kPreviewJpegQuality);
 
   ErrorPtr error;
-  ElementPtr pipeline{gst_parse_launch(description.c_str(), std::out_ptr(error))};
+  ElementPtr pipeline{
+      gst_parse_launch(description.c_str(), std::out_ptr(error))};
 
   if (error != nullptr || pipeline == nullptr) {
     return nullptr;
@@ -272,7 +273,8 @@ std::shared_ptr<const std::vector<std::byte>> EncodePlaceholderJpeg() {
 
   SamplePtr sample;
   for (int attempt = 0; attempt < 20 && sample == nullptr; ++attempt) {
-    sample = SamplePtr{gst_app_sink_try_pull_sample(app_sink, 100 * GST_MSECOND)};
+    sample =
+        SamplePtr{gst_app_sink_try_pull_sample(app_sink, 100 * GST_MSECOND)};
   }
 
   gst_element_set_state(pipeline.get(), GST_STATE_NULL);
@@ -291,8 +293,8 @@ std::shared_ptr<const std::vector<std::byte>> EncodePlaceholderJpeg() {
   }
 
   const auto* begin = reinterpret_cast<const std::byte*>(info.data);
-  auto data = std::make_shared<const std::vector<std::byte>>(
-      begin, begin + info.size);
+  auto data =
+      std::make_shared<const std::vector<std::byte>>(begin, begin + info.size);
 
   gst_buffer_unmap(encoded, &info);
 
@@ -364,12 +366,32 @@ std::string AudioCapturePipelineDescription(std::string_view device) {
 
 std::string OutputPipelineDescription(
     OutputMode mode, std::optional<int> connector_id,
-    std::optional<std::string_view> audio_device, bool preview) {
-  auto description = VideoOutputPipelineDescription(mode, connector_id, preview);
+    std::optional<std::string_view> audio_device, bool preview,
+    std::optional<std::string_view> subtitles) {
+  auto description =
+      VideoOutputPipelineDescription(mode, connector_id, preview, subtitles);
   if (audio_device) {
     description += " " + AudioOutputPipelineDescription(*audio_device);
   }
   return description;
+}
+
+// The subtitle side of the output pipeline (#438): raw SRT from file into
+// the subtitleoverlay's subtitle sink. subparse is plugged explicitly —
+// subtitleoverlay's parser autoplugging filters on a "Parser/Subtitle"
+// klass that subparse ("Codec/Decoder/Subtitle") doesn't have, while its
+// renderer autoplugging special-cases textoverlay by name. The named
+// parser is where the anchor lives: StartOutput maps cue times onto the
+// shared capture timeline with gst_pad_set_offset on its src pad.
+std::string SubtitlePipelineDescription(std::string_view path) {
+  return std::format(
+      "filesrc "
+      "location=\"{}\" "
+      "! application/x-subtitle "
+      "! subparse "
+      "name=subtitle_parser "
+      "! subtitle_overlay.subtitle_sink",
+      path);
 }
 
 // The preview side of the output tee. The leaky queue is the only coupling
@@ -423,9 +445,9 @@ std::string AudioOutputPipelineDescription(std::string_view device) {
       kAudioSinkLatencyTimeUs);
 }
 
-std::string VideoOutputPipelineDescription(OutputMode mode,
-                                           std::optional<int> connector_id,
-                                           bool preview) {
+std::string VideoOutputPipelineDescription(
+    OutputMode mode, std::optional<int> connector_id, bool preview,
+    std::optional<std::string_view> subtitles) {
   const auto connector = connector_id
                              ? std::format(" connector-id={}", *connector_id)
                              : std::string{};
@@ -440,6 +462,14 @@ std::string VideoOutputPipelineDescription(OutputMode mode,
       "max-bytes=0 "
       "max-time={} ",
       kAppSrcMaxQueueTime);
+
+  // The overlay composites onto the 4:2:2 frame before conversion (text
+  // chroma) and before the tee, so the MJPEG preview shows subtitles too
+  // (docs/video-output.md).
+  const std::string overlay =
+      subtitles ? "! subtitleoverlay name=subtitle_overlay " : "";
+  const std::string subtitle_branch =
+      subtitles ? " " + SubtitlePipelineDescription(*subtitles) : "";
 
   std::string tail;
 
@@ -493,18 +523,18 @@ std::string VideoOutputPipelineDescription(OutputMode mode,
   }
 
   if (!preview) {
-    return base + tail;
+    return base + overlay + tail + subtitle_branch;
   }
 
-  // The tee sits right after the appsrc, where the subtitle overlay will
-  // be inserted, so the preview taps composited video (#379). Every tee
-  // branch needs its own queue: without one the clock-synced sink blocks
-  // the tee's streaming thread in preroll and the pipeline deadlocks.
-  // Sized 1 and not leaky so HDMI frames are never dropped here.
+  // The tee sits right after the subtitle overlay, so the preview taps
+  // composited video (#379). Every tee branch needs its own queue: without
+  // one the clock-synced sink blocks the tee's streaming thread in preroll
+  // and the pipeline deadlocks. Sized 1 and not leaky so HDMI frames are
+  // never dropped here.
   return std::format(
-      "{}! tee name=output_tee output_tee. "
-      "! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 {} {}",
-      base, tail, PreviewOutputPipelineDescription());
+      "{}{}! tee name=output_tee output_tee. "
+      "! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 {} {}{}",
+      base, overlay, tail, PreviewOutputPipelineDescription(), subtitle_branch);
 }
 
 struct Stream::Implementation {
@@ -523,7 +553,8 @@ struct Stream::Implementation {
   bool Initialize(const std::string& device, OutputMode output_mode,
                   std::optional<int> connector_id, bool audio,
                   const std::optional<std::string>& audio_output_device,
-                  std::int64_t audio_offset_ms, bool preview);
+                  std::int64_t audio_offset_ms, bool preview,
+                  const std::optional<std::string>& subtitles);
 
   ~Implementation() { Stop(); }
 
@@ -546,6 +577,10 @@ struct Stream::Implementation {
   void RunPreview(std::stop_token stop);
 
   void SetPreviewActive(bool active);
+
+  bool SetSubtitleFile(const std::optional<std::string>& path);
+  void SetSubtitleDelay(std::int64_t delay_ms);
+  void SetSubtitlesVisible(bool visible);
 
   PreviewFrameBuffer& PreviewFrames() { return preview_frames_; }
 
@@ -588,6 +623,24 @@ struct Stream::Implementation {
   // are realized as a video delay.
   std::int64_t audio_offset_ = 0;
 
+  // Remembered for SetSubtitleFile's output rebuild.
+  OutputMode output_mode_ = OutputMode::kKmsSoftware;
+  std::optional<int> connector_id_;
+
+  // The SRT rendered by the output pipeline's subtitle branch, if any.
+  // Guarded by mutex_.
+  std::optional<std::string> subtitle_path_;
+  // Live trim added to the anchor: cue at SRT time t renders at
+  // subtitle_anchor_ + delay + t. Signed nanoseconds; positive delays
+  // cues. Written by SetSubtitleDelay (any thread), applied under mutex_.
+  std::atomic<std::int64_t> subtitle_delay_ = 0;
+  // The output running time at which SRT t=0 renders; set at every
+  // StartOutput so file switches replay from "now" (#438).
+  GstClockTime subtitle_anchor_ = 0;
+  // Applies subtitle_anchor_ + subtitle_delay_ as the parser's pad
+  // offset. Call with mutex_ held.
+  void ApplySubtitleOffset();
+
   // Set at Initialize: whether the output pipeline has a preview branch.
   bool preview_enabled_ = false;
   // Shared with the preview gate's pad probe on the streaming thread.
@@ -606,6 +659,8 @@ struct Stream::Implementation {
   ElementPtr output_audio_source_;
   ElementPtr preview_sink_;
   ElementPtr preview_queue_;
+  ElementPtr subtitle_overlay_;
+  ElementPtr subtitle_parser_;
   BusPtr output_bus_;
 
   // Runs either the capture or the screensaver loop, never both.
@@ -807,8 +862,12 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
 
   StopOutputPipeline(lock);
 
+  output_mode_ = output_mode;
+  connector_id_ = connector_id;
+
   ResetGuard reset{output_pipeline_, output_source_, output_audio_source_,
-                   preview_sink_, preview_queue_, output_bus_};
+                   preview_sink_,    preview_queue_, subtitle_overlay_,
+                   subtitle_parser_, output_bus_};
 
   const std::optional<std::string_view> audio_device =
       audio_enabled_
@@ -816,8 +875,9 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
           : std::nullopt;
 
   output_pipeline_ = ParsePipeline(
-      "output", OutputPipelineDescription(output_mode, connector_id,
-                                          audio_device, preview_enabled_));
+      "output",
+      OutputPipelineDescription(output_mode, connector_id, audio_device,
+                                preview_enabled_, subtitle_path_));
 
   if (!output_pipeline_) {
     std::println(stderr, "Couldn't create output pipeline");
@@ -879,10 +939,10 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
   }
 
   if (preview_enabled_) {
-    preview_sink_ = ElementPtr{gst_bin_get_by_name(
-        GST_BIN(output_pipeline_.get()), "preview_sink")};
-    preview_queue_ = ElementPtr{gst_bin_get_by_name(
-        GST_BIN(output_pipeline_.get()), "preview_queue")};
+    preview_sink_ = ElementPtr{
+        gst_bin_get_by_name(GST_BIN(output_pipeline_.get()), "preview_sink")};
+    preview_queue_ = ElementPtr{
+        gst_bin_get_by_name(GST_BIN(output_pipeline_.get()), "preview_queue")};
 
     if (!preview_sink_ || !preview_queue_) {
       std::println(stderr, "Couldn't find preview branch elements");
@@ -892,6 +952,23 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
     // The gate drops all preview branch buffers while there are no web
     // clients, so no JPEG encoding happens without watchers (#384).
     InstallPreviewGate(preview_queue_.get(), preview_gate_);
+  }
+
+  if (subtitle_path_) {
+    subtitle_overlay_ = ElementPtr{gst_bin_get_by_name(
+        GST_BIN(output_pipeline_.get()), "subtitle_overlay")};
+    subtitle_parser_ = ElementPtr{gst_bin_get_by_name(
+        GST_BIN(output_pipeline_.get()), "subtitle_parser")};
+
+    if (!subtitle_overlay_ || !subtitle_parser_) {
+      std::println(stderr, "Couldn't find subtitle branch elements");
+      return false;
+    }
+
+    // Anchor the SRT timeline at the current running time: cue time t
+    // renders at anchor + delay + t (#438).
+    subtitle_anchor_ = MasterRunningTime();
+    ApplySubtitleOffset();
   }
 
   output_bus_ = BusPtr{gst_element_get_bus(output_pipeline_.get())};
@@ -1062,8 +1139,7 @@ void Stream::Implementation::RunPreview(std::stop_token stop) {
 
     GstMapInfo info;
 
-    if (encoded == nullptr ||
-        !gst_buffer_map(encoded, &info, GST_MAP_READ)) {
+    if (encoded == nullptr || !gst_buffer_map(encoded, &info, GST_MAP_READ)) {
       std::println(stderr, "Could not read encoded preview frame");
       continue;
     }
@@ -1080,8 +1156,49 @@ void Stream::Implementation::RunPreview(std::stop_token stop) {
   }
 }
 
+void Stream::Implementation::ApplySubtitleOffset() {
+  if (subtitle_parser_ == nullptr) {
+    return;
+  }
+
+  // A pad offset shifts the running time of everything leaving the
+  // parser, live-adjustable: textoverlay compares text and video by
+  // running time, so cue time t lands on anchor + delay + t (#438).
+  PadPtr pad{gst_element_get_static_pad(subtitle_parser_.get(), "src")};
+  gst_pad_set_offset(pad.get(), static_cast<gint64>(subtitle_anchor_) +
+                                    subtitle_delay_.load());
+}
+
 void Stream::Implementation::SetPreviewActive(bool active) {
   preview_gate_.active.store(active);
+}
+
+bool Stream::Implementation::SetSubtitleFile(
+    const std::optional<std::string>& path) {
+  OutputMode output_mode;
+  std::optional<int> connector_id;
+  {
+    std::lock_guard lock{mutex_};
+    subtitle_path_ = path;
+    subtitle_delay_.store(0);
+    output_mode = output_mode_;
+    connector_id = connector_id_;
+  }
+
+  return StartOutput(output_mode, connector_id);
+}
+
+void Stream::Implementation::SetSubtitleDelay(std::int64_t delay_ms) {
+  std::lock_guard lock{mutex_};
+  subtitle_delay_.store(delay_ms * GST_MSECOND);
+  ApplySubtitleOffset();
+}
+
+void Stream::Implementation::SetSubtitlesVisible(bool visible) {
+  std::lock_guard lock{mutex_};
+  if (subtitle_overlay_ != nullptr) {
+    g_object_set(subtitle_overlay_.get(), "silent", !visible, nullptr);
+  }
 }
 
 void Stream::Implementation::RunScreensaver(std::stop_token stop) {
@@ -1180,7 +1297,8 @@ void Stream::Implementation::StopOutputPipeline(
     }
 
     ResetGuard reset{output_pipeline_, output_source_, output_audio_source_,
-                     preview_sink_, preview_queue_, output_bus_};
+                     preview_sink_,    preview_queue_, subtitle_overlay_,
+                     subtitle_parser_, output_bus_};
   }
 }
 
@@ -1219,10 +1337,12 @@ bool Stream::Implementation::Initialize(
     const std::string& device, OutputMode output_mode,
     std::optional<int> connector_id, bool audio,
     const std::optional<std::string>& audio_output_device,
-    std::int64_t audio_offset_ms, bool preview) {
+    std::int64_t audio_offset_ms, bool preview,
+    const std::optional<std::string>& subtitles) {
   audio_enabled_ = audio;
   audio_offset_ = audio_offset_ms * GST_MSECOND;
   preview_enabled_ = preview;
+  subtitle_path_ = subtitles;
 
   if (preview_enabled_) {
     if (auto placeholder = EncodePlaceholderJpeg()) {
@@ -1246,7 +1366,7 @@ bool Stream::Implementation::Initialize(
       "Capture pipeline:\n{}\n\nOutput pipeline:\n{}\n",
       CapturePipelineDescription(device, audio_enabled_),
       OutputPipelineDescription(output_mode, connector_id, branch_device,
-                                preview_enabled_));
+                                preview_enabled_, subtitle_path_));
 
   return StartOutput(output_mode, connector_id) && StartCapture(device);
 }
@@ -1258,7 +1378,8 @@ std::unique_ptr<Stream> Stream::Create(
     const std::string& device, OutputMode output_mode,
     std::optional<int> connector_id, bool audio,
     const std::optional<std::string>& audio_output_device,
-    std::int64_t audio_offset_ms, bool preview) {
+    std::int64_t audio_offset_ms, bool preview,
+    const std::optional<std::string>& subtitles) {
   static bool gst_initialized = false;
   if (!gst_initialized) {
     gst_initialized = true;
@@ -1279,8 +1400,8 @@ std::unique_ptr<Stream> Stream::Create(
       kFrameBufferCapacity + extra_video_frames,
       kAudioBufferCapacity + extra_audio_chunks);
   if (!implementation->Initialize(device, output_mode, connector_id, audio,
-                                  audio_output_device, audio_offset_ms,
-                                  preview)) {
+                                  audio_output_device, audio_offset_ms, preview,
+                                  subtitles)) {
     return nullptr;
   }
 
@@ -1308,6 +1429,18 @@ bool Stream::RestartCapture(const std::string& device) {
 bool Stream::RestartOutput(OutputMode output_mode,
                            std::optional<int> connector_id) {
   return implementation_->StartOutput(output_mode, connector_id);
+}
+
+bool Stream::SetSubtitleFile(const std::optional<std::string>& path) {
+  return implementation_->SetSubtitleFile(path);
+}
+
+void Stream::SetSubtitleDelay(std::int64_t delay_ms) {
+  implementation_->SetSubtitleDelay(delay_ms);
+}
+
+void Stream::SetSubtitlesVisible(bool visible) {
+  implementation_->SetSubtitlesVisible(visible);
 }
 
 bool Stream::Failed() const { return implementation_->Failed(); }

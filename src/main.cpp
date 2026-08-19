@@ -2,6 +2,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
 #include <optional>
 #include <print>
 #include <string>
@@ -9,6 +10,7 @@
 #include <thread>
 
 #include "stream/stream.h"
+#include "utils/paths.h"
 #include "web/web_server.h"
 
 namespace {
@@ -42,6 +44,7 @@ int main(int argc, char** argv) {
   std::optional<std::string> audio_output_device;
   int audio_offset_ms = 0;
   bool web = false;
+  std::optional<std::string> subtitles;
   int positional = 0;
 
   const auto usage = [&] {
@@ -49,7 +52,7 @@ int main(int argc, char** argv) {
                  "Usage: {} [video-device] [connector-id] "
                  "[--output=software|pisp|window|null] [--no-audio] "
                  "[--audio-output-device=<alsa-device>] "
-                 "[--audio-offset=<ms>] [--web]",
+                 "[--audio-offset=<ms>] [--subtitles=<srt-file>] [--web]",
                  argv[0]);
   };
 
@@ -82,6 +85,9 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
       }
       audio_offset_ms = *offset;
+    } else if (arg.starts_with("--subtitles=")) {
+      subtitles =
+          std::string{arg.substr(std::string_view{"--subtitles="}.size())};
     } else if (arg.starts_with("--")) {
       std::println(stderr, "Unknown option: {}", arg);
       usage();
@@ -107,9 +113,24 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, HandleSignal);
   std::signal(SIGTERM, HandleSignal);
 
-  auto stream =
-      subtitler::Stream::Create(device, output_mode, connector_id, audio,
-                                audio_output_device, audio_offset_ms, web);
+  if (subtitles) {
+    // An explicit flag must name a real file: a missing one would only
+    // surface later as a filesrc bus error.
+    if (!std::filesystem::exists(*subtitles)) {
+      std::println(stderr, "Subtitle file not found: {}", *subtitles);
+      return EXIT_FAILURE;
+    }
+  } else if (const auto state_dir = subtitler::StateDirectory()) {
+    // Boot resume: replay the SRT selected the last time around (#438).
+    if (const auto active = subtitler::ActiveSubtitleFile(*state_dir)) {
+      subtitles = active->string();
+      std::println("Resuming subtitles from {}", *subtitles);
+    }
+  }
+
+  auto stream = subtitler::Stream::Create(device, output_mode, connector_id,
+                                          audio, audio_output_device,
+                                          audio_offset_ms, web, subtitles);
 
   if (!stream) {
     std::println(stderr, "Failed to create stream");

@@ -177,6 +177,18 @@ pispconvert cannot produce them, so semi-planar 4:2:2 is unreachable.
   visual A/B shows NV12 softening sharp colored subtitle text (the overlay
   composites at 4:2:2 before conversion).
 
+## Subtitle rendering
+
+The subtitle overlay (#438) uses `subtitleoverlay` + `subparse` + the pango
+`textoverlay` renderer — all from `gstreamer1.0-plugins-base`, no extra plugin
+package. The one real dependency is **fonts**: pango composits nothing when
+fontconfig finds no font, silently (no error, video just stays clean). A Lite
+image may ship without any; install e.g. `fonts-dejavu-core`.
+
+> **Status: anticipated, not yet verified on the appliance** — the anchor and
+> rendering path are covered by `tests/output_pipeline_tests.cpp` on the dev
+> machine; confirm actual on-screen cues with `--subtitles=<file>` on the Pi.
+
 ## Stability
 
 The passthrough ran for 30 minutes on the appliance with 0 dropped frames

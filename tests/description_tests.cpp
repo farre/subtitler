@@ -162,6 +162,43 @@ TEST_CASE("output pipeline description") {
     CHECK(without_audio.contains("kmssink"));
   }
 
+  SUBCASE("subtitle branch is optional") {
+    const auto plain = subtitler::VideoOutputPipelineDescription(
+        subtitler::OutputMode::kKmsSoftware, std::nullopt);
+    const auto subtitled = subtitler::VideoOutputPipelineDescription(
+        subtitler::OutputMode::kKmsSoftware, std::nullopt, false,
+        "/tmp/subs.srt");
+
+    CHECK_FALSE(plain.contains("subtitleoverlay"));
+    CHECK_FALSE(plain.contains("filesrc"));
+    CHECK(subtitled.contains("subtitleoverlay"));
+    CHECK(subtitled.contains("filesrc"));
+  }
+
+  SUBCASE("subtitle branch contains the key subtitle properties") {
+    const auto description = subtitler::VideoOutputPipelineDescription(
+        subtitler::OutputMode::kKmsSoftware, std::nullopt, false,
+        "/tmp/subs.srt");
+
+    CHECK(description.contains("subtitleoverlay name=subtitle_overlay"));
+    CHECK(description.contains("filesrc location=\"/tmp/subs.srt\""));
+    // SRT caps; subparse is plugged explicitly because subtitleoverlay's
+    // parser autoplugging can't match subparse's klass (#438).
+    CHECK(description.contains("application/x-subtitle"));
+    CHECK(description.contains("subparse name=subtitle_parser"));
+    CHECK(description.contains("subtitle_overlay.subtitle_sink"));
+  }
+
+  SUBCASE("overlay sits before the tee so the preview shows subtitles") {
+    const auto description = subtitler::VideoOutputPipelineDescription(
+        subtitler::OutputMode::kKmsSoftware, std::nullopt, true,
+        "/tmp/subs.srt");
+
+    CHECK(
+        description.contains("subtitleoverlay name=subtitle_overlay "
+                             "! tee name=output_tee"));
+  }
+
   SUBCASE("preview branch is optional") {
     const auto plain = subtitler::VideoOutputPipelineDescription(
         subtitler::OutputMode::kKmsSoftware, std::nullopt);
@@ -231,6 +268,19 @@ TEST_CASE("output pipeline description") {
     if (jpeg_factory != nullptr) {
       CheckConstructible(subtitler::OutputPipelineDescription(
           subtitler::OutputMode::kNull, std::nullopt, std::nullopt, true));
+    }
+
+    subtitler::GstPointer<GstElementFactory> overlay_factory{
+        gst_element_factory_find("subtitleoverlay")};
+    subtitler::GstPointer<GstElementFactory> subparse_factory{
+        gst_element_factory_find("subparse")};
+    if (overlay_factory != nullptr && subparse_factory != nullptr) {
+      CheckConstructible(subtitler::OutputPipelineDescription(
+          subtitler::OutputMode::kNull, std::nullopt, std::nullopt, false,
+          "/tmp/subs.srt"));
+      CheckConstructible(subtitler::OutputPipelineDescription(
+          subtitler::OutputMode::kNull, std::nullopt, std::nullopt, true,
+          "/tmp/subs.srt"));
     }
   }
 }

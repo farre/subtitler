@@ -3,6 +3,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <stop_token>
 #include <string>
 #include <thread>
@@ -70,6 +73,75 @@ int PushFrames(GstView<GstAppSrc> source, int count, std::uint64_t first_pts) {
   return count;
 }
 
+// Pushes count solid-fill YUY2 frames (every byte kSolidFill), so the
+// handoff can spot subtitle compositing as pixels that deviate from the
+// fill.
+constexpr std::uint8_t kSolidFill = 0x10;
+
+int PushSolidFrames(GstView<GstAppSrc> source, int count,
+                    std::uint64_t first_pts) {
+  for (int i = 0; i < count; ++i) {
+    BufferPtr buffer{
+        gst_buffer_new_allocate(nullptr, kWidth * kHeight * 2, nullptr)};
+
+    if (buffer == nullptr) {
+      return i;
+    }
+
+    gst_buffer_memset(buffer.get(), 0, kSolidFill, kWidth * kHeight * 2);
+    GST_BUFFER_PTS(buffer.get()) = first_pts + i * kFrameDuration;
+    GST_BUFFER_DURATION(buffer.get()) = kFrameDuration;
+
+    if (gst_app_src_push_buffer(source, buffer.release()) != GST_FLOW_OK) {
+      return i;
+    }
+  }
+
+  return count;
+}
+
+struct SubtitleRenderStats {
+  std::atomic_uint frames = 0;
+  std::atomic_uint modified = 0;
+  std::atomic_uint64_t first_modified = GST_CLOCK_TIME_NONE;
+  std::atomic_uint64_t last_modified = 0;
+};
+
+void OnSubtitleHandoff(GstElement*, GstBuffer* buffer, GstPad*,
+                       gpointer user_data) {
+  auto& stats = *static_cast<SubtitleRenderStats*>(user_data);
+
+  ++stats.frames;
+
+  GstMapInfo info;
+  if (!gst_buffer_map(buffer, &info, GST_MAP_READ)) {
+    return;
+  }
+
+  std::size_t differing = 0;
+  for (gsize i = 0; i < info.size; ++i) {
+    if (info.data[i] != kSolidFill) {
+      ++differing;
+    }
+  }
+
+  gst_buffer_unmap(buffer, &info);
+
+  if (differing > info.size / 1000) {
+    ++stats.modified;
+
+    const auto pts = GST_BUFFER_PTS(buffer);
+    auto first = stats.first_modified.load();
+    while (pts < first &&
+           !stats.first_modified.compare_exchange_weak(first, pts)) {
+    }
+    auto last = stats.last_modified.load();
+    while (pts > last &&
+           !stats.last_modified.compare_exchange_weak(last, pts)) {
+    }
+  }
+}
+
 }  // namespace
 
 // Regression test for the preview branch's isolation guarantee (#379): the
@@ -92,7 +164,8 @@ TEST_CASE("output pipeline preview branch") {
       subtitler::OutputMode::kNull, std::nullopt, std::nullopt, true);
 
   ErrorPtr error;
-  ElementPtr pipeline{gst_parse_launch(description.c_str(), std::out_ptr(error))};
+  ElementPtr pipeline{
+      gst_parse_launch(description.c_str(), std::out_ptr(error))};
   INFO("gst_parse_launch error: ",
        error != nullptr ? std::string{error->message} : "none");
   REQUIRE(error == nullptr);
@@ -163,8 +236,8 @@ TEST_CASE("output pipeline preview branch") {
   const auto push = [&](int count) {
     // 10 frames of head start so nothing is late at the synced sink.
     std::jthread pusher([&] {
-      CHECK(PushFrames(app_src, count,
-                       running_time() + 10 * kFrameDuration) == count);
+      CHECK(PushFrames(app_src, count, running_time() + 10 * kFrameDuration) ==
+            count);
     });
     pusher.join();
     // Let the tail frames drain through the synced sink.
@@ -193,4 +266,115 @@ TEST_CASE("output pipeline preview branch") {
   CHECK(preview_frames.load() <= 15);
 
   gst_element_set_state(pipeline.get(), GST_STATE_NULL);
+}
+
+// Subtitle anchoring (#438): an SRT cue must land exactly on the frames
+// whose running time is anchor + cue time, and stay invisible outside the
+// cue window. Exercises the real description with the production
+// mechanism: a pad offset on the named subparse element's src pad, the
+// same call StartOutput uses (positive offsets delay, so the anchor is a
+// positive offset).
+TEST_CASE("output pipeline subtitle branch") {
+  gst_init(nullptr, nullptr);
+
+  subtitler::GstPointer<GstElementFactory> overlay_factory{
+      gst_element_factory_find("subtitleoverlay")};
+  subtitler::GstPointer<GstElementFactory> subparse_factory{
+      gst_element_factory_find("subparse")};
+  if (overlay_factory == nullptr || subparse_factory == nullptr) {
+    return;
+  }
+
+  // One cue: 0.2 s to 1.4 s of SRT time.
+  const auto srt_path =
+      std::filesystem::temp_directory_path() / "subtitler-test.srt";
+  {
+    std::ofstream srt{srt_path};
+    srt << "1\n00:00:00,200 --> 00:00:01,400\nHello subtitles\n\n";
+  }
+
+  const std::string description = subtitler::OutputPipelineDescription(
+      subtitler::OutputMode::kNull, std::nullopt, std::nullopt, false,
+      srt_path.string());
+
+  ErrorPtr error;
+  ElementPtr pipeline{
+      gst_parse_launch(description.c_str(), std::out_ptr(error))};
+  INFO("gst_parse_launch error: ",
+       error != nullptr ? std::string{error->message} : "none");
+  REQUIRE(error == nullptr);
+
+  ElementPtr source{
+      gst_bin_get_by_name(GST_BIN(pipeline.get()), "output_source")};
+  ElementPtr parser{
+      gst_bin_get_by_name(GST_BIN(pipeline.get()), "subtitle_parser")};
+
+  REQUIRE(source != nullptr);
+  REQUIRE(parser != nullptr);
+
+  // The anchor: cue time t renders at anchor + t.
+  constexpr GstClockTime kAnchor = 1 * GST_SECOND;
+  constexpr GstClockTime kCueStart = kAnchor + 200 * GST_MSECOND;
+  constexpr GstClockTime kCueEnd = kAnchor + 1400 * GST_MSECOND;
+
+  PadPtr parser_src{gst_element_get_static_pad(parser.get(), "src")};
+  REQUIRE(parser_src != nullptr);
+  gst_pad_set_offset(parser_src.get(), kAnchor);
+
+  ElementPtr main_sink = FindMainSink(pipeline.get(), nullptr);
+  REQUIRE(main_sink != nullptr);
+
+  const auto app_src = GstView<GstAppSrc>{GST_APP_SRC(source.get())};
+
+  {
+    auto caps = CapsPtr{gst_caps_new_simple(
+        "video/x-raw", "format", G_TYPE_STRING, "YUY2", "width", G_TYPE_INT,
+        kWidth, "height", G_TYPE_INT, kHeight, "framerate", GST_TYPE_FRACTION,
+        kFramesPerSecond, 1, nullptr)};
+    gst_app_src_set_caps(app_src, caps.get());
+  }
+
+  SubtitleRenderStats stats;
+  g_object_set(main_sink.get(), "signal-handoffs", TRUE, nullptr);
+  g_signal_connect(main_sink.get(), "handoff", G_CALLBACK(OnSubtitleHandoff),
+                   &stats);
+
+  ClockPtr clock{gst_system_clock_obtain()};
+  gst_pipeline_use_clock(GST_PIPELINE(pipeline.get()), clock.get());
+  gst_element_set_start_time(pipeline.get(), GST_CLOCK_TIME_NONE);
+  gst_element_set_base_time(pipeline.get(), gst_clock_get_time(clock.get()));
+
+  REQUIRE(gst_element_set_state(pipeline.get(), GST_STATE_PLAYING) !=
+          GST_STATE_CHANGE_FAILURE);
+
+  // 3.5 s of frames starting at running time 0: the cue window [1.2 s,
+  // 2.4 s) sits comfortably inside, with unmodified frames on both sides.
+  constexpr int kFrameCount = 210;
+  {
+    std::jthread pusher([&] {
+      CHECK(PushSolidFrames(app_src, kFrameCount, 0) == kFrameCount);
+    });
+    pusher.join();
+    std::this_thread::sleep_for(std::chrono::milliseconds{500});
+  }
+
+  gst_element_set_state(pipeline.get(), GST_STATE_NULL);
+  std::filesystem::remove(srt_path);
+
+  INFO("rendered ", stats.modified.load(), " subtitled frames of ",
+       stats.frames.load());
+  CHECK(stats.frames.load() == kFrameCount);
+
+  // Text actually rendered (needs fonts; the Pi target installs them).
+  REQUIRE(stats.modified.load() > 0);
+
+  // Expected coverage: 1.2 s at 60 fps = 72 frames, with slack for
+  // boundary semantics at the cue edges.
+  constexpr auto kTolerance = 2 * kFrameDuration;
+  CHECK(stats.modified.load() >= 60);
+  CHECK(stats.modified.load() <= 84);
+  CHECK(stats.first_modified.load() >= kCueStart - kTolerance);
+  CHECK(stats.first_modified.load() < kCueStart + 4 * kFrameDuration);
+  CHECK(stats.last_modified.load() >= kCueEnd - 4 * kFrameDuration);
+  CHECK(stats.last_modified.load() < kCueEnd + kTolerance);
 }

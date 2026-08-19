@@ -51,6 +51,7 @@ target_link_libraries(
     PkgConfig::GSTREAMER
     stream
     web
+    subtitler::utils
 )
 
 target_include_directories(

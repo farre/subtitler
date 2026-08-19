@@ -1,6 +1,7 @@
 add_library(
     utils
     INTERFACE
+    paths.h
     preview_frame.h
     reset_guard.h
     unique_ptr.h
