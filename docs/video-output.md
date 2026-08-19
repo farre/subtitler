@@ -204,6 +204,19 @@ browser connection.
 Each browser should receive the most recent completed JPEG. Slow clients
 should skip frames rather than building a backlog.
 
+> **As implemented (#376).** Until the overlay exists, the tee sits right
+> after the `output_source` appsrc — the point the overlay will be inserted
+> at — which is also the only spot whose format (YUY2) `jpegenc` accepts:
+> NV16 (software path) and SAND-tiled DMABuf (pisp path) are both
+> unreachable for it. The branch is `tee ! queue(leaky=1) ! videoscale
+> 640x360 ! jpegenc q75 ! appsink(async=false)`, drained by a pull thread
+> into the shared latest-frame buffer. Rate limiting is decimation in the
+> gate probe (every 6th frame), not `videorate`: videorate anchors its
+> output cadence to the segment start and emits a catch-up burst after
+> every gated gap. Stream seeds the buffer with a magenta placeholder at
+> startup, so the endpoints always have a frame (symmetric with the
+> no-signal screen). Serving is enabled with `--web` (port 8080).
+
 ## Preferred PiSP branching
 
 When supported reliably, use the two PiSP outputs:
@@ -227,7 +240,7 @@ textoverlay
 
 The HDMI output must never depend on the preview branch.
 
-Each branch must contain a separate leaky queue:
+Each branch must contain a separate queue; the preview side is leaky:
 
 ```text
 queue
@@ -238,6 +251,17 @@ queue
 ```
 
 This prevents a slow browser or JPEG encoder from blocking HDMI output.
+
+> **As implemented.** Both queues are `max-size-buffers=1`; the HDMI
+> branch's queue is **not** leaky (dropped HDMI frames would be silent
+> glitches). Every tee branch needs its own queue: without one the
+> clock-synced sink blocks the tee's streaming thread in preroll and the
+> pipeline deadlocks. The preview appsink additionally sets `async=false`:
+> a starving (gated) branch would otherwise hold the whole pipeline in
+> preroll — the output pipeline isn't live in the preroll sense, it
+> reaches PLAYING only when every sink prerolls. All of this is locked in
+> by a regression test (`tests/output_pipeline_tests.cpp`) that pushes
+> frames through the real description with the gate closed and open.
 
 ## MJPEG HTTP endpoint
 
@@ -278,7 +302,36 @@ Also provide a single-frame endpoint:
 GET /api/preview.jpg
 ```
 
+### Serving mechanics (libsoup 3, as implemented in `src/web/`)
+
+- The MJPEG handler registers the client and returns immediately; a frame
+  loop or sleep in the handler would stall every other endpoint. libsoup
+  auto-pauses a chunked response while no chunk is available, so no
+  explicit pause is needed.
+- `soup_message_headers_set_encoding(..., SOUP_ENCODING_CHUNKED)` for the
+  HTTP transfer framing (no outer Content-Length; the Content-Length
+  inside each part describes only that JPEG), and
+  `soup_message_body_set_accumulate(body, FALSE)` so written chunks are
+  discarded and an indefinite response cannot grow.
+- Backpressure: each client has one frame in flight and one pending;
+  `wrote-chunk` clears in-flight and flushes only the newest pending
+  frame. Slow clients skip frames; memory stays bounded.
+- `finished` removes the client. Disconnects are detected on the next
+  frame write (an idle chunked response schedules no I/O), i.e. within
+  one frame period while the encoder runs.
+- A watcher thread blocked on the shared latest-frame buffer posts
+  deliveries onto the server's GMainContext with
+  `g_main_context_invoke_full`; `SoupServerMessage` objects are only ever
+  touched on the server context. The GStreamer side never writes to HTTP
+  sockets.
+- At most 4 concurrent MJPEG clients (503 beyond); the client count
+  toggles the preview gate at the zero/nonzero transitions.
+
 ## Application-side frame distribution
+
+> Implemented as `PreviewFrameBuffer` (`src/utils/preview_frame.h`):
+> dependency-free so both the stream module (producer) and the web module
+> (consumer) can use it; `Store`/`Latest`/`WaitNewer`.
 
 Store only the newest encoded frame:
 
@@ -350,7 +403,7 @@ additional scaling or encoding pipelines.
 
 Do not encode MJPEG when no clients are connected.
 
-Possible strategy:
+Strategy (as implemented):
 
 ```text
 client count becomes nonzero
@@ -360,7 +413,14 @@ client count becomes zero
   -> disable preview branch
 ```
 
-Use a GStreamer `valve`, pad probe, or equivalent branch-control mechanism.
+The gate is a buffer-dropping pad probe on the preview queue
+(`InstallPreviewGate` in `src/stream/preview_gate.{h,cpp}`), not a
+`valve`: while dropping, a valve fails serialized queries
+(`GST_QUERY_LATENCY` included), which stalls latency computation for the
+whole pipeline, HDMI branch included. The probe drops only buffers, so
+queries and sticky events (caps/segment) keep flowing and the branch
+starts instantly when activated. Rate limiting is the same probe keeping
+every 6th frame while active — see the note in "MJPEG web preview".
 
 ## Timing limitation
 
@@ -403,11 +463,16 @@ using the web controls.
 3. Add the `kms-pisp` output backend.
 4. Keep `kms-software` (NV16) as a fallback and correctness reference.
 5. Add subtitle rendering before conversion.
-6. Add a low-resolution preview branch.
-7. Add `videorate`, `jpegenc`, and `appsink`.
-8. Implement the shared latest-JPEG buffer.
-9. Add `/api/preview.jpg`.
-10. Add `/api/preview.mjpeg`.
-11. Add client limits and frame dropping.
-12. Disable preview encoding when unused.
-13. Measure HDMI latency, preview latency, CPU usage, and dropped frames.
+6. ~~Add a low-resolution preview branch~~ — done (#379), with the
+   deviations noted above.
+7. ~~Add `videorate`, `jpegenc`, and `appsink`~~ — done (#379), except
+   `videorate`: rate limiting is decimation in the gate probe.
+8. ~~Implement the shared latest-JPEG buffer~~ — done (#381).
+9. ~~Add `/api/preview.jpg`~~ — done (#382), including the magenta
+   placeholder seeding.
+10. ~~Add `/api/preview.mjpeg`~~ — done (#382), plus a minimal index page.
+11. ~~Add client limits and frame dropping~~ — done (#384).
+12. ~~Disable preview encoding when unused~~ — done (#384), gate driven by
+    the MJPEG client count.
+13. Measure HDMI latency, preview latency, CPU usage, and dropped frames
+    (on the Pi).

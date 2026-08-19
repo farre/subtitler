@@ -98,7 +98,7 @@ output.
 ## Running
 
 ```sh
-./build/subtitler [video-device] [connector-id] [--output=software|pisp|window|null] [--no-audio] [--audio-output-device=<alsa-device>]
+./build/subtitler [video-device] [connector-id] [--output=software|pisp|window|null] [--no-audio] [--audio-output-device=<alsa-device>] [--web]
 ```
 
 - `video-device` — V4L2 capture device (default `/dev/video0`). It must
@@ -121,6 +121,11 @@ output.
   (default `hw:CARD=vc4hdmi0,DEV=0`, the Pi's vc4-hdmi). Captured HDMI audio
   is forwarded bit-transparently (S16LE/48kHz/stereo, `slave-method=skew`
   drift correction).
+- `--web` — start the web server on port 8080 with the MJPEG preview:
+  browse to `http://<host>:8080/` for the live 640x360 10 fps preview
+  (`/api/preview.mjpeg`) or a single frame (`/api/preview.jpg`). Encoding
+  runs only while at least one client is connected; without clients the
+  endpoints serve a magenta placeholder frame.
 
 The KMS modes output directly via KMS/DRM using the vc4 driver (Raspberry
 Pi), so run from a virtual console where no X/Wayland compositor owns the
