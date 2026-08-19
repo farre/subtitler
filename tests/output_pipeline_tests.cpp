@@ -46,9 +46,10 @@ void OnHandoff(GstElement*, GstBuffer*, GstPad*, gpointer user_data) {
   ++*static_cast<std::atomic_uint*>(user_data);
 }
 
-// Pushes count YUY2 frames at 60 fps into the output appsrc, anchored a
-// little ahead of the running time like RunOutput does, so the synced
-// sink renders instead of dropping. Returns the number of frames pushed.
+// Pushes count YUY2 frames at 60 fps into the output appsrc, timestamped
+// in the pipeline's running time like the shared capture/output domain
+// produces, a little ahead so the synced sink renders instead of
+// dropping. Returns the number of frames pushed.
 int PushFrames(GstView<GstAppSrc> source, int count, std::uint64_t first_pts) {
   for (int i = 0; i < count; ++i) {
     BufferPtr buffer{
@@ -75,9 +76,9 @@ int PushFrames(GstView<GstAppSrc> source, int count, std::uint64_t first_pts) {
 // HDMI branch must flow with the preview gate closed (its default state),
 // and opening the gate mid-stream must start the JPEG flow without
 // disturbing the HDMI branch. Exercises the real pipeline description with
-// the clock/latency pinning StartOutput applies. (The first cut used a
-// valve; while dropping it fails serialized queries pipeline-wide and
-// stalled the HDMI branch — the gate is a buffer-dropping pad probe.)
+// the shared-timeline configuration StartOutput applies. (The first cut
+// used a valve; while dropping it fails serialized queries pipeline-wide
+// and stalled the HDMI branch — the gate is a buffer-dropping pad probe.)
 TEST_CASE("output pipeline preview branch") {
   gst_init(nullptr, nullptr);
 
@@ -142,11 +143,13 @@ TEST_CASE("output pipeline preview branch") {
     }
   });
 
-  // Pin clock and latency exactly like StartOutput does.
+  // Put the pipeline on the shared timeline exactly like StartOutput
+  // does: pinned system clock, application-owned start/base time, and
+  // automatic latency (#437).
   ClockPtr clock{gst_system_clock_obtain()};
   gst_pipeline_use_clock(GST_PIPELINE(pipeline.get()), clock.get());
-  gst_pipeline_set_latency(GST_PIPELINE(pipeline.get()),
-                           3 * GST_SECOND / kFramesPerSecond);
+  gst_element_set_start_time(pipeline.get(), GST_CLOCK_TIME_NONE);
+  gst_element_set_base_time(pipeline.get(), gst_clock_get_time(clock.get()));
 
   REQUIRE(gst_element_set_state(pipeline.get(), GST_STATE_PLAYING) !=
           GST_STATE_CHANGE_FAILURE);
@@ -158,7 +161,7 @@ TEST_CASE("output pipeline preview branch") {
   };
 
   const auto push = [&](int count) {
-    // 10 frames of head start, like the anchor's target latency.
+    // 10 frames of head start so nothing is late at the synced sink.
     std::jthread pusher([&] {
       CHECK(PushFrames(app_src, count,
                        running_time() + 10 * kFrameDuration) == count);

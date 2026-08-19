@@ -71,6 +71,20 @@ TEST_CASE("frame buffer") {
     CHECK(Tag(*frame) == 2);
   }
 
+  SUBCASE("flush bumps the generation") {
+    subtitler::FrameBuffer buffer{4};
+
+    const auto initial = buffer.Generation();
+    CHECK(initial > 0);
+
+    buffer.Flush();
+    CHECK(buffer.Generation() != initial);
+
+    const auto after_flush = buffer.Generation();
+    buffer.Flush();
+    CHECK(buffer.Generation() != after_flush);
+  }
+
   SUBCASE("close rejects new frames and drains the queue") {
     subtitler::FrameBuffer buffer{4};
 

@@ -29,8 +29,9 @@ TEST_CASE("stream throughput with audio enabled") {
     return;
   }
 
-  // The pipeline latency is reconfigured when the audio sink starts, a
-  // few seconds in; run well past that point.
+  // The pipeline latency is reconfigured when the audio sink starts
+  // (GST_MESSAGE_LATENCY -> gst_bin_recalculate_latency), a few seconds
+  // in; run well past that point.
   for (int i = 0; i < 16; ++i) {
     stream->Poll();
     std::this_thread::sleep_for(std::chrono::milliseconds{500});

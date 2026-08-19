@@ -20,7 +20,6 @@
 
 #include "stream/deleters.h"
 #include "stream/frame_buffer.h"
-#include "stream/output_anchor.h"
 #include "stream/preview_gate.h"
 #include "utils/reset_guard.h"
 
@@ -32,9 +31,7 @@ constexpr int kWidth = 1920;
 constexpr int kHeight = 1080;
 constexpr int kFramesPerSecond = 60;
 constexpr auto kFrameDuration = GST_SECOND / kFramesPerSecond;
-constexpr std::uint64_t kOutputLatencyFrames = 3;
-constexpr auto kTargetLatency = kOutputLatencyFrames * kFrameDuration;
-constexpr std::size_t kFrameBufferCapacity = 4;
+constexpr std::size_t kFrameBufferCapacity = 8;
 
 // CV105 audio: S16_LE 48 kHz stereo only (docs/pi-setup.md). Bit-transparent
 // passthrough: no element may touch the samples.
@@ -42,9 +39,32 @@ constexpr std::string_view kAudioDevice = "hw:CARD=Video,DEV=0";
 constexpr int kAudioRate = 48000;
 constexpr int kAudioChannels = 2;
 constexpr std::uint64_t kAudioBytesPerFrame = kAudioChannels * 2;
-constexpr std::size_t kAudioBufferCapacity = 8;
+constexpr std::size_t kAudioBufferCapacity = 16;
 // One silence chunk per video frame period.
 constexpr std::uint64_t kSilenceFramesPerChunk = kAudioRate / kFramesPerSecond;
+constexpr auto kAudioChunkDuration =
+    kSilenceFramesPerChunk * GST_SECOND / kAudioRate;
+
+// Time-based in-flight limit for the output appsrcs: comfortably above
+// the worst-case computed latency so the render schedule never starves
+// the sources — the starvation that made pinning latency necessary
+// (#128).
+constexpr GstClockTime kAppSrcMaxQueueTime = 300 * GST_MSECOND;
+
+// Latency reported through the output appsrcs for the delay hidden behind
+// the appsink/appsrc boundary: one frame/chunk of capture-side queueing
+// at minimum, a full frame buffer at most. Refined by on-device
+// measurement (#437).
+constexpr GstClockTime kVideoMinLatency = kFrameDuration;
+constexpr GstClockTime kAudioMinLatency = 10 * GST_MSECOND;
+
+// Small alsasink ring buffer so the automatically computed pipeline
+// latency stays low; a default alsasink reports ~200 ms, which no low
+// latency target can honor. Microseconds: the unit of alsasink's
+// buffer-time and latency-time. Must survive on-device xrun testing
+// (#437).
+constexpr gint64 kAudioSinkBufferTimeUs = 40000;
+constexpr gint64 kAudioSinkLatencyTimeUs = 10000;
 
 // No-signal screen: solid pink, BT.601 limited range.
 constexpr std::uint8_t kPinkY = 106;
@@ -110,41 +130,42 @@ void PrintBusError(std::string_view pipeline_name, MessagePtr& message) {
   }
 }
 
-bool PollBus(BusPtr& bus, std::string_view pipeline_name) {
+bool PollBus(GstView<GstBus> bus, GstView<GstElement> pipeline,
+             std::string_view pipeline_name) {
   if (bus == nullptr) {
     return true;
   }
 
-  auto message = MessagePtr{gst_bus_pop_filtered(
-      bus.get(),
-      static_cast<GstMessageType>(GST_MESSAGE_ERROR | GST_MESSAGE_EOS))};
+  bool ok = true;
 
-  if (message == nullptr) {
-    return true;
+  while (auto message = MessagePtr{gst_bus_pop(bus)}) {
+    switch (GST_MESSAGE_TYPE(message.get())) {
+      case GST_MESSAGE_ERROR:
+        PrintBusError(pipeline_name, message);
+        ok = false;
+        break;
+      case GST_MESSAGE_EOS:
+        std::println("{} pipeline reached EOS", pipeline_name);
+        ok = false;
+        break;
+      case GST_MESSAGE_LATENCY:
+        // A sink (re)negotiated its latency; redistribute the new global
+        // latency. With automatic latency this is the only way the
+        // pipeline learns about it (#437).
+        if (!gst_bin_recalculate_latency(GST_BIN(pipeline))) {
+          std::println(stderr, "Could not recalculate {} pipeline latency",
+                       pipeline_name);
+          ok = false;
+        }
+        break;
+      default:
+        break;
+    }
   }
 
-  const auto type = GST_MESSAGE_TYPE(message.get());
-
-  if (type == GST_MESSAGE_ERROR) {
-    PrintBusError(pipeline_name, message);
-  } else {
-    std::println("{} pipeline reached EOS", pipeline_name);
-  }
-
-  return false;
+  return ok;
 }
 
-GstClockTime OutputRunningTime(GstView<GstElement> output_pipeline,
-                               GstView<GstClock> output_clock) {
-  const auto now = gst_clock_get_time(output_clock);
-  const auto base = gst_element_get_base_time(output_pipeline);
-
-  if (!GST_CLOCK_TIME_IS_VALID(base) || now < base) {
-    return 0;
-  }
-
-  return now - base;
-}
 BufferPtr MakeSolidFrame(int width, int height) {
   BufferPtr buffer = BufferPtr{
       gst_buffer_new_allocate(nullptr, width * height * 2, nullptr)};
@@ -390,11 +411,16 @@ std::string AudioOutputPipelineDescription(std::string_view device) {
       "is-live=true "
       "format=time "
       "block=true "
-      "max-buffers=8 "
+      "max-buffers=0 "
+      "max-bytes=0 "
+      "max-time={} "
       "! alsasink "
       "device=\"{}\" "
+      "buffer-time={} "
+      "latency-time={} "
       "slave-method=skew",
-      device);
+      kAppSrcMaxQueueTime, device, kAudioSinkBufferTimeUs,
+      kAudioSinkLatencyTimeUs);
 }
 
 std::string VideoOutputPipelineDescription(OutputMode mode,
@@ -410,7 +436,10 @@ std::string VideoOutputPipelineDescription(OutputMode mode,
       "is-live=true "
       "format=time "
       "block=true "
-      "max-buffers=2 ");
+      "max-buffers=0 "
+      "max-bytes=0 "
+      "max-time={} ",
+      kAppSrcMaxQueueTime);
 
   std::string tail;
 
@@ -486,7 +515,10 @@ struct Stream::Implementation {
   };
 
   Implementation(std::size_t frame_capacity, std::size_t audio_capacity)
-      : frames_(frame_capacity), audio_(audio_capacity) {}
+      : frame_capacity_{frame_capacity},
+        audio_capacity_{audio_capacity},
+        frames_(frame_capacity),
+        audio_(audio_capacity) {}
 
   bool Initialize(const std::string& device, OutputMode output_mode,
                   std::optional<int> connector_id, bool audio,
@@ -497,6 +529,10 @@ struct Stream::Implementation {
 
   bool StartCapture(const std::string& device);
   bool StartOutput(OutputMode output_mode, std::optional<int> connector_id);
+
+  // Puts a pipeline on the shared timeline (see master_clock_).
+  void ConfigureTimeline(GstView<GstElement> pipeline) const;
+  GstClockTime MasterRunningTime() const;
 
   void Stop();
 
@@ -527,6 +563,18 @@ struct Stream::Implementation {
   // Guards the pipelines, buses, threads, and capture_state_ below.
   std::mutex mutex_;
 
+  // One clock and base time for every pipeline, so capture and output
+  // share a running-time domain: captured PTS are valid output timestamps
+  // and capture restarts stay monotonic (#437). Pinning the clock also
+  // keeps the output pipeline from adopting the alsasink ring-buffer
+  // clock, which starts at zero when the device starts (#128).
+  const ClockPtr master_clock_{gst_system_clock_obtain()};
+  const GstClockTime master_base_time_ =
+      gst_clock_get_time(master_clock_.get());
+
+  const std::size_t frame_capacity_;
+  const std::size_t audio_capacity_;
+
   FrameBuffer frames_;
   FrameBuffer audio_;
 
@@ -536,7 +584,8 @@ struct Stream::Implementation {
 
   bool audio_enabled_ = false;
   std::string audio_output_device_;
-  // Signed nanoseconds added to audio timestamps at output re-anchoring.
+  // Signed nanoseconds shifting audio relative to video; negative values
+  // are realized as a video delay.
   std::int64_t audio_offset_ = 0;
 
   // Set at Initialize: whether the output pipeline has a preview branch.
@@ -572,6 +621,20 @@ struct Stream::Implementation {
   // the preview branch is enabled.
   std::jthread preview_thread_;
 };
+
+void Stream::Implementation::ConfigureTimeline(
+    GstView<GstElement> pipeline) const {
+  gst_pipeline_use_clock(GST_PIPELINE(pipeline), master_clock_.get());
+
+  // The application owns start/base time; nothing resets the domain.
+  gst_element_set_start_time(pipeline, GST_CLOCK_TIME_NONE);
+  gst_element_set_base_time(pipeline, master_base_time_);
+}
+
+GstClockTime Stream::Implementation::MasterRunningTime() const {
+  const auto now = gst_clock_get_time(master_clock_.get());
+  return now >= master_base_time_ ? now - master_base_time_ : 0;
+}
 
 bool Stream::Implementation::StartCapture(const std::string& device) {
   std::lock_guard lock{mutex_};
@@ -609,6 +672,8 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
 
   capture_bus_ = BusPtr{gst_element_get_bus(capture_pipeline_.get())};
 
+  ConfigureTimeline(capture_pipeline_.get());
+
   if (gst_element_set_state(capture_pipeline_.get(), GST_STATE_PLAYING) ==
       GST_STATE_CHANGE_FAILURE) {
     std::println(stderr, "Could not start capture pipeline");
@@ -639,7 +704,7 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
 void Stream::Implementation::RunCapture(std::stop_token stop) {
   const auto sink = GstView<GstAppSink>{GST_APP_SINK(capture_sink_.get())};
 
-  std::uint64_t fallback_frame_number = 0;
+  GstClockTime fallback_pts = GST_CLOCK_TIME_NONE;
 
   while (!stop.stop_requested()) {
     SamplePtr sample =
@@ -665,14 +730,17 @@ void Stream::Implementation::RunCapture(std::stop_token stop) {
     }
 
     if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(copied.get()))) {
-      GST_BUFFER_PTS(copied.get()) = fallback_frame_number * kFrameDuration;
+      if (!GST_CLOCK_TIME_IS_VALID(fallback_pts)) {
+        fallback_pts = MasterRunningTime();
+      }
+      GST_BUFFER_PTS(copied.get()) = fallback_pts;
     }
 
     if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DURATION(copied.get()))) {
       GST_BUFFER_DURATION(copied.get()) = kFrameDuration;
     }
 
-    ++fallback_frame_number;
+    fallback_pts = GST_BUFFER_PTS(copied.get()) + kFrameDuration;
 
     if (!frames_.PushLatest(std::move(copied))) {
       break;
@@ -686,7 +754,7 @@ void Stream::Implementation::RunAudioCapture(std::stop_token stop) {
   const auto sink =
       GstView<GstAppSink>{GST_APP_SINK(capture_audio_sink_.get())};
 
-  std::uint64_t fallback_sample_number = 0;
+  GstClockTime fallback_pts = GST_CLOCK_TIME_NONE;
 
   while (!stop.stop_requested()) {
     SamplePtr sample =
@@ -712,15 +780,18 @@ void Stream::Implementation::RunAudioCapture(std::stop_token stop) {
     const auto frames = gst_buffer_get_size(copied.get()) / kAudioBytesPerFrame;
 
     if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(copied.get()))) {
-      GST_BUFFER_PTS(copied.get()) =
-          fallback_sample_number * GST_SECOND / kAudioRate;
+      if (!GST_CLOCK_TIME_IS_VALID(fallback_pts)) {
+        fallback_pts = MasterRunningTime();
+      }
+      GST_BUFFER_PTS(copied.get()) = fallback_pts;
     }
 
     if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DURATION(copied.get()))) {
       GST_BUFFER_DURATION(copied.get()) = frames * GST_SECOND / kAudioRate;
     }
 
-    fallback_sample_number += frames;
+    fallback_pts =
+        GST_BUFFER_PTS(copied.get()) + GST_BUFFER_DURATION(copied.get());
 
     if (!audio_.PushLatest(std::move(copied))) {
       break;
@@ -772,6 +843,14 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
         kFramesPerSecond, 1, nullptr)};
 
     gst_app_src_set_caps(source, caps.get());
+
+    // Tell the latency query what hides behind the appsink/appsrc
+    // boundary: the output pipeline can't see the capture side, and an
+    // undercut latency budget makes sinks drop buffers as late (#437).
+    g_object_set(output_source_.get(), "min-latency",
+                 static_cast<gint64>(kVideoMinLatency), "max-latency",
+                 static_cast<gint64>(frame_capacity_ * kFrameDuration),
+                 nullptr);
   }
 
   if (audio_enabled_) {
@@ -792,6 +871,11 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
         G_TYPE_STRING, "interleaved", nullptr)};
 
     gst_app_src_set_caps(source, caps.get());
+
+    g_object_set(output_audio_source_.get(), "min-latency",
+                 static_cast<gint64>(kAudioMinLatency), "max-latency",
+                 static_cast<gint64>(audio_capacity_ * kAudioChunkDuration),
+                 nullptr);
   }
 
   if (preview_enabled_) {
@@ -811,23 +895,8 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
   }
 
   output_bus_ = BusPtr{gst_element_get_bus(output_pipeline_.get())};
-  {
-    // Pin the pipeline clock to the system clock. Otherwise adding the
-    // alsasink makes the pipeline adopt the audio ring-buffer clock,
-    // which starts at zero when the device starts and breaks the anchor
-    // math. The alsasink skews its device clock onto the pipeline clock
-    // (slave-method=skew) regardless.
-    ClockPtr clock{gst_system_clock_obtain()};
-    gst_pipeline_use_clock(GST_PIPELINE(output_pipeline_.get()), clock.get());
 
-    // Pin the pipeline latency to the target latency. Sinks render at
-    // PTS + configured latency; an alsasink's reported latency (hundreds
-    // of ms with default settings) would otherwise be configured, and
-    // the resulting render schedule would demand more in-flight frames
-    // than the buffers hold, starving the frame buffer permanently.
-    gst_pipeline_set_latency(GST_PIPELINE(output_pipeline_.get()),
-                             kTargetLatency);
-  }
+  ConfigureTimeline(output_pipeline_.get());
 
   if (gst_element_set_state(output_pipeline_.get(), GST_STATE_PLAYING) ==
       GST_STATE_CHANGE_FAILURE) {
@@ -859,25 +928,16 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
 }
 
 void Stream::Implementation::RunOutput(std::stop_token stop) {
-  // The casts add no references; the views are non-owning and the
-  // ElementPtrs remain the sole owners.
-  const auto pipeline = GstView<GstElement>{output_pipeline_.get()};
+  // The cast adds no reference; the view is non-owning and the
+  // ElementPtr remains the sole owner.
   const auto source = GstView<GstAppSrc>{GST_APP_SRC(output_source_.get())};
-
-  ClockPtr clock = ClockPtr{gst_element_get_clock(pipeline)};
-
-  if (clock == nullptr) {
-    std::println(stderr, "Output pipeline has no clock");
-
-    output_failed_.store(true);
-    return;
-  }
 
   // Advancing audio can't move a buffer earlier than its arrival; it is
   // realized by delaying video, keeping every render deadline feasible.
-  const auto video_delay =
+  const auto delay =
       audio_offset_ < 0 ? static_cast<GstClockTime>(-audio_offset_) : 0;
-  OutputAnchor anchor{kTargetLatency + video_delay};
+
+  std::uint64_t generation = 0;
 
   while (!stop.stop_requested()) {
     auto frame_result = frames_.Pop(stop);
@@ -897,11 +957,17 @@ void Stream::Implementation::RunOutput(std::stop_token stop) {
       break;
     }
 
-    GST_BUFFER_PTS(frame.get()) =
-        anchor.Map(capture_pts, OutputRunningTime(pipeline, clock.get()),
-                   gst_pipeline_get_latency(GST_PIPELINE(pipeline)));
-
+    // Capture and output share a running-time domain, so the captured
+    // PTS is already an output timestamp (#437).
+    GST_BUFFER_PTS(frame.get()) = capture_pts + delay;
     GST_BUFFER_DTS(frame.get()) = GST_CLOCK_TIME_NONE;
+
+    // The first buffer after a frame-buffer flush is not contiguous with
+    // what the sink last saw.
+    if (const auto current = frames_.Generation(); current != generation) {
+      generation = current;
+      GST_BUFFER_FLAG_SET(frame.get(), GST_BUFFER_FLAG_DISCONT);
+    }
 
     // gst_app_src_push_buffer takes ownership.
     const auto result = gst_app_src_push_buffer(source, frame.release());
@@ -922,24 +988,15 @@ void Stream::Implementation::RunOutput(std::stop_token stop) {
 }
 
 void Stream::Implementation::RunAudioOutput(std::stop_token stop) {
-  // The casts add no references; the views are non-owning and the
-  // ElementPtrs remain the sole owners.
-  const auto pipeline = GstView<GstElement>{output_pipeline_.get()};
+  // The cast adds no reference; the view is non-owning and the
+  // ElementPtr remains the sole owner.
   const auto source =
       GstView<GstAppSrc>{GST_APP_SRC(output_audio_source_.get())};
 
-  ClockPtr clock = ClockPtr{gst_element_get_clock(pipeline)};
-
-  if (clock == nullptr) {
-    std::println(stderr, "Output pipeline has no clock");
-
-    output_failed_.store(true);
-    return;
-  }
-
-  const auto audio_delay =
+  const auto delay =
       audio_offset_ > 0 ? static_cast<GstClockTime>(audio_offset_) : 0;
-  OutputAnchor anchor{kTargetLatency + audio_delay};
+
+  std::uint64_t generation = 0;
 
   while (!stop.stop_requested()) {
     auto chunk_result = audio_.Pop(stop);
@@ -959,11 +1016,13 @@ void Stream::Implementation::RunAudioOutput(std::stop_token stop) {
       break;
     }
 
-    GST_BUFFER_PTS(chunk.get()) =
-        anchor.Map(capture_pts, OutputRunningTime(pipeline, clock.get()),
-                   gst_pipeline_get_latency(GST_PIPELINE(pipeline)));
-
+    GST_BUFFER_PTS(chunk.get()) = capture_pts + delay;
     GST_BUFFER_DTS(chunk.get()) = GST_CLOCK_TIME_NONE;
+
+    if (const auto current = audio_.Generation(); current != generation) {
+      generation = current;
+      GST_BUFFER_FLAG_SET(chunk.get(), GST_BUFFER_FLAG_DISCONT);
+    }
 
     // gst_app_src_push_buffer takes ownership.
     const auto result = gst_app_src_push_buffer(source, chunk.release());
@@ -1027,8 +1086,10 @@ void Stream::Implementation::SetPreviewActive(bool active) {
 
 void Stream::Implementation::RunScreensaver(std::stop_token stop) {
   auto next_frame = std::chrono::steady_clock::now();
-  std::uint64_t frame_number = 0;
-  std::uint64_t silence_sample_number = 0;
+  // Timestamp in the shared running time: no-signal buffers flow through
+  // the same output timeline as captured ones, so capture/screensaver
+  // transitions stay monotonic (#437).
+  auto next_pts = MasterRunningTime();
 
   while (!stop.stop_requested()) {
     BufferPtr frame = MakePinkFrame();
@@ -1038,10 +1099,8 @@ void Stream::Implementation::RunScreensaver(std::stop_token stop) {
       break;
     }
 
-    GST_BUFFER_PTS(frame.get()) = frame_number * kFrameDuration;
+    GST_BUFFER_PTS(frame.get()) = next_pts;
     GST_BUFFER_DURATION(frame.get()) = kFrameDuration;
-
-    ++frame_number;
 
     if (!frames_.PushLatest(std::move(frame))) {
       break;
@@ -1055,18 +1114,15 @@ void Stream::Implementation::RunScreensaver(std::stop_token stop) {
         break;
       }
 
-      GST_BUFFER_PTS(silence.get()) =
-          silence_sample_number * GST_SECOND / kAudioRate;
-      GST_BUFFER_DURATION(silence.get()) =
-          kSilenceFramesPerChunk * GST_SECOND / kAudioRate;
-
-      silence_sample_number += kSilenceFramesPerChunk;
+      GST_BUFFER_PTS(silence.get()) = next_pts;
+      GST_BUFFER_DURATION(silence.get()) = kAudioChunkDuration;
 
       if (!audio_.PushLatest(std::move(silence))) {
         break;
       }
     }
 
+    next_pts += kFrameDuration;
     next_frame += std::chrono::nanoseconds{kFrameDuration};
     std::this_thread::sleep_until(next_frame);
   }
@@ -1089,8 +1145,9 @@ void Stream::Implementation::StopCapturePipeline(
       audio_thread_.join();
     }
 
-    // No partial capture audio may survive into the no-signal screen (or
-    // a restarted capture): drop whatever the audio buffer still holds.
+    // No partial capture data may survive into the no-signal screen (or
+    // a restarted capture): drop whatever the frame buffers still hold.
+    frames_.Flush();
     audio_.Flush();
 
     ResetGuard reset{capture_pipeline_, capture_sink_, capture_audio_sink_,
@@ -1139,8 +1196,9 @@ void Stream::Implementation::Stop() {
 void Stream::Implementation::Poll() {
   std::lock_guard lock{mutex_};
 
-  const bool capture_bus_ok = PollBus(capture_bus_, "capture");
-  PollBus(output_bus_, "output");
+  const bool capture_bus_ok =
+      PollBus(capture_bus_.get(), capture_pipeline_.get(), "capture");
+  PollBus(output_bus_.get(), output_pipeline_.get(), "output");
 
   if (capture_state_ == CaptureState::kCapturing &&
       (!capture_bus_ok || !capture_active_.load())) {

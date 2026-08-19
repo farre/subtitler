@@ -41,6 +41,11 @@ std::optional<BufferPtr> FrameBuffer::Pop(std::stop_token stop) {
 void FrameBuffer::Flush() {
   std::lock_guard lock{mutex_};
   frames_.clear();
+  generation_.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::uint64_t FrameBuffer::Generation() const noexcept {
+  return generation_.load(std::memory_order_relaxed);
 }
 
 void FrameBuffer::Close() {

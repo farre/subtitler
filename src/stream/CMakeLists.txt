@@ -1,7 +1,6 @@
 add_library(
     stream
     frame_buffer.cpp
-    output_anchor.cpp
     preview_gate.cpp
     stream.cpp
 )

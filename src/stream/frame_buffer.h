@@ -20,10 +20,14 @@ class FrameBuffer {
 
   std::optional<BufferPtr> Pop(std::stop_token stop);
 
-  // Discards any queued frames without closing the buffer.
+  // Discards any queued frames without closing the buffer. Bumps the
+  // generation so consumers can mark what comes next as discontinuous.
   void Flush();
 
   void Close();
+
+  // Incremented by every Flush; starts at 1.
+  std::uint64_t Generation() const noexcept;
 
   std::uint64_t DroppedFrames() const noexcept;
 
@@ -36,5 +40,6 @@ class FrameBuffer {
 
   bool closed_ = false;
   std::atomic_uint64_t dropped_frames_ = 0;
+  std::atomic_uint64_t generation_ = 1;
 };
 }  // namespace subtitler

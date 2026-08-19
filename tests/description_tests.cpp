@@ -104,6 +104,9 @@ TEST_CASE("output pipeline description") {
     CHECK(description.contains("framerate=60/1"));
     CHECK(description.contains("kmssink"));
     CHECK(description.contains("driver-name=vc4"));
+    // Time-based in-flight limit, sized above the worst-case computed
+    // latency so the render schedule can't starve the source (#437).
+    CHECK(description.contains("max-time=300000000"));
   }
 
   SUBCASE("pisp pipeline has pispconvert and NV12 DMABuf") {
@@ -138,6 +141,12 @@ TEST_CASE("output pipeline description") {
     CHECK(description.contains("alsasink"));
     CHECK(description.contains("device=\"hw:CARD=vc4hdmi0,DEV=0\""));
     CHECK(description.contains("slave-method=skew"));
+    // Small ring buffer so the computed pipeline latency stays low
+    // (#437); in microseconds, the unit of these alsasink properties.
+    CHECK(description.contains("buffer-time=40000"));
+    CHECK(description.contains("latency-time=10000"));
+    // Time-based in-flight limit, like the video branch.
+    CHECK(description.contains("max-time=300000000"));
   }
 
   SUBCASE("audio branch is optional") {
