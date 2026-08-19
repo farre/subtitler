@@ -60,7 +60,7 @@ cmake --build --preset default
 - `src/stream/` also has `frame_buffer.*` (the app-owned frame queue between the threads), `preview_gate.*` (the pad-probe gate for the MJPEG preview branch, #379), and `deleters.h`.
 - `tests/` holds the doctest unit tests. Libs expose nothing publicly, so test targets set their own `target_include_directories` for `src/`.
 - `docs/` holds appliance documentation (e.g. `docs/pi-setup.md`, the verified Pi 5 + CV105 hardware profile). The README stays the how-to; docs/ is the record — don't duplicate commands between them.
-- `tools/` holds development/measurement utilities (currently `generate-sync-test-video.sh`, the #133 flash-and-click clip generator). Not part of the build.
+- `tools/` holds development/measurement utilities (`generate-sync-test-video.sh`, the #133 flash-and-click clip generator; `lorem-ipsum.srt`, 100 filler cues over ~10 minutes for trying the #212 upload endpoint and subtitle rendering). Not part of the build.
 - `cmake/CompilerWarnings.cmake` is an **empty placeholder**; warning flags (`-Wall -Wextra -Wpedantic`) are set directly on targets in the root `CMakeLists.txt`. Don't grep the module file for warning config.
 - `cmake/Sanitizers.cmake` holds the optional sanitizers: `SUBTITLER_ENABLE_ASAN` / `SUBTITLER_ENABLE_UBSAN` (both default OFF), applied directory-scope so tests are instrumented too. Build them via the `asan-ubsan` configure/build/test presets (binary dir `build/asan-ubsan`).
 - `cmake/Dependencies.cmake` declares GLib and Threads that nothing links yet — intentional. libsoup is used by `src/web/`.
