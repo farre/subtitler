@@ -5,16 +5,22 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <future>
+#include <iterator>
 #include <memory>
 #include <print>
+#include <ranges>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include "utils/preview_frame.h"
+#include "utils/unique_ptr.h"
 
 namespace {
 
@@ -24,11 +30,9 @@ using namespace subtitler;
 constexpr std::string_view kBoundary = "frame";
 constexpr std::size_t kMaxClients = 4;
 
-constexpr std::string_view kIndexPage =
-    "<!doctype html>\n"
-    "<meta charset=\"utf-8\">\n"
-    "<title>subtitler</title>\n"
-    "<img src=\"/api/preview.mjpeg\" alt=\"Video preview\">\n";
+// Uploads (#212).
+constexpr std::string_view kSubtitlesPrefix = "/api/subtitles/";
+constexpr std::size_t kMaxSubtitleBytes = 8 * 1024 * 1024;
 
 GBytes* MakePart(const PreviewFrame& frame) {
   const std::string header = std::format(
@@ -48,6 +52,24 @@ GBytes* MakePart(const PreviewFrame& frame) {
   bytes[total - 1] = std::byte{'\n'};
 
   return g_bytes_new_take(bytes, total);
+}
+
+// Only .html, .js, .css, and .png are ever served (#212): the allowlist
+// doubles as the MIME map.
+const char* StaticContentType(std::string_view path) {
+  if (path.ends_with(".html")) {
+    return "text/html; charset=utf-8";
+  }
+  if (path.ends_with(".js")) {
+    return "text/javascript; charset=utf-8";
+  }
+  if (path.ends_with(".css")) {
+    return "text/css; charset=utf-8";
+  }
+  if (path.ends_with(".png")) {
+    return "image/png";
+  }
+  return nullptr;
 }
 
 }  // namespace
@@ -79,8 +101,13 @@ struct subtitler::WebServer::Implementation {
   };
 
   Implementation(std::uint16_t port, PreviewFrameBuffer& frames,
-                 std::function<void(bool)> preview_activation)
-      : frames_{frames}, preview_activation_{std::move(preview_activation)} {
+                 std::function<void(bool)> preview_activation,
+                 SubtitleUploadHandler subtitle_upload,
+                 std::optional<std::filesystem::path> web_root)
+      : frames_{frames},
+        preview_activation_{std::move(preview_activation)},
+        subtitle_upload_{std::move(subtitle_upload)},
+        web_root_{std::move(web_root)} {
     std::promise<bool> ready;
 
     io_thread_ = std::jthread{[this, port, &ready] { Run(port, ready); }};
@@ -116,16 +143,24 @@ struct subtitler::WebServer::Implementation {
     loop_ = g_main_loop_new(context_, FALSE);
 
     server_ = soup_server_new("server-header", "subtitler", nullptr);
-    soup_server_add_handler(server_, "/", HandleIndex, this, nullptr);
     soup_server_add_handler(server_, "/api/preview.jpg", HandleJpg, this,
                             nullptr);
     soup_server_add_handler(server_, "/api/preview.mjpeg", HandleMjpeg, this,
                             nullptr);
 
+    if (subtitle_upload_) {
+      soup_server_add_handler(server_, "/api/subtitles", HandleSubtitleUpload,
+                              this, nullptr);
+    }
+
+    // The default handler: every unmatched path tries the web root.
+    if (web_root_) {
+      soup_server_add_handler(server_, "/", HandleStatic, this, nullptr);
+    }
+
     GError* error = nullptr;
-    const bool listening =
-        soup_server_listen_all(server_, port,
-                               static_cast<SoupServerListenOptions>(0), &error);
+    const bool listening = soup_server_listen_all(
+        server_, port, static_cast<SoupServerListenOptions>(0), &error);
 
     if (!listening) {
       std::println(stderr, "Web server could not listen on port {}: {}", port,
@@ -242,13 +277,6 @@ struct subtitler::WebServer::Implementation {
     }
   }
 
-  static void HandleIndex(SoupServer*, SoupServerMessage* message,
-                          const char*, GHashTable*, gpointer) {
-    soup_server_message_set_response(message, "text/html", SOUP_MEMORY_STATIC,
-                                     kIndexPage.data(), kIndexPage.size());
-    soup_server_message_set_status(message, SOUP_STATUS_OK, nullptr);
-  }
-
   static void HandleJpg(SoupServer*, SoupServerMessage* message, const char*,
                         GHashTable*, gpointer user_data) {
     auto& self = *static_cast<Implementation*>(user_data);
@@ -270,14 +298,13 @@ struct subtitler::WebServer::Implementation {
     auto* headers = soup_server_message_get_response_headers(message);
     soup_message_headers_replace(headers, "Cache-Control", "no-store");
     const auto sequence = std::to_string(frame->sequence);
-    soup_message_headers_replace(headers, "X-Frame-Sequence",
-                                 sequence.c_str());
+    soup_message_headers_replace(headers, "X-Frame-Sequence", sequence.c_str());
 
     soup_server_message_set_status(message, SOUP_STATUS_OK, nullptr);
   }
 
-  static void HandleMjpeg(SoupServer*, SoupServerMessage* message,
-                          const char*, GHashTable*, gpointer user_data) {
+  static void HandleMjpeg(SoupServer*, SoupServerMessage* message, const char*,
+                          GHashTable*, gpointer user_data) {
     auto& self = *static_cast<Implementation*>(user_data);
 
     if (self.clients_.size() >= kMaxClients) {
@@ -305,8 +332,7 @@ struct subtitler::WebServer::Implementation {
     auto* headers = soup_server_message_get_response_headers(message);
     const std::string content_type =
         std::format("multipart/x-mixed-replace; boundary={}", kBoundary);
-    soup_message_headers_replace(headers, "Content-Type",
-                                 content_type.c_str());
+    soup_message_headers_replace(headers, "Content-Type", content_type.c_str());
     soup_message_headers_replace(headers, "Cache-Control", "no-store");
     soup_message_headers_replace(headers, "Pragma", "no-cache");
 
@@ -327,8 +353,147 @@ struct subtitler::WebServer::Implementation {
     }
   }
 
+  // PUT /api/subtitles/<title> (#212): stores and activates the SRT in
+  // the body. libsoup invokes the handler after the request body is
+  // complete, so the body is fully available here.
+  static void HandleSubtitleUpload(SoupServer*, SoupServerMessage* message,
+                                   const char* path, GHashTable*,
+                                   gpointer user_data) {
+    auto& self = *static_cast<Implementation*>(user_data);
+
+    if (std::string_view{soup_server_message_get_method(message)} != "PUT") {
+      soup_message_headers_replace(
+          soup_server_message_get_response_headers(message), "Allow", "PUT");
+      soup_server_message_set_status(message, SOUP_STATUS_METHOD_NOT_ALLOWED,
+                                     nullptr);
+      return;
+    }
+
+    // The handler is prefix-matched; the title is whatever follows the
+    // prefix, percent-encoded.
+    const std::string_view raw{path};
+    if (!raw.starts_with(kSubtitlesPrefix) ||
+        raw.size() == kSubtitlesPrefix.size()) {
+      soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
+      return;
+    }
+
+    const UniquePtr<gchar, g_free> decoded{
+        g_uri_unescape_string(path + kSubtitlesPrefix.size(), nullptr)};
+    if (decoded == nullptr) {
+      soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
+      return;
+    }
+
+    const UniquePtr<GBytes, g_bytes_unref> body{soup_message_body_flatten(
+        soup_server_message_get_request_body(message))};
+
+    const gsize body_size = body != nullptr ? g_bytes_get_size(body.get()) : 0;
+    if (body_size == 0) {
+      soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
+      return;
+    }
+
+    if (body_size > kMaxSubtitleBytes) {
+      soup_server_message_set_status(
+          message, SOUP_STATUS_REQUEST_ENTITY_TOO_LARGE, nullptr);
+      return;
+    }
+
+    gsize data_size;
+    const auto* data =
+        static_cast<const char*>(g_bytes_get_data(body.get(), &data_size));
+
+    const auto result =
+        self.subtitle_upload_(decoded.get(), std::string_view{data, data_size});
+
+    switch (result.status) {
+      case SubtitleUploadStatus::kStored:
+        soup_server_message_set_response(
+            message, "text/plain; charset=utf-8", SOUP_MEMORY_COPY,
+            result.stored_name.data(), result.stored_name.size());
+        soup_server_message_set_status(message, SOUP_STATUS_CREATED, nullptr);
+        break;
+      case SubtitleUploadStatus::kInvalidTitle:
+        soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST,
+                                       nullptr);
+        break;
+      case SubtitleUploadStatus::kFailed:
+        soup_server_message_set_status(
+            message, SOUP_STATUS_INTERNAL_SERVER_ERROR, nullptr);
+        break;
+    }
+  }
+
+  // The static fallback (#212): GET paths not claimed by a registered
+  // route are served from the web root; "/" maps to index.html.
+  static void HandleStatic(SoupServer*, SoupServerMessage* message,
+                           const char* path, GHashTable*, gpointer user_data) {
+    auto& self = *static_cast<Implementation*>(user_data);
+
+    const auto not_found = [&] {
+      soup_server_message_set_status(message, SOUP_STATUS_NOT_FOUND, nullptr);
+    };
+
+    if (std::string_view{soup_server_message_get_method(message)} != "GET") {
+      not_found();
+      return;
+    }
+
+    const UniquePtr<gchar, g_free> decoded{
+        g_uri_unescape_string(path, nullptr)};
+    if (decoded == nullptr) {
+      not_found();
+      return;
+    }
+
+    std::string_view relative{decoded.get()};
+    if (relative == "/") {
+      relative = "/index.html";
+    }
+
+    const char* content_type = StaticContentType(relative);
+    if (!relative.starts_with('/') || content_type == nullptr) {
+      not_found();
+      return;
+    }
+
+    // Traversal guard: only plain segments, joined under the web root.
+    std::filesystem::path file = *self.web_root_;
+    bool valid = true;
+    for (const auto segment : std::views::split(relative.substr(1), '/')) {
+      const std::string_view part{segment};
+      if (part.empty() || part == "." || part == ".." ||
+          part.find('\\') != std::string_view::npos) {
+        valid = false;
+        break;
+      }
+      file /= part;
+    }
+
+    std::error_code error;
+    if (!valid || !std::filesystem::is_regular_file(file, error)) {
+      not_found();
+      return;
+    }
+
+    std::ifstream stream{file, std::ios::binary};
+    const std::string content{std::istreambuf_iterator<char>{stream},
+                              std::istreambuf_iterator<char>{}};
+    if (stream.bad()) {
+      not_found();
+      return;
+    }
+
+    soup_server_message_set_response(message, content_type, SOUP_MEMORY_COPY,
+                                     content.data(), content.size());
+    soup_server_message_set_status(message, SOUP_STATUS_OK, nullptr);
+  }
+
   PreviewFrameBuffer& frames_;
   std::function<void(bool)> preview_activation_;
+  SubtitleUploadHandler subtitle_upload_;
+  std::optional<std::filesystem::path> web_root_;
 
   // These three are created, used, and destroyed on the io thread; the
   // destructor only calls g_main_loop_quit on loop_ from the outside.
@@ -348,10 +513,13 @@ namespace subtitler {
 /* static */
 std::unique_ptr<WebServer> WebServer::Create(
     std::uint16_t port, PreviewFrameBuffer& frames,
-    std::function<void(bool)> preview_activation) {
+    std::function<void(bool)> preview_activation,
+    SubtitleUploadHandler subtitle_upload,
+    std::optional<std::filesystem::path> web_root) {
   auto server = std::make_unique<WebServer>();
   server->implementation_ = std::make_unique<Implementation>(
-      port, frames, std::move(preview_activation));
+      port, frames, std::move(preview_activation), std::move(subtitle_upload),
+      std::move(web_root));
 
   if (!server->implementation_->started_) {
     return nullptr;

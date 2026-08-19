@@ -64,3 +64,9 @@ install(
     TARGETS subtitler subtitler-probe
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )
+
+# Static web assets (#212), resolved at runtime as <data-dir>/subtitler/web.
+install(
+    DIRECTORY web
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/subtitler"
+)

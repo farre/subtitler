@@ -5,9 +5,12 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -56,10 +59,18 @@ struct Response {
   std::string body;
 };
 
-Response HttpGet(std::uint16_t port, std::string_view path) {
+Response HttpRequest(std::string_view method, std::uint16_t port,
+                     std::string_view path,
+                     std::optional<std::string_view> body = std::nullopt) {
   GObjectPtr<SoupSession> session{soup_session_new()};
   GObjectPtr<SoupMessage> message{
-      soup_message_new("GET", Url(port, path).c_str())};
+      soup_message_new(std::string{method}.c_str(), Url(port, path).c_str())};
+
+  if (body) {
+    BytesPtr bytes{g_bytes_new(body->data(), body->size())};
+    soup_message_set_request_body_from_bytes(
+        message.get(), "application/octet-stream", bytes.get());
+  }
 
   GObjectPtr<GInputStream> stream{
       soup_session_send(session.get(), message.get(), nullptr, nullptr)};
@@ -93,6 +104,10 @@ Response HttpGet(std::uint16_t port, std::string_view path) {
   return response;
 }
 
+Response HttpGet(std::uint16_t port, std::string_view path) {
+  return HttpRequest("GET", port, path);
+}
+
 // A held-open MJPEG connection.
 struct MjpegClient {
   ~MjpegClient() { Close(); }
@@ -121,7 +136,7 @@ struct MjpegClient {
 // schedules no I/O), so disconnect assertions need frames flowing.
 struct FrameFeeder {
   explicit FrameFeeder(subtitler::PreviewFrameBuffer& frames)
-      : thread{[this, &frames](std::stop_token stop) {
+      : thread{[&frames](std::stop_token stop) {
           while (!stop.stop_requested()) {
             frames.Store(1000, FakeJpeg(std::byte{0x33}));
             std::this_thread::sleep_for(std::chrono::milliseconds{20});
@@ -172,17 +187,6 @@ TEST_CASE("web server preview endpoints") {
     CHECK(response.body.starts_with("\xFF\xD8\xFF\x11"));
   }
 
-  SUBCASE("index page shows the stream") {
-    auto server = subtitler::WebServer::Create(port, frames);
-    REQUIRE(server != nullptr);
-
-    const auto response = HttpGet(port, "/");
-
-    CHECK(response.status == SOUP_STATUS_OK);
-    CHECK(response.content_type.starts_with("text/html"));
-    CHECK(response.body.contains("/api/preview.mjpeg"));
-  }
-
   SUBCASE("preview.mjpeg streams stored frames as multipart parts") {
     frames.Store(1000, FakeJpeg(std::byte{0x11}));
 
@@ -216,8 +220,8 @@ TEST_CASE("web server preview endpoints") {
     bool second_frame_seen = false;
 
     for (int parts = 0; !second_frame_seen;) {
-      BytesPtr chunk{g_input_stream_read_bytes(
-          stream.get(), 16384, cancellable.get(), nullptr)};
+      BytesPtr chunk{g_input_stream_read_bytes(stream.get(), 16384,
+                                               cancellable.get(), nullptr)};
 
       if (chunk == nullptr) {
         break;
@@ -264,11 +268,10 @@ TEST_CASE("web server preview client limits and activation") {
   std::atomic_int activation_calls = 0;
   std::atomic_bool gate_active = false;
 
-  auto server = subtitler::WebServer::Create(
-      port, frames, [&](bool active) {
-        gate_active.store(active);
-        ++activation_calls;
-      });
+  auto server = subtitler::WebServer::Create(port, frames, [&](bool active) {
+    gate_active.store(active);
+    ++activation_calls;
+  });
   REQUIRE(server != nullptr);
 
   SUBCASE("activation toggles with the client count") {
@@ -306,4 +309,189 @@ TEST_CASE("web server preview client limits and activation") {
 
     CHECK(WaitFor([&] { return !gate_active.load(); }));
   }
+}
+
+TEST_CASE("web server static files") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  const auto root =
+      std::filesystem::temp_directory_path() / "subtitler-static-test";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root / "sub");
+  {
+    std::ofstream{root / "index.html"} << "<!doctype html>\n<title>t</title>\n";
+    std::ofstream{root / "app.js"} << "console.log('hi');\n";
+    std::ofstream{root / "style.css"} << "body {}\n";
+    std::ofstream{root / "logo.png"} << "\x89PNG";
+    std::ofstream{root / "secret.txt"} << "nope\n";
+    std::ofstream{root / "sub" / "page.html"} << "sub\n";
+  }
+
+  SUBCASE("the root path serves index.html") {
+    auto server = subtitler::WebServer::Create(port, frames, {}, {}, root);
+    REQUIRE(server != nullptr);
+
+    const auto response = HttpGet(port, "/");
+
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(response.content_type.starts_with("text/html"));
+    CHECK(response.body.contains("<title>t</title>"));
+  }
+
+  SUBCASE("allowlisted types are served with their MIME types") {
+    auto server = subtitler::WebServer::Create(port, frames, {}, {}, root);
+    REQUIRE(server != nullptr);
+
+    const auto js = HttpGet(port, "/app.js");
+    CHECK(js.status == SOUP_STATUS_OK);
+    CHECK(js.content_type.starts_with("text/javascript"));
+    CHECK(js.body.contains("console.log"));
+
+    const auto css = HttpGet(port, "/style.css");
+    CHECK(css.status == SOUP_STATUS_OK);
+    CHECK(css.content_type.starts_with("text/css"));
+
+    const auto png = HttpGet(port, "/logo.png");
+    CHECK(png.status == SOUP_STATUS_OK);
+    CHECK(png.content_type.starts_with("image/png"));
+    CHECK(png.body.size() == 4);
+  }
+
+  SUBCASE("files in subdirectories are served") {
+    auto server = subtitler::WebServer::Create(port, frames, {}, {}, root);
+    REQUIRE(server != nullptr);
+
+    const auto response = HttpGet(port, "/sub/page.html");
+
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(response.body.contains("sub"));
+  }
+
+  SUBCASE("missing files and non-allowlisted types are 404") {
+    auto server = subtitler::WebServer::Create(port, frames, {}, {}, root);
+    REQUIRE(server != nullptr);
+
+    CHECK(HttpGet(port, "/missing.html").status == SOUP_STATUS_NOT_FOUND);
+    // Present on disk, but outside the allowlist.
+    CHECK(HttpGet(port, "/secret.txt").status == SOUP_STATUS_NOT_FOUND);
+  }
+
+  SUBCASE("traversal attempts are 404") {
+    auto server = subtitler::WebServer::Create(port, frames, {}, {}, root);
+    REQUIRE(server != nullptr);
+
+    // Encoded slashes are rejected by libsoup before routing.
+    CHECK(HttpGet(port, "/..%2f..%2fetc%2fpasswd").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpGet(port, "/%2e%2e/%2e%2e/etc/passwd").status ==
+          SOUP_STATUS_NOT_FOUND);
+    CHECK(HttpGet(port, "/sub/../../etc/passwd").status ==
+          SOUP_STATUS_NOT_FOUND);
+    CHECK(HttpGet(port, "/%2e%2e%5csecret.txt").status ==
+          SOUP_STATUS_NOT_FOUND);
+  }
+
+  SUBCASE("non-GET methods are 404") {
+    auto server = subtitler::WebServer::Create(port, frames, {}, {}, root);
+    REQUIRE(server != nullptr);
+
+    CHECK(HttpRequest("POST", port, "/index.html", "x").status ==
+          SOUP_STATUS_NOT_FOUND);
+  }
+
+  SUBCASE("no web root means no static files") {
+    auto server = subtitler::WebServer::Create(port, frames);
+    REQUIRE(server != nullptr);
+
+    CHECK(HttpGet(port, "/").status == SOUP_STATUS_NOT_FOUND);
+  }
+
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("web server subtitle upload") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  std::string captured_title;
+  std::string captured_contents;
+  subtitler::SubtitleUploadStatus next_status =
+      subtitler::SubtitleUploadStatus::kStored;
+
+  auto server = subtitler::WebServer::Create(
+      port, frames, {}, [&](std::string_view title, std::string_view contents) {
+        captured_title = title;
+        captured_contents = contents;
+        return subtitler::SubtitleUploadResult{
+            next_status, next_status == subtitler::SubtitleUploadStatus::kStored
+                             ? "m/My Movie.srt"
+                             : ""};
+      });
+  REQUIRE(server != nullptr);
+
+  SUBCASE("a valid upload is stored and activated") {
+    const auto response =
+        HttpRequest("PUT", port, "/api/subtitles/My%20Movie.srt",
+                    "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
+
+    CHECK(response.status == SOUP_STATUS_CREATED);
+    CHECK(response.body == "m/My Movie.srt");
+    CHECK(captured_title == "My Movie.srt");
+    CHECK(captured_contents == "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
+  }
+
+  SUBCASE("an invalid title is a 400") {
+    next_status = subtitler::SubtitleUploadStatus::kInvalidTitle;
+
+    CHECK(HttpRequest("PUT", port, "/api/subtitles/no-extension", "x").status ==
+          SOUP_STATUS_BAD_REQUEST);
+  }
+
+  SUBCASE("a storage or activation failure is a 500") {
+    next_status = subtitler::SubtitleUploadStatus::kFailed;
+
+    CHECK(HttpRequest("PUT", port, "/api/subtitles/movie.srt", "x").status ==
+          SOUP_STATUS_INTERNAL_SERVER_ERROR);
+  }
+
+  SUBCASE("methods other than PUT are a 405") {
+    CHECK(HttpGet(port, "/api/subtitles/movie.srt").status ==
+          SOUP_STATUS_METHOD_NOT_ALLOWED);
+  }
+
+  SUBCASE("an empty body is a 400 and never reaches the handler") {
+    CHECK(HttpRequest("PUT", port, "/api/subtitles/movie.srt", "").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(captured_title.empty());
+  }
+
+  SUBCASE("a missing title is a 400") {
+    CHECK(HttpRequest("PUT", port, "/api/subtitles", "x").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitles/", "x").status ==
+          SOUP_STATUS_BAD_REQUEST);
+  }
+
+  SUBCASE("an oversized body is a 413 and never reaches the handler") {
+    const std::string huge(8 * 1024 * 1024 + 1, 'x');
+
+    CHECK(HttpRequest("PUT", port, "/api/subtitles/movie.srt", huge).status ==
+          SOUP_STATUS_REQUEST_ENTITY_TOO_LARGE);
+    CHECK(captured_title.empty());
+  }
+}
+
+TEST_CASE("web server subtitle upload without a handler") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  auto server = subtitler::WebServer::Create(port, frames);
+  REQUIRE(server != nullptr);
+
+  CHECK(HttpRequest("PUT", port, "/api/subtitles/movie.srt", "x").status ==
+        SOUP_STATUS_NOT_FOUND);
 }

@@ -98,7 +98,7 @@ output.
 ## Running
 
 ```sh
-./build/subtitler [video-device] [connector-id] [--output=software|pisp|window|null] [--no-audio] [--audio-output-device=<alsa-device>] [--web]
+./build/subtitler [video-device] [connector-id] [--output=software|pisp|window|null] [--no-audio] [--audio-output-device=<alsa-device>] [--audio-offset=<ms>] [--subtitles=<srt-file>] [--web] [--web-root=<dir>]
 ```
 
 - `video-device` — V4L2 capture device (default `/dev/video0`). It must
@@ -121,11 +121,21 @@ output.
   (default `hw:CARD=vc4hdmi0,DEV=0`, the Pi's vc4-hdmi). Captured HDMI audio
   is forwarded bit-transparently (S16LE/48kHz/stereo, `slave-method=skew`
   drift correction).
-- `--web` — start the web server on port 8080 with the MJPEG preview:
-  browse to `http://<host>:8080/` for the live 640x360 10 fps preview
-  (`/api/preview.mjpeg`) or a single frame (`/api/preview.jpg`). Encoding
-  runs only while at least one client is connected; without clients the
-  endpoints serve a magenta placeholder frame.
+- `--web` — start the web server on port 8080: static files from the web
+  root (browse to `http://<host>:8080/`), the live 640x360 10 fps MJPEG
+  preview (`/api/preview.mjpeg`) or a single frame (`/api/preview.jpg`),
+  and the subtitle upload endpoint — `PUT /api/subtitles/<title>.srt`
+  with the raw SRT as the body stores it in the state dir's library
+  (sharded by the title's first letter), marks it active for the next
+  boot, and switches it in live. Preview encoding runs only while at
+  least one client is connected; without clients the preview endpoints
+  serve a magenta placeholder frame.
+- `--web-root=<dir>` — directory the static files are served from
+  (`.html`/`.js`/`.css`/`.png` only). Default: the first
+  `<data-dir>/subtitler/web` found across `$XDG_DATA_HOME` and
+  `$XDG_DATA_DIRS` (e.g. `/usr/local/share/subtitler/web` after
+  installation). Use `--web-root=web` to serve the repo's `web/`
+  directory in development.
 
 The KMS modes output directly via KMS/DRM using the vc4 driver (Raspberry
 Pi), so run from a virtual console where no X/Wayland compositor owns the

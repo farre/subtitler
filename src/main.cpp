@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 #include "stream/stream.h"
 #include "utils/paths.h"
@@ -44,6 +45,7 @@ int main(int argc, char** argv) {
   std::optional<std::string> audio_output_device;
   int audio_offset_ms = 0;
   bool web = false;
+  std::optional<std::filesystem::path> web_root;
   std::optional<std::string> subtitles;
   int positional = 0;
 
@@ -52,7 +54,8 @@ int main(int argc, char** argv) {
                  "Usage: {} [video-device] [connector-id] "
                  "[--output=software|pisp|window|null] [--no-audio] "
                  "[--audio-output-device=<alsa-device>] "
-                 "[--audio-offset=<ms>] [--subtitles=<srt-file>] [--web]",
+                 "[--audio-offset=<ms>] [--subtitles=<srt-file>] "
+                 "[--web] [--web-root=<dir>]",
                  argv[0]);
   };
 
@@ -88,6 +91,9 @@ int main(int argc, char** argv) {
     } else if (arg.starts_with("--subtitles=")) {
       subtitles =
           std::string{arg.substr(std::string_view{"--subtitles="}.size())};
+    } else if (arg.starts_with("--web-root=")) {
+      web_root =
+          std::string{arg.substr(std::string_view{"--web-root="}.size())};
     } else if (arg.starts_with("--")) {
       std::println(stderr, "Unknown option: {}", arg);
       usage();
@@ -113,6 +119,8 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, HandleSignal);
   std::signal(SIGTERM, HandleSignal);
 
+  const auto state_dir = subtitler::StateDirectory();
+
   if (subtitles) {
     // An explicit flag must name a real file: a missing one would only
     // surface later as a filesrc bus error.
@@ -120,7 +128,7 @@ int main(int argc, char** argv) {
       std::println(stderr, "Subtitle file not found: {}", *subtitles);
       return EXIT_FAILURE;
     }
-  } else if (const auto state_dir = subtitler::StateDirectory()) {
+  } else if (state_dir) {
     // Boot resume: replay the SRT selected the last time around (#438).
     if (const auto active = subtitler::ActiveSubtitleFile(*state_dir)) {
       subtitles = active->string();
@@ -142,16 +150,53 @@ int main(int argc, char** argv) {
   std::unique_ptr<subtitler::WebServer> web_server;
 
   if (web) {
+    if (!web_root) {
+      web_root = subtitler::WebRootDirectory();
+    }
+
+    // Uploads (#212): store into the state-dir library, mark active for
+    // boot resume, and live-switch the stream to the new SRT.
+    subtitler::SubtitleUploadHandler upload;
+    if (state_dir) {
+      upload =
+          [&stream, &state_dir](
+              std::string_view title,
+              std::string_view contents) -> subtitler::SubtitleUploadResult {
+        const auto relative = subtitler::LibrarySubtitlePath(title);
+        if (!relative) {
+          return {subtitler::SubtitleUploadStatus::kInvalidTitle, {}};
+        }
+
+        const auto stored =
+            subtitler::StoreSubtitle(*state_dir, title, contents);
+        if (!stored || !stream->SetSubtitleFile(stored->string())) {
+          return {subtitler::SubtitleUploadStatus::kFailed, {}};
+        }
+
+        return {subtitler::SubtitleUploadStatus::kStored,
+                relative->generic_string()};
+      };
+    }
+
     web_server = subtitler::WebServer::Create(
         kWebPort, stream->PreviewFrames(),
-        [&stream](bool active) { stream->SetPreviewActive(active); });
+        [&stream](bool active) { stream->SetPreviewActive(active); },
+        std::move(upload), web_root);
 
     if (!web_server) {
       std::println(stderr, "Failed to start the web server");
       return EXIT_FAILURE;
     }
 
-    std::println("Web interface available on port {}", kWebPort);
+    if (web_root) {
+      std::println("Web interface available on port {}, serving {}", kWebPort,
+                   web_root->string());
+    } else {
+      std::println(
+          "Web interface available on port {} (no web root found; static "
+          "files disabled)",
+          kWebPort);
+    }
   }
 
   while (!signal_received) {

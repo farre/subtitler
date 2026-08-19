@@ -10,12 +10,19 @@
 
 namespace {
 
-// Saves and restores the environment variables StateDirectory reads, so
-// the test's manipulations don't leak into other cases.
+// Saves and restores the environment variables the path resolution
+// functions read, so the test's manipulations don't leak into other
+// cases.
 struct EnvGuard {
   EnvGuard() {
     if (const char* value = std::getenv("XDG_STATE_HOME")) {
       xdg_state_home = value;
+    }
+    if (const char* value = std::getenv("XDG_DATA_HOME")) {
+      xdg_data_home = value;
+    }
+    if (const char* value = std::getenv("XDG_DATA_DIRS")) {
+      xdg_data_dirs = value;
     }
     if (const char* value = std::getenv("HOME")) {
       home = value;
@@ -24,6 +31,8 @@ struct EnvGuard {
 
   ~EnvGuard() {
     Restore("XDG_STATE_HOME", xdg_state_home);
+    Restore("XDG_DATA_HOME", xdg_data_home);
+    Restore("XDG_DATA_DIRS", xdg_data_dirs);
     Restore("HOME", home);
   }
 
@@ -37,6 +46,8 @@ struct EnvGuard {
   }
 
   std::optional<std::string> xdg_state_home;
+  std::optional<std::string> xdg_data_home;
+  std::optional<std::string> xdg_data_dirs;
   std::optional<std::string> home;
 };
 
@@ -102,11 +113,189 @@ TEST_CASE("active subtitle file resolution") {
     CHECK(subtitler::ActiveSubtitleFile(root) == std::nullopt);
   }
 
+  SUBCASE("marker with a nested traversal") {
+    {
+      std::ofstream{root / "active"} << "m/../../elsewhere.srt\n";
+    }
+    CHECK(subtitler::ActiveSubtitleFile(root) == std::nullopt);
+  }
+
+  SUBCASE("marker is an absolute path") {
+    {
+      std::ofstream{root / "active"} << "/etc/passwd\n";
+    }
+    CHECK(subtitler::ActiveSubtitleFile(root) == std::nullopt);
+  }
+
+  SUBCASE("marker contains a backslash") {
+    {
+      std::ofstream{root / "active"} << "m\\movie.srt\n";
+    }
+    CHECK(subtitler::ActiveSubtitleFile(root) == std::nullopt);
+  }
+
+  SUBCASE("marker names a directory") {
+    std::filesystem::create_directories(root / "subtitles" / "m");
+    {
+      std::ofstream{root / "active"} << "m\n";
+    }
+    CHECK(subtitler::ActiveSubtitleFile(root) == std::nullopt);
+  }
+
+  SUBCASE("marker names a sharded library file") {
+    std::filesystem::create_directories(root / "subtitles" / "m");
+    {
+      std::ofstream{root / "subtitles" / "m" / "movie.srt"} << "1\n";
+    }
+    {
+      std::ofstream{root / "active"} << "m/movie.srt\n";
+    }
+    const auto resolved = subtitler::ActiveSubtitleFile(root);
+    REQUIRE(resolved.has_value());
+    CHECK(*resolved == root / "subtitles" / "m" / "movie.srt");
+  }
+
   SUBCASE("empty marker") {
     {
       std::ofstream{root / "active"} << "";
     }
     CHECK(subtitler::ActiveSubtitleFile(root) == std::nullopt);
+  }
+
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("subtitle library path sharding") {
+  SUBCASE("letter buckets are lowercase") {
+    CHECK(subtitler::LibrarySubtitlePath("movie.srt") ==
+          std::filesystem::path{"m"} / "movie.srt");
+    CHECK(subtitler::LibrarySubtitlePath("Movie.srt") ==
+          std::filesystem::path{"m"} / "Movie.srt");
+    CHECK(subtitler::LibrarySubtitlePath("Zodiac.srt") ==
+          std::filesystem::path{"z"} / "Zodiac.srt");
+  }
+
+  SUBCASE("the extension match is case-insensitive") {
+    CHECK(subtitler::LibrarySubtitlePath("MOVIE.SRT") ==
+          std::filesystem::path{"m"} / "MOVIE.SRT");
+    CHECK(subtitler::LibrarySubtitlePath("movie.Srt") ==
+          std::filesystem::path{"m"} / "movie.Srt");
+  }
+
+  SUBCASE("non-letter titles go in the underscore bucket") {
+    CHECK(subtitler::LibrarySubtitlePath("3 Idiots.srt") ==
+          std::filesystem::path{"_"} / "3 Idiots.srt");
+    CHECK(subtitler::LibrarySubtitlePath("_private.srt") ==
+          std::filesystem::path{"_"} / "_private.srt");
+    CHECK(subtitler::LibrarySubtitlePath("über.srt") ==
+          std::filesystem::path{"_"} / "über.srt");
+  }
+
+  SUBCASE("unusable titles are rejected") {
+    CHECK(subtitler::LibrarySubtitlePath("") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitlePath("movie") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitlePath("movie.txt") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitlePath(".srt") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitlePath(".hidden.srt") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitlePath("dir/movie.srt") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitlePath("dir\\movie.srt") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitlePath("../movie.srt") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitlePath("movie.srt/") == std::nullopt);
+  }
+}
+
+TEST_CASE("subtitle storage") {
+  const auto root =
+      std::filesystem::temp_directory_path() / "subtitler-store-test";
+  std::filesystem::remove_all(root);
+
+  SUBCASE("stores the file sharded and marks it active") {
+    const auto stored = subtitler::StoreSubtitle(root, "Movie.srt",
+                                                 "1\n00:00:01,000 --> "
+                                                 "00:00:02,000\nHi\n");
+    REQUIRE(stored.has_value());
+    CHECK(*stored == root / "subtitles" / "m" / "Movie.srt");
+
+    std::ifstream file{*stored, std::ios::binary};
+    const std::string contents{std::istreambuf_iterator<char>{file},
+                               std::istreambuf_iterator<char>{}};
+    CHECK(contents == "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
+
+    const auto active = subtitler::ActiveSubtitleFile(root);
+    REQUIRE(active.has_value());
+    CHECK(*active == *stored);
+  }
+
+  SUBCASE("overwrites an existing entry") {
+    REQUIRE(subtitler::StoreSubtitle(root, "movie.srt", "old\n").has_value());
+    const auto stored = subtitler::StoreSubtitle(root, "movie.srt", "new\n");
+    REQUIRE(stored.has_value());
+
+    std::ifstream file{*stored};
+    std::string contents;
+    std::getline(file, contents);
+    CHECK(contents == "new");
+  }
+
+  SUBCASE("rejects an invalid title without touching the state dir") {
+    CHECK(subtitler::StoreSubtitle(root, "../evil.srt", "x\n") == std::nullopt);
+    CHECK_FALSE(std::filesystem::exists(root / "subtitles"));
+  }
+
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("web root directory resolution") {
+  const EnvGuard guard;
+
+  const auto root =
+      std::filesystem::temp_directory_path() / "subtitler-webroot-test";
+  std::filesystem::remove_all(root);
+
+  const auto home_data = root / "home-data";
+  const auto system_data = root / "system-data";
+  const auto other_data = root / "other-data";
+
+  SUBCASE("unresolvable when nothing provides a web directory") {
+    setenv("XDG_DATA_HOME", home_data.c_str(), 1);
+    setenv("XDG_DATA_DIRS", system_data.c_str(), 1);
+    CHECK(subtitler::WebRootDirectory() == std::nullopt);
+  }
+
+  SUBCASE("XDG_DATA_HOME wins") {
+    std::filesystem::create_directories(home_data / "subtitler" / "web");
+    std::filesystem::create_directories(system_data / "subtitler" / "web");
+    setenv("XDG_DATA_HOME", home_data.c_str(), 1);
+    setenv("XDG_DATA_DIRS", system_data.c_str(), 1);
+    CHECK(subtitler::WebRootDirectory() == home_data / "subtitler" / "web");
+  }
+
+  SUBCASE("falls back to the first XDG_DATA_DIRS entry that has one") {
+    std::filesystem::create_directories(other_data / "subtitler" / "web");
+    setenv("XDG_DATA_HOME", home_data.c_str(), 1);
+    const std::string dirs = system_data.string() + ":" + other_data.string();
+    setenv("XDG_DATA_DIRS", dirs.c_str(), 1);
+    CHECK(subtitler::WebRootDirectory() == other_data / "subtitler" / "web");
+  }
+
+  SUBCASE("empty XDG_DATA_DIRS entries are skipped") {
+    std::filesystem::create_directories(system_data / "subtitler" / "web");
+    unsetenv("XDG_DATA_HOME");
+    unsetenv("HOME");
+    const std::string dirs = ":" + system_data.string();
+    setenv("XDG_DATA_DIRS", dirs.c_str(), 1);
+    CHECK(subtitler::WebRootDirectory() == system_data / "subtitler" / "web");
+  }
+
+  SUBCASE("falls back to ~/.local/share when XDG_DATA_HOME is unset") {
+    const auto home = root / "home";
+    std::filesystem::create_directories(home / ".local" / "share" /
+                                        "subtitler" / "web");
+    unsetenv("XDG_DATA_HOME");
+    setenv("HOME", home.c_str(), 1);
+    setenv("XDG_DATA_DIRS", system_data.c_str(), 1);
+    CHECK(subtitler::WebRootDirectory() ==
+          home / ".local" / "share" / "subtitler" / "web");
   }
 
   std::filesystem::remove_all(root);
