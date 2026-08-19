@@ -38,13 +38,17 @@ doctest_discover_tests(stream_tests)
 add_executable(
     web_tests
     preview_frame_buffer_tests.cpp
+    web_server_tests.cpp
+    web_tests_main.cpp
 )
 
 target_link_libraries(
     web_tests
     PRIVATE
+    subtitler::web
     subtitler::utils
     doctest::doctest
+    PkgConfig::LIBSOUP
     Threads::Threads
 )
 

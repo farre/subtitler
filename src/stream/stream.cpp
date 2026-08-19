@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <memory>
@@ -15,6 +16,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "stream/deleters.h"
 #include "stream/frame_buffer.h"
@@ -143,9 +145,9 @@ GstClockTime OutputRunningTime(GstView<GstElement> output_pipeline,
 
   return now - base;
 }
-BufferPtr MakePinkFrame() {
+BufferPtr MakeSolidFrame(int width, int height) {
   BufferPtr buffer = BufferPtr{
-      gst_buffer_new_allocate(nullptr, kWidth * kHeight * 2, nullptr)};
+      gst_buffer_new_allocate(nullptr, width * height * 2, nullptr)};
 
   if (buffer == nullptr) {
     return nullptr;
@@ -170,6 +172,8 @@ BufferPtr MakePinkFrame() {
   return buffer;
 }
 
+BufferPtr MakePinkFrame() { return MakeSolidFrame(kWidth, kHeight); }
+
 BufferPtr MakeSilence() {
   BufferPtr buffer = BufferPtr{gst_buffer_new_allocate(
       nullptr, kSilenceFramesPerChunk * kAudioBytesPerFrame, nullptr)};
@@ -183,6 +187,95 @@ BufferPtr MakeSilence() {
                     kSilenceFramesPerChunk * kAudioBytesPerFrame);
 
   return buffer;
+}
+
+// One-shot encode of the magenta placeholder frame that seeds the preview
+// frame store, so the web endpoints always have a frame to serve —
+// symmetric with the no-signal screen. (The kPink constants are full
+// magenta in BT.601 limited range, so placeholder and no-signal screen
+// match.) Real frames replace it once the preview gate opens.
+std::shared_ptr<const std::vector<std::byte>> EncodePlaceholderJpeg() {
+  const std::string description = std::format(
+      "appsrc name=seed_source ! jpegenc quality={} ! appsink name=seed_sink",
+      kPreviewJpegQuality);
+
+  ErrorPtr error;
+  ElementPtr pipeline{gst_parse_launch(description.c_str(), std::out_ptr(error))};
+
+  if (error != nullptr || pipeline == nullptr) {
+    return nullptr;
+  }
+
+  ElementPtr source{
+      gst_bin_get_by_name(GST_BIN(pipeline.get()), "seed_source")};
+  ElementPtr sink{gst_bin_get_by_name(GST_BIN(pipeline.get()), "seed_sink")};
+
+  if (!source || !sink) {
+    return nullptr;
+  }
+
+  {
+    const auto src = GstView<GstAppSrc>{GST_APP_SRC(source.get())};
+    auto caps = CapsPtr{gst_caps_new_simple(
+        "video/x-raw", "format", G_TYPE_STRING, "YUY2", "width", G_TYPE_INT,
+        kPreviewWidth, "height", G_TYPE_INT, kPreviewHeight, "framerate",
+        GST_TYPE_FRACTION, kPreviewFramesPerSecond, 1, nullptr)};
+    gst_app_src_set_caps(src, caps.get());
+  }
+
+  if (gst_element_set_state(pipeline.get(), GST_STATE_PLAYING) ==
+      GST_STATE_CHANGE_FAILURE) {
+    return nullptr;
+  }
+
+  BufferPtr frame = MakeSolidFrame(kPreviewWidth, kPreviewHeight);
+
+  if (frame == nullptr) {
+    return nullptr;
+  }
+
+  GST_BUFFER_PTS(frame.get()) = 0;
+  GST_BUFFER_DURATION(frame.get()) = GST_SECOND / kPreviewFramesPerSecond;
+
+  {
+    const auto src = GstView<GstAppSrc>{GST_APP_SRC(source.get())};
+
+    if (gst_app_src_push_buffer(src, frame.release()) != GST_FLOW_OK) {
+      return nullptr;
+    }
+
+    gst_app_src_end_of_stream(src);
+  }
+
+  const auto app_sink = GstView<GstAppSink>{GST_APP_SINK(sink.get())};
+
+  SamplePtr sample;
+  for (int attempt = 0; attempt < 20 && sample == nullptr; ++attempt) {
+    sample = SamplePtr{gst_app_sink_try_pull_sample(app_sink, 100 * GST_MSECOND)};
+  }
+
+  gst_element_set_state(pipeline.get(), GST_STATE_NULL);
+
+  if (sample == nullptr) {
+    return nullptr;
+  }
+
+  // gst_sample_get_buffer is transfer-none.
+  const GstView<GstBuffer> encoded = gst_sample_get_buffer(sample.get());
+
+  GstMapInfo info;
+
+  if (encoded == nullptr || !gst_buffer_map(encoded, &info, GST_MAP_READ)) {
+    return nullptr;
+  }
+
+  const auto* begin = reinterpret_cast<const std::byte*>(info.data);
+  auto data = std::make_shared<const std::vector<std::byte>>(
+      begin, begin + info.size);
+
+  gst_buffer_unmap(encoded, &info);
+
+  return data;
 }
 
 BufferPtr CopyCapturedBuffer(GstView<GstSample> sample) {
@@ -1075,6 +1168,14 @@ bool Stream::Implementation::Initialize(
   audio_enabled_ = audio;
   audio_offset_ = audio_offset_ms * GST_MSECOND;
   preview_enabled_ = preview;
+
+  if (preview_enabled_) {
+    if (auto placeholder = EncodePlaceholderJpeg()) {
+      preview_frames_.Store(0, std::move(placeholder));
+    } else {
+      std::println(stderr, "Could not encode the preview placeholder frame");
+    }
+  }
   if (audio_enabled_) {
     // Not value_or: the default must not be probed when a device is given.
     audio_output_device_ =
