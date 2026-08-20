@@ -21,6 +21,7 @@
 #include "stream/deleters.h"
 #include "stream/frame_buffer.h"
 #include "stream/preview_gate.h"
+#include "utils/logging.h"
 #include "utils/reset_guard.h"
 
 namespace {
@@ -121,12 +122,12 @@ void PrintBusError(std::string_view pipeline_name, MessagePtr& message) {
   gst_message_parse_error(message.get(), std::out_ptr(error),
                           std::out_ptr(debug));
 
-  std::println(stderr, "{} pipeline error from {}: {}", pipeline_name,
-               GST_OBJECT_NAME(message->src),
-               error != nullptr ? error->message : "unknown error");
+  STREAM_LOG(LogLevel::kError, "{} pipeline error from {}: {}", pipeline_name,
+             GST_OBJECT_NAME(message->src),
+             error != nullptr ? error->message : "unknown error");
 
   if (debug != nullptr) {
-    std::println(stderr, "Debug information: {}", debug.get());
+    STREAM_LOG(LogLevel::kError, "Debug information: {}", debug.get());
   }
 }
 
@@ -145,7 +146,7 @@ bool PollBus(GstView<GstBus> bus, GstView<GstElement> pipeline,
         ok = false;
         break;
       case GST_MESSAGE_EOS:
-        std::println("{} pipeline reached EOS", pipeline_name);
+        STREAM_LOG(LogLevel::kInfo, "{} pipeline reached EOS", pipeline_name);
         ok = false;
         break;
       case GST_MESSAGE_LATENCY:
@@ -153,8 +154,9 @@ bool PollBus(GstView<GstBus> bus, GstView<GstElement> pipeline,
         // latency. With automatic latency this is the only way the
         // pipeline learns about it (#437).
         if (!gst_bin_recalculate_latency(GST_BIN(pipeline))) {
-          std::println(stderr, "Could not recalculate {} pipeline latency",
-                       pipeline_name);
+          STREAM_LOG(LogLevel::kError,
+                     "Could not recalculate {} pipeline latency",
+                     pipeline_name);
           ok = false;
         }
         break;
@@ -306,7 +308,7 @@ BufferPtr CopyCapturedBuffer(GstView<GstSample> sample) {
   const GstView<GstBuffer> captured = gst_sample_get_buffer(sample);
 
   if (captured == nullptr) {
-    std::println(stderr, "Captured sample contained no buffer");
+    STREAM_LOG(LogLevel::kError, "Captured sample contained no buffer");
 
     return nullptr;
   }
@@ -778,7 +780,7 @@ void Stream::Implementation::RunCapture(std::stop_token stop) {
     BufferPtr copied = CopyCapturedBuffer(sample.get());
 
     if (copied == nullptr) {
-      std::println(stderr, "Could not copy captured frame");
+      STREAM_LOG(LogLevel::kError, "Could not copy captured frame");
 
       capture_failed_.store(true);
       break;
@@ -826,7 +828,7 @@ void Stream::Implementation::RunAudioCapture(std::stop_token stop) {
     BufferPtr copied = CopyCapturedBuffer(sample.get());
 
     if (copied == nullptr) {
-      std::println(stderr, "Could not copy captured audio");
+      STREAM_LOG(LogLevel::kError, "Could not copy captured audio");
 
       capture_failed_.store(true);
       break;
@@ -1028,7 +1030,7 @@ void Stream::Implementation::RunOutput(std::stop_token stop) {
     const auto capture_pts = GST_BUFFER_PTS(frame.get());
 
     if (!GST_CLOCK_TIME_IS_VALID(capture_pts)) {
-      std::println(stderr, "Buffered frame has no timestamp");
+      STREAM_LOG(LogLevel::kError, "Buffered frame has no timestamp");
 
       output_failed_.store(true);
       break;
@@ -1051,8 +1053,8 @@ void Stream::Implementation::RunOutput(std::stop_token stop) {
 
     if (result != GST_FLOW_OK) {
       if (!stop.stop_requested()) {
-        std::println(stderr, "appsrc rejected frame: {}",
-                     static_cast<int>(result));
+        STREAM_LOG(LogLevel::kError, "appsrc rejected frame: {}",
+                   static_cast<int>(result));
 
         output_failed_.store(true);
       }
@@ -1087,7 +1089,7 @@ void Stream::Implementation::RunAudioOutput(std::stop_token stop) {
     const auto capture_pts = GST_BUFFER_PTS(chunk.get());
 
     if (!GST_CLOCK_TIME_IS_VALID(capture_pts)) {
-      std::println(stderr, "Buffered audio has no timestamp");
+      STREAM_LOG(LogLevel::kError, "Buffered audio has no timestamp");
 
       output_failed_.store(true);
       break;
@@ -1106,8 +1108,8 @@ void Stream::Implementation::RunAudioOutput(std::stop_token stop) {
 
     if (result != GST_FLOW_OK) {
       if (!stop.stop_requested()) {
-        std::println(stderr, "audio appsrc rejected buffer: {}",
-                     static_cast<int>(result));
+        STREAM_LOG(LogLevel::kError, "audio appsrc rejected buffer: {}",
+                   static_cast<int>(result));
 
         output_failed_.store(true);
       }
@@ -1140,7 +1142,7 @@ void Stream::Implementation::RunPreview(std::stop_token stop) {
     GstMapInfo info;
 
     if (encoded == nullptr || !gst_buffer_map(encoded, &info, GST_MAP_READ)) {
-      std::println(stderr, "Could not read encoded preview frame");
+      STREAM_LOG(LogLevel::kWarning, "Could not read encoded preview frame");
       continue;
     }
 
@@ -1212,7 +1214,7 @@ void Stream::Implementation::RunScreensaver(std::stop_token stop) {
     BufferPtr frame = MakePinkFrame();
 
     if (frame == nullptr) {
-      std::println(stderr, "Could not allocate no-signal frame");
+      STREAM_LOG(LogLevel::kError, "Could not allocate no-signal frame");
       break;
     }
 
@@ -1227,7 +1229,7 @@ void Stream::Implementation::RunScreensaver(std::stop_token stop) {
       BufferPtr silence = MakeSilence();
 
       if (silence == nullptr) {
-        std::println(stderr, "Could not allocate silence chunk");
+        STREAM_LOG(LogLevel::kError, "Could not allocate silence chunk");
         break;
       }
 
@@ -1348,7 +1350,8 @@ bool Stream::Implementation::Initialize(
     if (auto placeholder = EncodePlaceholderJpeg()) {
       preview_frames_.Store(0, std::move(placeholder));
     } else {
-      std::println(stderr, "Could not encode the preview placeholder frame");
+      STREAM_LOG(LogLevel::kError,
+                 "Could not encode the preview placeholder frame");
     }
   }
   if (audio_enabled_) {
@@ -1362,11 +1365,10 @@ bool Stream::Implementation::Initialize(
           ? std::make_optional<std::string_view>(audio_output_device_)
           : std::nullopt;
 
-  std::println(
-      "Capture pipeline:\n{}\n\nOutput pipeline:\n{}\n",
-      CapturePipelineDescription(device, audio_enabled_),
-      OutputPipelineDescription(output_mode, connector_id, branch_device,
-                                preview_enabled_, subtitle_path_));
+  STREAM_LOG(LogLevel::kDebug, "Capture pipeline:\n{}\n\nOutput pipeline:\n{}",
+             CapturePipelineDescription(device, audio_enabled_),
+             OutputPipelineDescription(output_mode, connector_id, branch_device,
+                                       preview_enabled_, subtitle_path_));
 
   return StartOutput(output_mode, connector_id) && StartCapture(device);
 }

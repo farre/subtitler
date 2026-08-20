@@ -36,6 +36,7 @@ doctest_discover_tests(stream_tests)
 
 add_executable(
     web_tests
+    logging_tests.cpp
     paths_tests.cpp
     preview_frame_buffer_tests.cpp
     web_server_tests.cpp

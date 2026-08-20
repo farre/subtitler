@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "utils/logging.h"
 #include "utils/preview_frame.h"
 #include "utils/unique_ptr.h"
 
@@ -272,8 +273,11 @@ struct subtitler::WebServer::Implementation {
     });
 
     // The last client went away; stop the JPEG encoder.
-    if (self.clients_.empty() && self.preview_activation_) {
-      self.preview_activation_(false);
+    if (self.clients_.empty()) {
+      WEB_LOG(LogLevel::kInfo, "Stopped serving MJPEG");
+      if (self.preview_activation_) {
+        self.preview_activation_(false);
+      }
     }
   }
 
@@ -321,8 +325,11 @@ struct subtitler::WebServer::Implementation {
     self.clients_.push_back(std::move(client));
 
     // The first client starts the JPEG encoder.
-    if (self.clients_.size() == 1 && self.preview_activation_) {
-      self.preview_activation_(true);
+    if (self.clients_.size() == 1) {
+      WEB_LOG(LogLevel::kInfo, "Started serving MJPEG");
+      if (self.preview_activation_) {
+        self.preview_activation_(true);
+      }
     }
 
     g_signal_connect(message, "wrote-chunk", G_CALLBACK(OnWroteChunk),

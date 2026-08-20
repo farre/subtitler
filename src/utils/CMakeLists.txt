@@ -1,6 +1,7 @@
 add_library(
     utils
     INTERFACE
+    logging.h
     paths.h
     preview_frame.h
     reset_guard.h

@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "stream/stream.h"
+#include "utils/logging.h"
 #include "utils/paths.h"
 #include "web/web_server.h"
 
@@ -132,7 +133,8 @@ int main(int argc, char** argv) {
     // Boot resume: replay the SRT selected the last time around (#438).
     if (const auto active = subtitler::ActiveSubtitleFile(*state_dir)) {
       subtitles = active->string();
-      std::println("Resuming subtitles from {}", *subtitles);
+      MAIN_LOG(subtitler::LogLevel::kInfo, "Resuming subtitles from {}",
+               *subtitles);
     }
   }
 
@@ -189,13 +191,14 @@ int main(int argc, char** argv) {
     }
 
     if (web_root) {
-      std::println("Web interface available on port {}, serving {}", kWebPort,
-                   web_root->string());
+      MAIN_LOG(subtitler::LogLevel::kInfo,
+               "Web interface available on port {}, serving {}", kWebPort,
+               web_root->string());
     } else {
-      std::println(
-          "Web interface available on port {} (no web root found; static "
-          "files disabled)",
-          kWebPort);
+      MAIN_LOG(subtitler::LogLevel::kInfo,
+               "Web interface available on port {} (no web root found; static "
+               "files disabled)",
+               kWebPort);
     }
   }
 
@@ -206,8 +209,9 @@ int main(int argc, char** argv) {
 
   stream->Stop();
 
-  std::println("Stopped. Application buffer dropped {} frames.",
-               stream->DroppedFrames());
+  MAIN_LOG(subtitler::LogLevel::kInfo,
+           "Stopped. Application buffer dropped {} frames.",
+           stream->DroppedFrames());
 
   return stream->Failed() ? EXIT_FAILURE : EXIT_SUCCESS;
 }

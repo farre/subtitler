@@ -137,6 +137,14 @@ output.
   installation). Use `--web-root=web` to serve the repo's `web/`
   directory in development.
 
+Structured logging is opt-in via the `SUBTITLER_LOG` environment variable: a
+comma-separated list of `<label>:<level>` entries, where level is `error`,
+`warn`, `info`, or `debug` (enabling that level and above for the label).
+Labels are named per directory: `main`, `stream`, `web`; the catch-all label
+`all` enables every label (a label's own entry wins over `all`). Example:
+`SUBTITLER_LOG="all:info,stream:debug" ./build/subtitler --web`. Fatal errors
+are always printed regardless of `SUBTITLER_LOG`.
+
 The KMS modes output directly via KMS/DRM using the vc4 driver (Raspberry
 Pi), so run from a virtual console where no X/Wayland compositor owns the
 display, with permission to access `/dev/dri` (root or membership in the
@@ -145,5 +153,5 @@ pipeline converts each frame before `kmssink` (see docs/pi-setup.md). The
 GStreamer `v4l2src` (gst-plugins-good), `videoconvert` (gst-plugins-base),
 and `kmssink` (gst-plugins-bad) elements must be installed.
 
-Stop with Ctrl+C; the program prints how many frames its internal buffer
-dropped while running.
+Stop with Ctrl+C; the program logs how many frames its internal buffer
+dropped while running (`main:info`).
