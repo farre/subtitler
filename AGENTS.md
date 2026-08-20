@@ -13,7 +13,10 @@ and the subtitle upload endpoint from #212 (`PUT /api/subtitles/<title>`
 stores into the library, marks it active, and switches it in live; unmatched
 routes fall back to static files from the web root). Planned but NOT yet
 implemented: the #15 web interface proper (static assets in `web/`, which
-today holds only a placeholder `index.html`), web sync controls, config file
+today holds only a placeholder `index.html`), web sync controls (subtitle
+position primitives #439, web route split #440, control endpoints #441 —
+the current and planned REST surface is documented in
+`docs/rest-api.md`), config file
 loading, systemd unit (`config/subtitler.example.json` and
 `config/subtidlerd.service` are both empty placeholders).
 
@@ -59,7 +62,7 @@ cmake --build --preset default
 - `src/stream/stream.{h,cpp}` holds the `Stream` class (pimpl): it owns the capture/output pipelines, the worker threads (video capture, audio capture, and output; audio runs only when the audio branch is enabled), and the `FrameBuffer`s (one video, one audio). Pipeline description strings are free functions in the same files (tested by `tests/description_tests.cpp`); the capture pipeline description composes separate video and audio branch descriptions. `main.cpp` is only argument parsing, signal handling, and the poll loop. When capture dies (EOS/error), `Stream::Poll` tears the capture pipeline down and the capture-side thread switches to feeding pink no-signal frames — the output side just renders whatever the frame buffer contains. `RestartCapture`/`RestartOutput` are restart-safe entry points reserved for the future web UI; nothing restarts automatically, so there are no restart loops.
 - `src/stream/` also has `frame_buffer.*` (the app-owned frame queue between the threads), `preview_gate.*` (the pad-probe gate for the MJPEG preview branch, #379), and `deleters.h`.
 - `tests/` holds the doctest unit tests. Libs expose nothing publicly, so test targets set their own `target_include_directories` for `src/`.
-- `docs/` holds appliance documentation (e.g. `docs/pi-setup.md`, the verified Pi 5 + CV105 hardware profile). The README stays the how-to; docs/ is the record — don't duplicate commands between them.
+- `docs/` holds appliance documentation (`docs/pi-setup.md` is the verified Pi 5 + CV105 hardware profile, `docs/video-output.md` the output/preview design, `docs/rest-api.md` the REST API reference). The README stays the how-to; docs/ is the record — don't duplicate commands between them.
 - `tools/` holds development/measurement utilities (`generate-sync-test-video.sh`, the #133 flash-and-click clip generator; `lorem-ipsum.srt`, 100 filler cues over ~10 minutes for trying the #212 upload endpoint and subtitle rendering). Not part of the build.
 - `cmake/CompilerWarnings.cmake` is an **empty placeholder**; warning flags (`-Wall -Wextra -Wpedantic`) are set directly on targets in the root `CMakeLists.txt`. Don't grep the module file for warning config.
 - `cmake/Sanitizers.cmake` holds the optional sanitizers: `SUBTITLER_ENABLE_ASAN` / `SUBTITLER_ENABLE_UBSAN` (both default OFF), applied directory-scope so tests are instrumented too. Build them via the `asan-ubsan` configure/build/test presets (binary dir `build/asan-ubsan`).
