@@ -384,10 +384,14 @@ std::string OutputPipelineDescription(
 // klass that subparse ("Codec/Decoder/Subtitle") doesn't have, while its
 // renderer autoplugging special-cases textoverlay by name. The named
 // parser is where the anchor lives: StartOutput maps cue times onto the
-// shared capture timeline with gst_pad_set_offset on its src pad.
+// shared capture timeline with gst_pad_set_offset on its src pad. The
+// offset reaches only cues parsed after the change, so position and
+// delay changes flush-seek subtitle_source back to the start and let
+// subparse re-emit through the new offset (#439).
 std::string SubtitlePipelineDescription(std::string_view path) {
   return std::format(
       "filesrc "
+      "name=subtitle_source "
       "location=\"{}\" "
       "! application/x-subtitle "
       "! subparse "
@@ -583,6 +587,10 @@ struct Stream::Implementation {
   bool SetSubtitleFile(const std::optional<std::string>& path);
   void SetSubtitleDelay(std::int64_t delay_ms);
   void SetSubtitlesVisible(bool visible);
+  std::optional<std::int64_t> SubtitleTime();
+  void SetSubtitleTime(std::int64_t time_ms);
+  void SetSubtitlesPaused(bool paused);
+  bool SubtitlesPaused();
 
   PreviewFrameBuffer& PreviewFrames() { return preview_frames_; }
 
@@ -637,11 +645,21 @@ struct Stream::Implementation {
   // cues. Written by SetSubtitleDelay (any thread), applied under mutex_.
   std::atomic<std::int64_t> subtitle_delay_ = 0;
   // The output running time at which SRT t=0 renders; set at every
-  // StartOutput so file switches replay from "now" (#438).
-  GstClockTime subtitle_anchor_ = 0;
+  // StartOutput so file switches replay from "now" (#438). Signed:
+  // SetSubtitleTime can move it before the time origin. Guarded by mutex_.
+  gint64 subtitle_anchor_ = 0;
+  // The frozen SRT position in nanoseconds while paused; nullopt while
+  // playing. Guarded by mutex_.
+  std::optional<gint64> subtitle_frozen_;
   // Applies subtitle_anchor_ + subtitle_delay_ as the parser's pad
-  // offset. Call with mutex_ held.
+  // offset. The offset reaches only cues parsed after the change, so
+  // position and delay changes must follow up with ReparseSubtitles.
+  // Call with mutex_ held.
   void ApplySubtitleOffset();
+  // Flush-seeks the subtitle branch back to the start so subparse
+  // re-emits every cue through the current pad offset. Call with mutex_
+  // held.
+  void ReparseSubtitles();
 
   // Set at Initialize: whether the output pipeline has a preview branch.
   bool preview_enabled_ = false;
@@ -663,6 +681,7 @@ struct Stream::Implementation {
   ElementPtr preview_queue_;
   ElementPtr subtitle_overlay_;
   ElementPtr subtitle_parser_;
+  ElementPtr subtitle_source_;
   BusPtr output_bus_;
 
   // Runs either the capture or the screensaver loop, never both.
@@ -867,9 +886,9 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
   output_mode_ = output_mode;
   connector_id_ = connector_id;
 
-  ResetGuard reset{output_pipeline_, output_source_, output_audio_source_,
-                   preview_sink_,    preview_queue_, subtitle_overlay_,
-                   subtitle_parser_, output_bus_};
+  ResetGuard reset{output_pipeline_,  output_source_, output_audio_source_,
+                   preview_sink_,     preview_queue_, subtitle_overlay_,
+                   subtitle_parser_,  subtitle_source_, output_bus_};
 
   const std::optional<std::string_view> audio_device =
       audio_enabled_
@@ -961,15 +980,19 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
         GST_BIN(output_pipeline_.get()), "subtitle_overlay")};
     subtitle_parser_ = ElementPtr{gst_bin_get_by_name(
         GST_BIN(output_pipeline_.get()), "subtitle_parser")};
+    subtitle_source_ = ElementPtr{gst_bin_get_by_name(
+        GST_BIN(output_pipeline_.get()), "subtitle_source")};
 
-    if (!subtitle_overlay_ || !subtitle_parser_) {
+    if (!subtitle_overlay_ || !subtitle_parser_ || !subtitle_source_) {
       std::println(stderr, "Couldn't find subtitle branch elements");
       return false;
     }
 
     // Anchor the SRT timeline at the current running time: cue time t
-    // renders at anchor + delay + t (#438).
-    subtitle_anchor_ = MasterRunningTime();
+    // renders at anchor + delay + t (#438). An output (re)start replays
+    // the position and drops any pause (#439).
+    subtitle_anchor_ = static_cast<gint64>(MasterRunningTime());
+    subtitle_frozen_.reset();
     ApplySubtitleOffset();
   }
 
@@ -1164,11 +1187,21 @@ void Stream::Implementation::ApplySubtitleOffset() {
   }
 
   // A pad offset shifts the running time of everything leaving the
-  // parser, live-adjustable: textoverlay compares text and video by
-  // running time, so cue time t lands on anchor + delay + t (#438).
+  // parser: textoverlay compares text and video by running time, so cue
+  // time t lands on anchor + delay + t (#438).
   PadPtr pad{gst_element_get_static_pad(subtitle_parser_.get(), "src")};
-  gst_pad_set_offset(pad.get(), static_cast<gint64>(subtitle_anchor_) +
-                                    subtitle_delay_.load());
+  gst_pad_set_offset(pad.get(),
+                     subtitle_anchor_ + subtitle_delay_.load());
+}
+
+void Stream::Implementation::ReparseSubtitles() {
+  if (subtitle_source_ == nullptr) {
+    return;
+  }
+
+  ApplySubtitleOffset();
+  gst_element_seek_simple(subtitle_source_.get(), GST_FORMAT_BYTES,
+                          GST_SEEK_FLAG_FLUSH, 0);
 }
 
 void Stream::Implementation::SetPreviewActive(bool active) {
@@ -1192,8 +1225,74 @@ bool Stream::Implementation::SetSubtitleFile(
 
 void Stream::Implementation::SetSubtitleDelay(std::int64_t delay_ms) {
   std::lock_guard lock{mutex_};
-  subtitle_delay_.store(delay_ms * GST_MSECOND);
-  ApplySubtitleOffset();
+  subtitle_delay_.store(delay_ms * static_cast<std::int64_t>(GST_MSECOND));
+  // The pad offset reaches only cues parsed after the change: re-emit.
+  // While paused the frozen position wins; the trim applies on resume.
+  if (!subtitle_frozen_) {
+    ReparseSubtitles();
+  }
+}
+
+std::optional<std::int64_t> Stream::Implementation::SubtitleTime() {
+  std::lock_guard lock{mutex_};
+
+  if (subtitle_parser_ == nullptr) {
+    return std::nullopt;
+  }
+
+  const gint64 position =
+      subtitle_frozen_.value_or(static_cast<gint64>(MasterRunningTime()) -
+                                subtitle_anchor_ - subtitle_delay_.load());
+  return position / static_cast<gint64>(GST_MSECOND);
+}
+
+void Stream::Implementation::SetSubtitleTime(std::int64_t time_ms) {
+  std::lock_guard lock{mutex_};
+
+  if (subtitle_parser_ == nullptr) {
+    return;
+  }
+
+  const gint64 position = time_ms * static_cast<gint64>(GST_MSECOND);
+
+  // Hidden while paused; the branch re-parses on resume.
+  if (subtitle_frozen_) {
+    subtitle_frozen_ = position;
+    return;
+  }
+
+  subtitle_anchor_ = static_cast<gint64>(MasterRunningTime()) -
+                     subtitle_delay_.load() - position;
+  ReparseSubtitles();
+}
+
+void Stream::Implementation::SetSubtitlesPaused(bool paused) {
+  std::lock_guard lock{mutex_};
+
+  if (subtitle_parser_ == nullptr ||
+      paused == subtitle_frozen_.has_value()) {
+    return;
+  }
+
+  if (paused) {
+    subtitle_frozen_ = static_cast<gint64>(MasterRunningTime()) -
+                       subtitle_anchor_ - subtitle_delay_.load();
+  } else {
+    // Resume from the frozen position: re-anchor and re-emit the SRT.
+    subtitle_anchor_ = static_cast<gint64>(MasterRunningTime()) -
+                       subtitle_delay_.load() - *subtitle_frozen_;
+    subtitle_frozen_.reset();
+    ReparseSubtitles();
+  }
+
+  if (subtitle_overlay_ != nullptr) {
+    g_object_set(subtitle_overlay_.get(), "silent", paused, nullptr);
+  }
+}
+
+bool Stream::Implementation::SubtitlesPaused() {
+  std::lock_guard lock{mutex_};
+  return subtitle_frozen_.has_value();
 }
 
 void Stream::Implementation::SetSubtitlesVisible(bool visible) {
@@ -1298,9 +1397,9 @@ void Stream::Implementation::StopOutputPipeline(
       preview_thread_.join();
     }
 
-    ResetGuard reset{output_pipeline_, output_source_, output_audio_source_,
-                     preview_sink_,    preview_queue_, subtitle_overlay_,
-                     subtitle_parser_, output_bus_};
+    ResetGuard reset{output_pipeline_,  output_source_, output_audio_source_,
+                     preview_sink_,     preview_queue_, subtitle_overlay_,
+                     subtitle_parser_,  subtitle_source_, output_bus_};
   }
 }
 
@@ -1443,6 +1542,22 @@ void Stream::SetSubtitleDelay(std::int64_t delay_ms) {
 
 void Stream::SetSubtitlesVisible(bool visible) {
   implementation_->SetSubtitlesVisible(visible);
+}
+
+std::optional<std::int64_t> Stream::SubtitleTime() const {
+  return implementation_->SubtitleTime();
+}
+
+void Stream::SetSubtitleTime(std::int64_t time_ms) {
+  implementation_->SetSubtitleTime(time_ms);
+}
+
+void Stream::SetSubtitlesPaused(bool paused) {
+  implementation_->SetSubtitlesPaused(paused);
+}
+
+bool Stream::SubtitlesPaused() const {
+  return implementation_->SubtitlesPaused();
 }
 
 bool Stream::Failed() const { return implementation_->Failed(); }

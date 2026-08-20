@@ -117,9 +117,8 @@ curl -X PUT 'http://subtitler:8080/api/subtitle-state?file=Show%20S01E01.srt'
 
 - `file` — a title from `GET /api/subtitles`; resolved via the library and
   marked `active` for boot resume. Empty detaches subtitles entirely.
-- `paused` — `true` freezes the SRT clock: the cue at the paused position
-  stays composited, even past its out-time. `false` resumes from the
-  frozen position.
+- `paused` — `true` hides the subtitles and freezes the SRT position;
+  `false` shows them again and resumes from the frozen position.
 - `time` — SRT position in milliseconds; works paused (moves the frozen
   position) or playing. `0` restarts from the beginning.
 - `delay` — live trim in milliseconds; positive delays cues.

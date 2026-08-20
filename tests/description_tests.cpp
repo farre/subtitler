@@ -181,7 +181,10 @@ TEST_CASE("output pipeline description") {
         "/tmp/subs.srt");
 
     CHECK(description.contains("subtitleoverlay name=subtitle_overlay"));
-    CHECK(description.contains("filesrc location=\"/tmp/subs.srt\""));
+    // Named so position changes can flush-seek it back to the start
+    // (#439).
+    CHECK(description.contains(
+        "filesrc name=subtitle_source location=\"/tmp/subs.srt\""));
     // SRT caps; subparse is plugged explicitly because subtitleoverlay's
     // parser autoplugging can't match subparse's klass (#438).
     CHECK(description.contains("application/x-subtitle"));

@@ -69,11 +69,28 @@ class Stream {
   bool SetSubtitleFile(const std::optional<std::string>& path);
 
   // Live subtitle delay trim in milliseconds; positive delays cues.
-  // Applies without rebuilding the pipeline (#169).
+  // Applies without rebuilding the pipeline (#169): the branch re-parses
+  // through the shifted offset (#439).
   void SetSubtitleDelay(std::int64_t delay_ms);
 
   // Live show/hide toggle; does not disturb the subtitle branch (#158).
   void SetSubtitlesVisible(bool visible);
+
+  // The current SRT position in milliseconds: running time minus anchor
+  // minus delay; the frozen position while paused. nullopt when no
+  // subtitles are attached.
+  std::optional<std::int64_t> SubtitleTime() const;
+
+  // Moves the SRT position live: re-anchors and re-parses the SRT
+  // through the new offset (a pad offset reaches only cues parsed after
+  // the change). Works paused (moves the frozen position) and playing;
+  // 0 restarts from the beginning. No-op without subtitles.
+  void SetSubtitleTime(std::int64_t time_ms);
+
+  // Pause hides the subtitles and freezes the SRT position; resume
+  // re-parses from the frozen position. No-op without subtitles.
+  void SetSubtitlesPaused(bool paused);
+  bool SubtitlesPaused() const;
 
   // The latest encoded preview frame, fed while the preview branch is
   // active. The web server reads from this buffer.
