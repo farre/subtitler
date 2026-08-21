@@ -156,11 +156,16 @@ int main(int argc, char** argv) {
       web_root = subtitler::WebRootDirectory();
     }
 
+    subtitler::WebServerHooks hooks;
+    hooks.preview_activation = [&stream](bool active) {
+      stream->SetPreviewActive(active);
+    };
+    hooks.web_root = web_root;
+
     // Uploads (#212): store into the state-dir library, mark active for
     // boot resume, and live-switch the stream to the new SRT.
-    subtitler::SubtitleUploadHandler upload;
     if (state_dir) {
-      upload =
+      hooks.subtitle_upload =
           [&stream, &state_dir](
               std::string_view title,
               std::string_view contents) -> subtitler::SubtitleUploadResult {
@@ -181,9 +186,7 @@ int main(int argc, char** argv) {
     }
 
     web_server = subtitler::WebServer::Create(
-        kWebPort, stream->PreviewFrames(),
-        [&stream](bool active) { stream->SetPreviewActive(active); },
-        std::move(upload), web_root);
+        kWebPort, stream->PreviewFrames(), std::move(hooks));
 
     if (!web_server) {
       std::println(stderr, "Failed to start the web server");

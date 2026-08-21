@@ -268,10 +268,12 @@ TEST_CASE("web server preview client limits and activation") {
   std::atomic_int activation_calls = 0;
   std::atomic_bool gate_active = false;
 
-  auto server = subtitler::WebServer::Create(port, frames, [&](bool active) {
+  subtitler::WebServerHooks hooks;
+  hooks.preview_activation = [&](bool active) {
     gate_active.store(active);
     ++activation_calls;
-  });
+  };
+  auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
   REQUIRE(server != nullptr);
 
   SUBCASE("activation toggles with the client count") {
@@ -329,8 +331,11 @@ TEST_CASE("web server static files") {
     std::ofstream{root / "sub" / "page.html"} << "sub\n";
   }
 
+  subtitler::WebServerHooks hooks;
+  hooks.web_root = root;
+
   SUBCASE("the root path serves index.html") {
-    auto server = subtitler::WebServer::Create(port, frames, {}, {}, root);
+    auto server = subtitler::WebServer::Create(port, frames, hooks);
     REQUIRE(server != nullptr);
 
     const auto response = HttpGet(port, "/");
@@ -341,7 +346,7 @@ TEST_CASE("web server static files") {
   }
 
   SUBCASE("allowlisted types are served with their MIME types") {
-    auto server = subtitler::WebServer::Create(port, frames, {}, {}, root);
+    auto server = subtitler::WebServer::Create(port, frames, hooks);
     REQUIRE(server != nullptr);
 
     const auto js = HttpGet(port, "/app.js");
@@ -360,7 +365,7 @@ TEST_CASE("web server static files") {
   }
 
   SUBCASE("files in subdirectories are served") {
-    auto server = subtitler::WebServer::Create(port, frames, {}, {}, root);
+    auto server = subtitler::WebServer::Create(port, frames, hooks);
     REQUIRE(server != nullptr);
 
     const auto response = HttpGet(port, "/sub/page.html");
@@ -370,7 +375,7 @@ TEST_CASE("web server static files") {
   }
 
   SUBCASE("missing files and non-allowlisted types are 404") {
-    auto server = subtitler::WebServer::Create(port, frames, {}, {}, root);
+    auto server = subtitler::WebServer::Create(port, frames, hooks);
     REQUIRE(server != nullptr);
 
     CHECK(HttpGet(port, "/missing.html").status == SOUP_STATUS_NOT_FOUND);
@@ -379,7 +384,7 @@ TEST_CASE("web server static files") {
   }
 
   SUBCASE("traversal attempts are 404") {
-    auto server = subtitler::WebServer::Create(port, frames, {}, {}, root);
+    auto server = subtitler::WebServer::Create(port, frames, hooks);
     REQUIRE(server != nullptr);
 
     // Encoded slashes are rejected by libsoup before routing.
@@ -394,7 +399,7 @@ TEST_CASE("web server static files") {
   }
 
   SUBCASE("non-GET methods are 404") {
-    auto server = subtitler::WebServer::Create(port, frames, {}, {}, root);
+    auto server = subtitler::WebServer::Create(port, frames, hooks);
     REQUIRE(server != nullptr);
 
     CHECK(HttpRequest("POST", port, "/index.html", "x").status ==
@@ -421,15 +426,17 @@ TEST_CASE("web server subtitle upload") {
   subtitler::SubtitleUploadStatus next_status =
       subtitler::SubtitleUploadStatus::kStored;
 
-  auto server = subtitler::WebServer::Create(
-      port, frames, {}, [&](std::string_view title, std::string_view contents) {
-        captured_title = title;
-        captured_contents = contents;
-        return subtitler::SubtitleUploadResult{
-            next_status, next_status == subtitler::SubtitleUploadStatus::kStored
-                             ? "m/My Movie.srt"
-                             : ""};
-      });
+  subtitler::WebServerHooks hooks;
+  hooks.subtitle_upload = [&](std::string_view title,
+                              std::string_view contents) {
+    captured_title = title;
+    captured_contents = contents;
+    return subtitler::SubtitleUploadResult{
+        next_status, next_status == subtitler::SubtitleUploadStatus::kStored
+                         ? "m/My Movie.srt"
+                         : ""};
+  };
+  auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
   REQUIRE(server != nullptr);
 
   SUBCASE("a valid upload is stored and activated") {

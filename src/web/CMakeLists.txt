@@ -1,5 +1,8 @@
 add_library(
     web
+    preview_routes.cpp
+    static_files.cpp
+    subtitle_routes.cpp
     web_server.cpp
 )
 
