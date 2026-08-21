@@ -9,6 +9,7 @@
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace subtitler {
 
@@ -103,6 +104,24 @@ inline std::optional<std::filesystem::path> LibrarySubtitlePath(
   return std::filesystem::path{std::string{bucket}} / title;
 }
 
+// Marks the library-relative entry (<bucket>/<title> or a legacy flat
+// <title>) active for boot resume. false on I/O failure.
+inline bool SetActiveSubtitle(const std::filesystem::path& state_dir,
+                              std::string_view relative) {
+  if (std::ofstream active{state_dir / "active", std::ios::trunc};
+      !(active << relative << '\n')) {
+    return false;
+  }
+
+  return true;
+}
+
+// Clears the active marker, so the next boot attaches no subtitles.
+inline void ClearActiveSubtitle(const std::filesystem::path& state_dir) {
+  std::error_code error;
+  std::filesystem::remove(state_dir / "active", error);
+}
+
 // Stores contents as the library entry for title (sharded by
 // LibrarySubtitlePath), marks it active for boot resume, and returns
 // the full path. nullopt on an invalid title or any I/O failure.
@@ -128,12 +147,64 @@ inline std::optional<std::filesystem::path> StoreSubtitle(
   }
 
   // generic_string: the marker always uses '/' as the separator.
-  if (std::ofstream active{state_dir / "active", std::ios::trunc};
-      !(active << relative->generic_string() << '\n')) {
+  if (!SetActiveSubtitle(state_dir, relative->generic_string())) {
     return std::nullopt;
   }
 
   return path;
+}
+
+// The library entry for a title: the sharded subtitles/<bucket>/<title>,
+// or a legacy flat subtitles/<title>. Returns the library-relative path;
+// nullopt for unusable titles or when no entry exists.
+inline std::optional<std::filesystem::path> FindLibrarySubtitle(
+    const std::filesystem::path& state_dir, std::string_view title) {
+  auto relative = LibrarySubtitlePath(title);
+  if (!relative) {
+    return std::nullopt;
+  }
+
+  const auto root = state_dir / "subtitles";
+  if (std::filesystem::is_regular_file(root / *relative)) {
+    return relative;
+  }
+
+  const std::filesystem::path flat{title};
+  if (std::filesystem::is_regular_file(root / flat)) {
+    return flat;
+  }
+
+  return std::nullopt;
+}
+
+// The activatable library titles (those passing LibrarySubtitlePath),
+// sharded and legacy flat entries, sorted. Scanned on demand (#441).
+inline std::vector<std::string> ListSubtitles(
+    const std::filesystem::path& state_dir) {
+  std::vector<std::string> titles;
+
+  const auto collect = [&titles](const std::filesystem::path& dir) {
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, error)) {
+      auto name = entry.path().filename().string();
+      if (entry.is_regular_file(error) && LibrarySubtitlePath(name)) {
+        titles.push_back(std::move(name));
+      }
+    }
+  };
+
+  const auto root = state_dir / "subtitles";
+  collect(root);  // legacy flat entries
+
+  std::error_code error;
+  for (const auto& bucket : std::filesystem::directory_iterator(root, error)) {
+    if (bucket.is_directory(error)) {
+      collect(bucket.path());
+    }
+  }
+
+  std::ranges::sort(titles);
+  return titles;
 }
 
 // The subtitle file selected for boot resume (#438): <state_dir>/active

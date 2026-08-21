@@ -591,6 +591,8 @@ struct Stream::Implementation {
   void SetSubtitleTime(std::int64_t time_ms);
   void SetSubtitlesPaused(bool paused);
   bool SubtitlesPaused();
+  bool SubtitlesVisible();
+  std::int64_t SubtitleDelay();
 
   PreviewFrameBuffer& PreviewFrames() { return preview_frames_; }
 
@@ -651,6 +653,9 @@ struct Stream::Implementation {
   // The frozen SRT position in nanoseconds while paused; nullopt while
   // playing. Guarded by mutex_.
   std::optional<gint64> subtitle_frozen_;
+  // The SetSubtitlesVisible state, re-applied to the overlay at every
+  // output (re)start so it survives rebuilds. Guarded by mutex_.
+  bool subtitles_visible_ = true;
   // Applies subtitle_anchor_ + subtitle_delay_ as the parser's pad
   // offset. The offset reaches only cues parsed after the change, so
   // position and delay changes must follow up with ReparseSubtitles.
@@ -994,6 +999,10 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
     subtitle_anchor_ = static_cast<gint64>(MasterRunningTime());
     subtitle_frozen_.reset();
     ApplySubtitleOffset();
+
+    if (!subtitles_visible_) {
+      g_object_set(subtitle_overlay_.get(), "silent", TRUE, nullptr);
+    }
   }
 
   output_bus_ = BusPtr{gst_element_get_bus(output_pipeline_.get())};
@@ -1297,9 +1306,19 @@ bool Stream::Implementation::SubtitlesPaused() {
 
 void Stream::Implementation::SetSubtitlesVisible(bool visible) {
   std::lock_guard lock{mutex_};
+  subtitles_visible_ = visible;
   if (subtitle_overlay_ != nullptr) {
     g_object_set(subtitle_overlay_.get(), "silent", !visible, nullptr);
   }
+}
+
+bool Stream::Implementation::SubtitlesVisible() {
+  std::lock_guard lock{mutex_};
+  return subtitles_visible_;
+}
+
+std::int64_t Stream::Implementation::SubtitleDelay() {
+  return subtitle_delay_.load() / static_cast<std::int64_t>(GST_MSECOND);
 }
 
 void Stream::Implementation::RunScreensaver(std::stop_token stop) {
@@ -1558,6 +1577,14 @@ void Stream::SetSubtitlesPaused(bool paused) {
 
 bool Stream::SubtitlesPaused() const {
   return implementation_->SubtitlesPaused();
+}
+
+bool Stream::SubtitlesVisible() const {
+  return implementation_->SubtitlesVisible();
+}
+
+std::int64_t Stream::SubtitleDelay() const {
+  return implementation_->SubtitleDelay();
 }
 
 bool Stream::Failed() const { return implementation_->Failed(); }

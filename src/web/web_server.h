@@ -21,15 +21,19 @@ struct WebServerHooks {
   std::function<void(bool)> preview_activation;
   // PUT /api/subtitles/<title> (#212).
   SubtitleUploadHandler subtitle_upload;
+  // GET /api/subtitles and GET/PUT /api/subtitle-state (#441).
+  SubtitleListHandler subtitle_list;
+  SubtitleStateGetHandler subtitle_state_get;
+  SubtitleStateSetHandler subtitle_state_set;
   // The static file fallback (#212); without it unmatched paths are 404.
   std::optional<std::filesystem::path> web_root;
 };
 
 // The appliance web server (docs/rest-api.md): the MJPEG preview
-// endpoints, the subtitle upload endpoint, and a static file fallback
-// for the #15 web interface. Routes are organized per feature in
-// preview_routes/subtitle_routes/static_files; this class is lifecycle
-// only.
+// endpoints, the subtitle upload/list/state endpoints, and a static
+// file fallback for the #15 web interface. Routes are organized per
+// feature in preview_routes/subtitle_routes/static_files; this class is
+// lifecycle only.
 class WebServer {
   struct Implementation;
 

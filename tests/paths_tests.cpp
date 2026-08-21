@@ -5,6 +5,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "utils/paths.h"
 
@@ -240,6 +241,62 @@ TEST_CASE("subtitle storage") {
   SUBCASE("rejects an invalid title without touching the state dir") {
     CHECK(subtitler::StoreSubtitle(root, "../evil.srt", "x\n") == std::nullopt);
     CHECK_FALSE(std::filesystem::exists(root / "subtitles"));
+  }
+
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("subtitle library listing and lookup") {
+  const auto root =
+      std::filesystem::temp_directory_path() / "subtitler-library-test";
+  std::filesystem::remove_all(root);
+
+  SUBCASE("an empty or missing library lists nothing") {
+    CHECK(subtitler::ListSubtitles(root).empty());
+
+    std::filesystem::create_directories(root / "subtitles");
+    CHECK(subtitler::ListSubtitles(root).empty());
+  }
+
+  SUBCASE("lists sharded and legacy flat entries, sorted") {
+    REQUIRE(subtitler::StoreSubtitle(root, "Movie.srt", "x\n").has_value());
+    REQUIRE(subtitler::StoreSubtitle(root, "3 Idiots.srt", "x\n").has_value());
+    REQUIRE(subtitler::StoreSubtitle(root, "apple.srt", "x\n").has_value());
+    // A legacy flat entry and a file that isn't a usable title.
+    std::ofstream{root / "subtitles" / "legacy.srt"} << "x\n";
+    std::ofstream{root / "subtitles" / "notes.txt"} << "x\n";
+
+    CHECK(subtitler::ListSubtitles(root) ==
+          std::vector<std::string>{"3 Idiots.srt", "Movie.srt", "apple.srt",
+                                   "legacy.srt"});
+  }
+
+  SUBCASE("lookup finds sharded and legacy flat entries") {
+    REQUIRE(subtitler::StoreSubtitle(root, "Movie.srt", "x\n").has_value());
+    std::ofstream{root / "subtitles" / "legacy.srt"} << "x\n";
+
+    CHECK(subtitler::FindLibrarySubtitle(root, "Movie.srt") ==
+          std::filesystem::path{"m"} / "Movie.srt");
+    CHECK(subtitler::FindLibrarySubtitle(root, "legacy.srt") ==
+          std::filesystem::path{"legacy.srt"});
+  }
+
+  SUBCASE("lookup rejects unusable or missing titles") {
+    CHECK(subtitler::FindLibrarySubtitle(root, "../evil.srt") == std::nullopt);
+    CHECK(subtitler::FindLibrarySubtitle(root, "no-extension") == std::nullopt);
+    CHECK(subtitler::FindLibrarySubtitle(root, "missing.srt") == std::nullopt);
+  }
+
+  SUBCASE("the active marker is set and cleared") {
+    REQUIRE(subtitler::StoreSubtitle(root, "Movie.srt", "x\n").has_value());
+    REQUIRE(subtitler::SetActiveSubtitle(root, "m/Movie.srt"));
+    CHECK(subtitler::ActiveSubtitleFile(root) ==
+          root / "subtitles" / "m" / "Movie.srt");
+
+    subtitler::ClearActiveSubtitle(root);
+    CHECK(subtitler::ActiveSubtitleFile(root) == std::nullopt);
+    // Clearing with no marker is fine.
+    subtitler::ClearActiveSubtitle(root);
   }
 
   std::filesystem::remove_all(root);

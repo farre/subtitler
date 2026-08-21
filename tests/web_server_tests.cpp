@@ -469,6 +469,11 @@ TEST_CASE("web server subtitle upload") {
           SOUP_STATUS_METHOD_NOT_ALLOWED);
   }
 
+  SUBCASE("GET on the collection without a list hook is a 405") {
+    CHECK(HttpGet(port, "/api/subtitles").status ==
+          SOUP_STATUS_METHOD_NOT_ALLOWED);
+  }
+
   SUBCASE("an empty body is a 400 and never reaches the handler") {
     CHECK(HttpRequest("PUT", port, "/api/subtitles/movie.srt", "").status ==
           SOUP_STATUS_BAD_REQUEST);
@@ -501,4 +506,139 @@ TEST_CASE("web server subtitle upload without a handler") {
 
   CHECK(HttpRequest("PUT", port, "/api/subtitles/movie.srt", "x").status ==
         SOUP_STATUS_NOT_FOUND);
+  CHECK(HttpGet(port, "/api/subtitles").status == SOUP_STATUS_NOT_FOUND);
+  CHECK(HttpGet(port, "/api/subtitle-state").status == SOUP_STATUS_NOT_FOUND);
+  CHECK(HttpRequest("PUT", port, "/api/subtitle-state?paused=true").status ==
+        SOUP_STATUS_NOT_FOUND);
+}
+
+TEST_CASE("web server subtitle list") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  subtitler::WebServerHooks hooks;
+  hooks.subtitle_list = [] {
+    return std::vector<std::string>{"Movie.srt", "Quote\"Back\\.srt"};
+  };
+
+  auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
+  REQUIRE(server != nullptr);
+
+  SUBCASE("the library titles as a JSON array") {
+    const auto response = HttpGet(port, "/api/subtitles");
+
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(response.content_type == "application/json");
+    CHECK(response.body == "[\"Movie.srt\",\"Quote\\\"Back\\\\.srt\"]");
+  }
+}
+
+TEST_CASE("web server subtitle state") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  subtitler::SubtitleState state{{"Movie.srt"}, true, false, 1234, -150};
+  bool set_ok = true;
+
+  subtitler::WebServerHooks hooks;
+  hooks.subtitle_state_get = [&] { return state; };
+  hooks.subtitle_state_set =
+      [&](const subtitler::SubtitleStatePatch& patch) {
+        if (!set_ok) {
+          return false;
+        }
+        if (patch.file) {
+          if (patch.file->empty()) {
+            state.file = std::nullopt;
+          } else {
+            state.file = *patch.file;
+          }
+        }
+        if (patch.visible) {
+          state.visible = *patch.visible;
+        }
+        if (patch.paused) {
+          state.paused = *patch.paused;
+        }
+        if (patch.time_ms) {
+          state.time_ms = *patch.time_ms;
+        }
+        if (patch.delay_ms) {
+          state.delay_ms = *patch.delay_ms;
+        }
+        return true;
+      };
+
+  auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
+  REQUIRE(server != nullptr);
+
+  SUBCASE("GET returns the state as JSON") {
+    const auto response = HttpGet(port, "/api/subtitle-state");
+
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(response.content_type == "application/json");
+    CHECK(response.body ==
+          "{\"file\":\"Movie.srt\",\"visible\":true,\"paused\":false,"
+          "\"time\":1234,\"delay\":-150}");
+  }
+
+  SUBCASE("GET with detached subtitles has a null file") {
+    state.file = std::nullopt;
+
+    const auto response = HttpGet(port, "/api/subtitle-state");
+
+    CHECK(response.body.contains("\"file\":null"));
+  }
+
+  SUBCASE("PUT applies changes and answers the new state") {
+    const auto response =
+        HttpRequest("PUT", port, "/api/subtitle-state?paused=true&time=0");
+
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(state.paused);
+    CHECK(state.time_ms == 0);
+    CHECK(response.body.contains("\"paused\":true"));
+    CHECK(response.body.contains("\"time\":0"));
+  }
+
+  SUBCASE("PUT file switches and detaches") {
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?file=Other.srt")
+              .status == SOUP_STATUS_OK);
+    CHECK(state.file == std::optional<std::string>{"Other.srt"});
+
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?file=").status ==
+          SOUP_STATUS_OK);
+    CHECK(state.file == std::nullopt);
+  }
+
+  SUBCASE("PUT rejects bad values without touching the state") {
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?time=abc").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?paused=yes").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?bogus=1").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK_FALSE(state.paused);
+    CHECK(state.time_ms == 1234);
+  }
+
+  SUBCASE("a failing set hook is a 400") {
+    set_ok = false;
+
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?paused=true").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK_FALSE(state.paused);
+  }
+
+  SUBCASE("methods other than GET and PUT are a 405") {
+    CHECK(HttpRequest("POST", port, "/api/subtitle-state").status ==
+          SOUP_STATUS_METHOD_NOT_ALLOWED);
+  }
+
+  SUBCASE("a longer path is a 404") {
+    CHECK(HttpGet(port, "/api/subtitle-state/extra").status ==
+          SOUP_STATUS_NOT_FOUND);
+  }
 }

@@ -79,8 +79,8 @@ curl -X PUT --data-binary @Movie.srt \
 
 ### GET /api/subtitles
 
-**Planned (#441).** The library titles as a JSON array, scanned from the
-state dir on demand:
+The library titles as a JSON array, scanned from the state dir on
+demand:
 
 ```json
 ["Movie.srt", "Show S01E01.srt"]
@@ -88,8 +88,8 @@ state dir on demand:
 
 ### GET /api/subtitle-state
 
-**Planned (#441).** The live subtitle state; `time` is computed fresh from
-the running time:
+The live subtitle state; `time` is computed fresh from the running
+time:
 
 ```json
 {
@@ -107,7 +107,7 @@ live trim in milliseconds (positive delays cues).
 
 ### PUT /api/subtitle-state
 
-**Planned (#441).** Changes any subset of the state via query parameters:
+Changes any subset of the state via query parameters:
 
 ```sh
 curl -X PUT 'http://subtitler:8080/api/subtitle-state?paused=true'

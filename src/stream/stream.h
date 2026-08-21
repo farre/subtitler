@@ -92,6 +92,12 @@ class Stream {
   void SetSubtitlesPaused(bool paused);
   bool SubtitlesPaused() const;
 
+  // The SetSubtitlesVisible state.
+  bool SubtitlesVisible() const;
+
+  // The current delay trim in milliseconds.
+  std::int64_t SubtitleDelay() const;
+
   // The latest encoded preview frame, fed while the preview branch is
   // active. The web server reads from this buffer.
   PreviewFrameBuffer& PreviewFrames();
