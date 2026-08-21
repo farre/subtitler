@@ -1,5 +1,7 @@
 add_library(
     web
+    json_helpers.cpp
+    opensubtitles_routes.cpp
     preview_routes.cpp
     static_files.cpp
     subtitle_routes.cpp

@@ -445,7 +445,8 @@ TEST_CASE("web server subtitle upload") {
                     "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
 
     CHECK(response.status == SOUP_STATUS_CREATED);
-    CHECK(response.body == "m/My Movie.srt");
+    CHECK(response.content_type == "application/json");
+    CHECK(response.body == "{\"stored_name\":\"m/My Movie.srt\"}");
     CHECK(captured_title == "My Movie.srt");
     CHECK(captured_contents == "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
   }
@@ -510,6 +511,54 @@ TEST_CASE("web server subtitle upload without a handler") {
   CHECK(HttpGet(port, "/api/subtitle-state").status == SOUP_STATUS_NOT_FOUND);
   CHECK(HttpRequest("PUT", port, "/api/subtitle-state?paused=true").status ==
         SOUP_STATUS_NOT_FOUND);
+  CHECK(HttpGet(port, "/api/opensubtitles").status == SOUP_STATUS_NOT_FOUND);
+}
+
+TEST_CASE("web server opensubtitles") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  subtitler::WebServerHooks hooks;
+  hooks.api_key = "test-api-key";
+
+  auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
+  REQUIRE(server != nullptr);
+
+  SUBCASE("GET returns the API key as JSON") {
+    const auto response = HttpGet(port, "/api/opensubtitles");
+
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(response.content_type == "application/json");
+    CHECK(response.body == "{\"api_key\":\"test-api-key\"}");
+  }
+
+  SUBCASE("methods other than GET are a 405") {
+    CHECK(HttpRequest("POST", port, "/api/opensubtitles", "x").status ==
+          SOUP_STATUS_METHOD_NOT_ALLOWED);
+  }
+
+  SUBCASE("a longer path is a 404") {
+    CHECK(HttpGet(port, "/api/opensubtitles/extra").status ==
+          SOUP_STATUS_NOT_FOUND);
+  }
+}
+
+TEST_CASE("web server opensubtitles key with special characters") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  subtitler::WebServerHooks hooks;
+  hooks.api_key = "key\"with\\escapes";
+
+  auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
+  REQUIRE(server != nullptr);
+
+  const auto response = HttpGet(port, "/api/opensubtitles");
+
+  CHECK(response.status == SOUP_STATUS_OK);
+  CHECK(response.body == "{\"api_key\":\"key\\\"with\\\\escapes\"}");
 }
 
 TEST_CASE("web server subtitle list") {

@@ -9,6 +9,7 @@
 #include <thread>
 #include <utility>
 
+#include "web/opensubtitles_routes.h"
 #include "web/preview_routes.h"
 #include "web/static_files.h"
 
@@ -21,6 +22,7 @@ struct subtitler::WebServer::Implementation {
     subtitle_routes_.list_ = std::move(hooks.subtitle_list);
     subtitle_routes_.state_get_ = std::move(hooks.subtitle_state_get);
     subtitle_routes_.state_set_ = std::move(hooks.subtitle_state_set);
+    opensubtitles_routes_.api_key_ = std::move(hooks.api_key);
 
     std::promise<bool> ready;
 
@@ -58,6 +60,7 @@ struct subtitler::WebServer::Implementation {
 
     preview_.Register(server_);
     subtitle_routes_.Register(server_);
+    opensubtitles_routes_.Register(server_);
     static_files_.Register(server_);
 
     GError* error = nullptr;
@@ -91,6 +94,7 @@ struct subtitler::WebServer::Implementation {
 
   PreviewRoutes preview_;
   SubtitleRoutes subtitle_routes_;
+  OpenSubtitlesRoutes opensubtitles_routes_;
   StaticFiles static_files_;
 
   // These three are created, used, and destroyed on the io thread; the

@@ -47,6 +47,7 @@ int main(int argc, char** argv) {
   int audio_offset_ms = 0;
   bool web = false;
   std::optional<std::filesystem::path> web_root;
+  std::optional<std::string> api_key;
   std::optional<std::string> subtitles;
   // The active library title, mirrored for the web state endpoint.
   // Written at boot resume and, once the server runs, only on its io
@@ -60,7 +61,7 @@ int main(int argc, char** argv) {
                  "[--output=software|pisp|window|null] [--no-audio] "
                  "[--audio-output-device=<alsa-device>] "
                  "[--audio-offset=<ms>] [--subtitles=<srt-file>] "
-                 "[--web] [--web-root=<dir>]",
+                 "[--web] [--web-root=<dir>] [--api-key=<key>]",
                  argv[0]);
   };
 
@@ -99,6 +100,8 @@ int main(int argc, char** argv) {
     } else if (arg.starts_with("--web-root=")) {
       web_root =
           std::string{arg.substr(std::string_view{"--web-root="}.size())};
+    } else if (arg.starts_with(std::string_view("--api-key="))) {
+      api_key = std::string{arg.substr(std::string_view{"--api-key="}.size())};
     } else if (arg.starts_with("--")) {
       std::println(stderr, "Unknown option: {}", arg);
       usage();
@@ -167,6 +170,8 @@ int main(int argc, char** argv) {
     };
     hooks.web_root = web_root;
 
+    hooks.api_key = api_key;
+
     // Uploads (#212) and the library/state endpoints (#441): store into
     // the state-dir library, mark active for boot resume, and
     // live-switch the stream to the new SRT.
@@ -206,8 +211,8 @@ int main(int argc, char** argv) {
       };
 
       hooks.subtitle_state_set =
-          [&stream, &state_dir, &active_title](
-              const subtitler::SubtitleStatePatch& patch) -> bool {
+          [&stream, &state_dir,
+           &active_title](const subtitler::SubtitleStatePatch& patch) -> bool {
         if (patch.file) {
           if (patch.file->empty()) {
             if (!stream->SetSubtitleFile(std::nullopt)) {
@@ -218,9 +223,9 @@ int main(int argc, char** argv) {
           } else {
             const auto relative =
                 subtitler::FindLibrarySubtitle(*state_dir, *patch.file);
-            if (!relative || !stream->SetSubtitleFile(
-                                 (*state_dir / "subtitles" / *relative)
-                                     .string())) {
+            if (!relative ||
+                !stream->SetSubtitleFile(
+                    (*state_dir / "subtitles" / *relative).string())) {
               return false;
             }
             if (!subtitler::SetActiveSubtitle(*state_dir,
@@ -251,8 +256,8 @@ int main(int argc, char** argv) {
       };
     }
 
-    web_server = subtitler::WebServer::Create(
-        kWebPort, stream->PreviewFrames(), std::move(hooks));
+    web_server = subtitler::WebServer::Create(kWebPort, stream->PreviewFrames(),
+                                              std::move(hooks));
 
     if (!web_server) {
       std::println(stderr, "Failed to start the web server");

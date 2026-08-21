@@ -27,6 +27,8 @@ struct WebServerHooks {
   SubtitleStateSetHandler subtitle_state_set;
   // The static file fallback (#212); without it unmatched paths are 404.
   std::optional<std::filesystem::path> web_root;
+  // Open Subtitles API Key
+  std::optional<std::string> api_key;
 };
 
 // The appliance web server (docs/rest-api.md): the MJPEG preview

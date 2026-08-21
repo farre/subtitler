@@ -10,6 +10,7 @@
 #include <system_error>
 
 #include "utils/unique_ptr.h"
+#include "web/json_helpers.h"
 
 namespace {
 
@@ -19,36 +20,6 @@ constexpr std::string_view kSubtitlesRoute = "/api/subtitles";
 constexpr std::string_view kSubtitlesPrefix = "/api/subtitles/";
 constexpr std::string_view kSubtitleStateRoute = "/api/subtitle-state";
 constexpr std::size_t kMaxSubtitleBytes = 8 * 1024 * 1024;
-
-std::string JsonEscape(std::string_view text) {
-  std::string escaped;
-
-  for (const char c : text) {
-    switch (c) {
-      case '"':
-        escaped += "\\\"";
-        break;
-      case '\\':
-        escaped += "\\\\";
-        break;
-      default:
-        if (static_cast<unsigned char>(c) < 0x20) {
-          escaped += std::format("\\u{:04x}", c);
-        } else {
-          escaped += c;
-        }
-    }
-  }
-
-  return escaped;
-}
-
-void RespondJson(SoupServerMessage* message, const std::string& json) {
-  soup_server_message_set_response(message, "application/json",
-                                   SOUP_MEMORY_COPY, json.data(),
-                                   json.size());
-  soup_server_message_set_status(message, SOUP_STATUS_OK, nullptr);
-}
 
 void RespondSubtitleState(SoupServerMessage* message,
                           const SubtitleState& state) {
@@ -118,9 +89,9 @@ void HandleSubtitleUpload(SoupServerMessage* message, const char* path,
 
   switch (result.status) {
     case SubtitleUploadStatus::kStored:
-      soup_server_message_set_response(
-          message, "text/plain; charset=utf-8", SOUP_MEMORY_COPY,
-          result.stored_name.data(), result.stored_name.size());
+      RespondJson(message,
+                  std::format("{{\"stored_name\":\"{}\"}}",
+                              JsonEscape(result.stored_name)));
       soup_server_message_set_status(message, SOUP_STATUS_CREATED, nullptr);
       break;
     case SubtitleUploadStatus::kInvalidTitle:

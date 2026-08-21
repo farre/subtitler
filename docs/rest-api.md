@@ -66,7 +66,8 @@ Uploads an SRT: the percent-decoded `<title>` is validated, the raw request
 body is stored in the library, marked `active` for boot resume, and
 switched in live (re-anchored at the current running time).
 
-- `201 Created` — body is the library-relative name (e.g. `m/Movie.srt`)
+- `201 Created` — body is the library-relative name as JSON:
+  `{"stored_name":"m/Movie.srt"}`
 - `400 Bad Request` — invalid title, bad percent-encoding, or empty body
 - `405 Method Not Allowed` — anything but PUT
 - `413 Content Too Large` — body over 8 MiB
@@ -124,9 +125,23 @@ curl -X PUT 'http://subtitler:8080/api/subtitle-state?file=Show%20S01E01.srt'
 - `delay` — live trim in milliseconds; positive delays cues.
 - `visible` — show/hide without disturbing the subtitle branch.
 
+## OpenSubtitles
+
+### GET /api/opensubtitles
+
+The OpenSubtitles API key given with `--api-key`, as JSON:
+
+```json
+{
+  "api_key": "..."
+}
+```
+
+404 when no key is configured; 405 for anything but GET.
+
 ## Static files
 
 GET paths not claimed by a registered route fall back to the web root
-(`/` maps to `index.html`). Only `.html`, `.js`, `.css`, and `.png` are
+(`/` maps to `index.html`). Only `.html`, `.js`, `.mjs`, `.css`, and `.png` are
 served — the allowlist doubles as the MIME map — and anything else,
 non-GET methods, and traversal attempts are 404.

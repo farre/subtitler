@@ -1,4 +1,56 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>subtitler</title>
-<img src="/api/preview.mjpeg" alt="Video preview">
+<details>
+    <img src="/api/preview.mjpeg" alt="Video preview" loading="lazy">
+</details>
+<div id="output"></div>
+<script>
+    class Rest {
+        #base = null;
+
+        constructor(base) {
+            console.log(base);
+            this.#base = location.href;
+        }
+
+        async api(endpoint, method, query = {}, headers) {
+            const search = new URLSearchParams(query);
+            console.log(this.#base)
+            const url = new URL(`api/${endpoint}`, this.#base);
+            url.search = search;
+            const response = await window.fetch(url, { method, headers });
+            return response.json();
+        }
+
+        get(endpoint, ...args) {
+            return this.api(endpoint, "GET", ...args)
+        }
+
+        put(endpoint, ...args) {
+            return this.api(endpoint, "PUT", ...args)
+        }
+    }
+
+    class Subtitler extends Rest {
+        constructor(base) {
+            super(base);
+        }
+
+        get list() {
+            return this.get("subtitles");
+        }
+
+        set select(file) {
+            return this.put("subtitle-state", { file });
+        }
+    }
+
+    async function create() {
+        const rest = new Subtitler(location.href);
+        output.innerText = JSON.stringify(await rest.list, null, "  ");
+    }
+
+    addEventListener('load', create);
+</script>
+<br>
