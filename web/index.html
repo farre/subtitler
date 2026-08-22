@@ -33,17 +33,32 @@
     await subtitles.login(username.value, password.value);
   }
 
+  function imdbId(name) {
+    return name.match(/tt(\d+)\.srt$/i)?.[1];
+  }
+
   async function refreshSubtitles() {
     select.replaceChildren();
-    for (const file of await subtitler.list()) {
+    const files = await subtitler.list();
+    for (const file of files) {
       const option = document.createElement("option");
       option.value = file;
       option.innerText = file;
       select.appendChild(option);
     }
+    return files;
   }
 
   async function download() {
+    const id = search.value.trim().toLowerCase().replace(/^tt/, "");
+    const known = await refreshSubtitles();
+    const existing = known.find((file) => imdbId(file) === id);
+    if (existing) {
+      select.value = existing;
+      await subtitler.select(existing);
+      return;
+    }
+
     if (!subtitles.authenticated) {
       await authenticate();
     }
@@ -64,7 +79,7 @@
       feature_details.movie_name,
     );
     const { stored_name } = await subtitler.upload(
-      `${feature_details.movie_name}.srt`,
+      `${feature_details.movie_name}.tt${id}.srt`,
       result,
     );
     await refreshSubtitles();
