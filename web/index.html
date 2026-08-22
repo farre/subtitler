@@ -5,6 +5,9 @@
   <img src="/api/preview.mjpeg" alt="Video preview" loading="lazy" />
 </details>
 <div id="output"></div>
+<div>
+  <input type="button" id="pause" value="Pause" />
+</div>
 <script type="module">
   import { Subtitler } from "./modules/Subtitler.mjs";
   import { OpenSubtitles } from "./modules/OpenSubtitles.mjs";
@@ -17,6 +20,8 @@
   const login = document.getElementById("login");
   const search = document.getElementById("search");
   const save = document.getElementById("save");
+  const pause = document.getElementById("pause");
+  const select = document.createElement("select");
 
   const subtitler = new Subtitler(new URL("api/", location.href).href);
 
@@ -26,6 +31,16 @@
 
   async function authenticate() {
     await subtitles.login(username.value, password.value);
+  }
+
+  async function refreshSubtitles() {
+    select.replaceChildren();
+    for (const file of await subtitler.list()) {
+      const option = document.createElement("option");
+      option.value = file;
+      option.innerText = file;
+      select.appendChild(option);
+    }
   }
 
   async function download() {
@@ -48,21 +63,35 @@
       files[0].file_id,
       feature_details.movie_name,
     );
-    await subtitler.upload(`${feature_details.movie_name}.srt`, result);
+    const { stored_name } = await subtitler.upload(
+      `${feature_details.movie_name}.srt`,
+      result,
+    );
+    await refreshSubtitles();
+    select.value = stored_name;
+  }
+
+  let paused = false;
+
+  function updatePause() {
+    pause.value = paused ? "Play" : "Pause";
+  }
+
+  async function togglePause() {
+    ({ paused } = await subtitler.setPaused(!paused));
+    updatePause();
   }
 
   async function create() {
-    const select = document.createElement("select");
-    for (const file of await subtitler.list()) {
-      const option = document.createElement("option");
-      option.value = file;
-      option.innerText = file;
-      select.appendChild(option);
-    }
+    await refreshSubtitles();
     output.appendChild(select);
+
+    ({ paused } = await subtitler.state());
+    updatePause();
 
     login.addEventListener("click", authenticate);
     save.addEventListener("click", download);
+    pause.addEventListener("click", togglePause);
   }
 
   create();
