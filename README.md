@@ -129,8 +129,8 @@ output.
   (sharded by the title's first letter), marks it active for the next
   boot, and switches it in live. Preview encoding runs only while at
   least one client is connected; without clients the preview endpoints
-  serve a magenta placeholder frame. The full API is documented in
-  [docs/rest-api.md](docs/rest-api.md).
+   serve a magenta placeholder frame. The full API is documented in the
+   [REST API reference](docs/rest-api.md).
 - `--web-root=<dir>` — directory the static files are served from
   (`.html`/`.js`/`.css`/`.png` only). Default: the first
   `<data-dir>/subtitler/web` found across `$XDG_DATA_HOME` and

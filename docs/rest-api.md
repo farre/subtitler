@@ -73,9 +73,12 @@ switched in live (re-anchored at the current running time).
 - `413 Content Too Large` — body over 8 MiB
 - `500 Internal Server Error` — storage or live activation failed
 
-```sh
-curl -X PUT --data-binary @Movie.srt \
-    http://subtitler:8080/api/subtitles/Movie.srt
+```js
+const response = await window.fetch("/api/subtitles/Movie.srt", {
+  method: "PUT",
+  body: srtText,
+});
+const { stored_name } = await response.json();
 ```
 
 ### GET /api/subtitles
@@ -110,10 +113,10 @@ live trim in milliseconds (positive delays cues).
 
 Changes any subset of the state via query parameters:
 
-```sh
-curl -X PUT 'http://subtitler:8080/api/subtitle-state?paused=true'
-curl -X PUT 'http://subtitler:8080/api/subtitle-state?time=0'
-curl -X PUT 'http://subtitler:8080/api/subtitle-state?file=Show%20S01E01.srt'
+```js
+await window.fetch("/api/subtitle-state?paused=true", { method: "PUT" });
+await window.fetch("/api/subtitle-state?time=0", { method: "PUT" });
+await window.fetch("/api/subtitle-state?file=Show%20S01E01.srt", { method: "PUT" });
 ```
 
 - `file` — a title from `GET /api/subtitles`; resolved via the library and
