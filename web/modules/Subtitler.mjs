@@ -21,6 +21,10 @@ class Subtitler extends Rest {
     return this.put("subtitle-state", { paused: paused ? 1 : 0 });
   }
 
+  setTime(time) {
+    return this.put("subtitle-state", { time });
+  }
+
   upload(filename, body) {
     return this.put(`subtitles/${filename}`, {}, { body });
   }

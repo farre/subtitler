@@ -8,6 +8,10 @@
 <div>
   <input type="button" id="pause" value="Pause" />
 </div>
+<div>
+  <input type="time" id="time" step="1" max="05:00:00" />
+  <input type="button" id="seek" value="Set" />
+</div>
 <script type="module">
   import { Subtitler } from "./modules/Subtitler.mjs";
   import { OpenSubtitles } from "./modules/OpenSubtitles.mjs";
@@ -21,6 +25,8 @@
   const search = document.getElementById("search");
   const save = document.getElementById("save");
   const pause = document.getElementById("pause");
+  const time = document.getElementById("time");
+  const seek = document.getElementById("seek");
   const select = document.createElement("select");
 
   const subtitler = new Subtitler(new URL("api/", location.href).href);
@@ -97,6 +103,15 @@
     updatePause();
   }
 
+  async function seekTo() {
+    const ms = time.valueAsNumber;
+    if (Number.isNaN(ms) || !time.validity.valid) {
+      return;
+    }
+    ({ paused } = await subtitler.setTime(ms));
+    updatePause();
+  }
+
   async function create() {
     await refreshSubtitles();
     output.appendChild(select);
@@ -107,6 +122,7 @@
     login.addEventListener("click", authenticate);
     save.addEventListener("click", download);
     pause.addEventListener("click", togglePause);
+    seek.addEventListener("click", seekTo);
   }
 
   create();
