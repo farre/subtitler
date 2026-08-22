@@ -1,76 +1,86 @@
 <!doctype html>
-<meta charset="utf-8">
+<meta charset="utf-8" />
 <title>subtitler</title>
 <details>
-    <img src="/api/preview.mjpeg" alt="Video preview" loading="lazy">
+  <img src="/api/preview.mjpeg" alt="Video preview" loading="lazy" />
 </details>
 <div id="output"></div>
 <script type="module">
-    import { Subtitler } from "./modules/Subtitler.mjs"
-    import { OpenSubtitles } from "./modules/OpenSubtitles.mjs"
+  import { Subtitler } from "./modules/Subtitler.mjs";
+  import { OpenSubtitles } from "./modules/OpenSubtitles.mjs";
 
-    await new Promise(resolve => addEventListener("load", resolve));
+  await new Promise((resolve) => addEventListener("load", resolve));
 
-    const subtitler = new Subtitler(new URL("api/", location.href).href);
+  const output = document.getElementById("output");
+  const username = document.getElementById("username");
+  const password = document.getElementById("password");
+  const login = document.getElementById("login");
+  const search = document.getElementById("search");
+  const save = document.getElementById("save");
 
-    const endpoint = "https://api.opensubtitles.com/api/v1/";
-    const { api_key } = await subtitler.apiKey;
-    const subtitles = new OpenSubtitles(endpoint, api_key);
+  const subtitler = new Subtitler(new URL("api/", location.href).href);
 
-    async function authenticate() {
-        await subtitles.login(username.value, password.value);
+  const endpoint = "https://api.opensubtitles.com/api/v1/";
+  const { api_key } = await subtitler.apiKey();
+  const subtitles = new OpenSubtitles(endpoint, api_key);
+
+  async function authenticate() {
+    await subtitles.login(username.value, password.value);
+  }
+
+  async function download() {
+    if (!subtitles.authenticated) {
+      await authenticate();
     }
 
-    async function download() {
-        if (!subtitles.authenticated) {
-            await authenticate();
-        }
-
-        const { data } = await subtitles.search(search.value);
-        if (data.length < 1) {
-            return;
-        }
-
-        const { attributes } = data[0];
-        const { files, feature_details } = attributes;
-        if (files < 1) {
-            return;
-        }
-
-        const result = await subtitles.download(files[0].file_id, feature_details.movie_name);
-        await subtitler.upload(`${feature_details.movie_name}.srt`, result);
+    const { data } = await subtitles.search(search.value);
+    if (data.length < 1) {
+      return;
     }
 
-    async function create() {
-        const select = document.createElement("select");
-        for (const file of await subtitler.list) {
-            const option = document.createElement("option");
-            option.value = file;
-            option.innerText = file;
-            select.appendChild(option);
-        }
-        output.appendChild(select);
-
-        login.addEventListener('click', authenticate);
-        save.addEventListener('click', download);
+    const { attributes } = data[0];
+    const { files, feature_details } = attributes;
+    if (files < 1) {
+      return;
     }
 
-    create();
+    const result = await subtitles.download(
+      files[0].file_id,
+      feature_details.movie_name,
+    );
+    await subtitler.upload(`${feature_details.movie_name}.srt`, result);
+  }
+
+  async function create() {
+    const select = document.createElement("select");
+    for (const file of await subtitler.list()) {
+      const option = document.createElement("option");
+      option.value = file;
+      option.innerText = file;
+      select.appendChild(option);
+    }
+    output.appendChild(select);
+
+    login.addEventListener("click", authenticate);
+    save.addEventListener("click", download);
+  }
+
+  create();
 </script>
-<br>
+<br />
 <div>
-    <dl>
-        <dt><label for="username">User Name: </label></dt>
-        <dd><input type="text" id="username"></dd>
-        <dt><label for="password">Password: </label></dt>
-        <dd><input type="password" id="password"></dd>
-    </dl>
-    <input type="button" id="login" value="Submit">
+  <dl>
+    <dt><label for="username">User Name: </label></dt>
+    <dd><input type="text" id="username" /></dd>
+    <dt><label for="password">Password: </label></dt>
+    <dd><input type="password" id="password" /></dd>
+  </dl>
+  <input type="button" id="login" value="Submit" />
 </div>
 <div>
-    <dl>
-        <dt><label for="search">Search: </label></dt>
-        <dd><input type="text" id="search"></dd>
-    </dl>
-    <input type="button" id="save" value="Save"">
+  <dl>
+    <dt><label for="search">Search: </label></dt>
+    <dd><input type="text" id="search" /></dd>
+  </dl>
+  <input type="button" id="save" value="Save" />
 </div>

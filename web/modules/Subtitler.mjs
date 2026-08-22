@@ -1,25 +1,21 @@
-import { Rest } from "./Rest.mjs"
+import { Rest } from "./Rest.mjs";
 
 class Subtitler extends Rest {
-    constructor(base) {
-        super(base);
-    }
+  list() {
+    return this.get("subtitles");
+  }
 
-    get list() {
-        return this.get("subtitles");
-    }
+  apiKey() {
+    return this.get("opensubtitles");
+  }
 
-    get apiKey() {
-        return this.get("opensubtitles");
-    }
+  select(file) {
+    return this.put("subtitle-state", { file });
+  }
 
-    set select(file) {
-        return this.put("subtitle-state", { file });
-    }
-
-    upload(filename, body) {
-        return this.put(`subtitles/${filename}`, {}, { body });
-    }
+  upload(filename, body) {
+    return this.put(`subtitles/${filename}`, {}, { body });
+  }
 }
 
-export { Subtitler }
+export { Subtitler };
