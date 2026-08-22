@@ -5,52 +5,72 @@
     <img src="/api/preview.mjpeg" alt="Video preview" loading="lazy">
 </details>
 <div id="output"></div>
-<script>
-    class Rest {
-        #base = null;
+<script type="module">
+    import { Subtitler } from "./modules/Subtitler.mjs"
+    import { OpenSubtitles } from "./modules/OpenSubtitles.mjs"
 
-        constructor(base) {
-            console.log(base);
-            this.#base = location.href;
-        }
+    await new Promise(resolve => addEventListener("load", resolve));
 
-        async api(endpoint, method, query = {}, headers) {
-            const search = new URLSearchParams(query);
-            console.log(this.#base)
-            const url = new URL(`api/${endpoint}`, this.#base);
-            url.search = search;
-            const response = await window.fetch(url, { method, headers });
-            return response.json();
-        }
+    const subtitler = new Subtitler(new URL("api/", location.href).href);
 
-        get(endpoint, ...args) {
-            return this.api(endpoint, "GET", ...args)
-        }
+    const endpoint = "https://api.opensubtitles.com/api/v1/";
+    const { api_key } = await subtitler.apiKey;
+    const subtitles = new OpenSubtitles(endpoint, api_key);
 
-        put(endpoint, ...args) {
-            return this.api(endpoint, "PUT", ...args)
-        }
+    async function authenticate() {
+        await subtitles.login(username.value, password.value);
     }
 
-    class Subtitler extends Rest {
-        constructor(base) {
-            super(base);
+    async function download() {
+        if (!subtitles.authenticated) {
+            await authenticate();
         }
 
-        get list() {
-            return this.get("subtitles");
+        const { data } = await subtitles.search(search.value);
+        if (data.length < 1) {
+            return;
         }
 
-        set select(file) {
-            return this.put("subtitle-state", { file });
+        const { attributes } = data[0];
+        const { files, feature_details } = attributes;
+        if (files < 1) {
+            return;
         }
+
+        const result = await subtitles.download(files[0].file_id, feature_details.movie_name);
+        await subtitler.upload(`${feature_details.movie_name}.srt`, result);
     }
 
     async function create() {
-        const rest = new Subtitler(location.href);
-        output.innerText = JSON.stringify(await rest.list, null, "  ");
+        const select = document.createElement("select");
+        for (const file of await subtitler.list) {
+            const option = document.createElement("option");
+            option.value = file;
+            option.innerText = file;
+            select.appendChild(option);
+        }
+        output.appendChild(select);
+
+        login.addEventListener('click', authenticate);
+        save.addEventListener('click', download);
     }
 
-    addEventListener('load', create);
+    create();
 </script>
 <br>
+<div>
+    <dl>
+        <dt><label for="username">User Name: </label></dt>
+        <dd><input type="text" id="username"></dd>
+        <dt><label for="password">Password: </label></dt>
+        <dd><input type="password" id="password"></dd>
+    </dl>
+    <input type="button" id="login" value="Submit">
+</div>
+<div>
+    <dl>
+        <dt><label for="search">Search: </label></dt>
+        <dd><input type="text" id="search"></dd>
+    </dl>
+    <input type="button" id="save" value="Save"">
+</div>

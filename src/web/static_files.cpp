@@ -22,7 +22,7 @@ const char* StaticContentType(std::string_view path) {
   if (path.ends_with(".html")) {
     return "text/html; charset=utf-8";
   }
-  if (path.ends_with(".js") || path.ends_with(".jms")) {
+  if (path.ends_with(".js") || path.ends_with(".mjs")) {
     return "text/javascript; charset=utf-8";
   }
   if (path.ends_with(".css")) {
