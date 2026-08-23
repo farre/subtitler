@@ -214,6 +214,7 @@ int main(int argc, char** argv) {
             .delay_ms = stream->SubtitleDelay(),
             .font_family = stream->SubtitleFontFamily(),
             .font_size = stream->SubtitleFontSize(),
+            .font_color = stream->SubtitleFontColor(),
         };
       };
 
@@ -263,6 +264,9 @@ int main(int argc, char** argv) {
         }
         if (patch.font_size) {
           stream->SetSubtitleFontSize(*patch.font_size);
+        }
+        if (patch.font_color) {
+          stream->SetSubtitleFontColor(*patch.font_color);
         }
 
         return true;

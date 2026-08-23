@@ -104,10 +104,13 @@ class Stream {
   // child appears and across output rebuilds. No-op without subtitles.
   void SetSubtitleFontFamily(std::string family);
   void SetSubtitleFontSize(std::int64_t size_pt);
+  // Big-endian ARGB; 0xFFRRGGBB for an opaque #RRGGBB.
+  void SetSubtitleFontColor(std::uint32_t color_argb);
 
   // The SetSubtitleFont* state; nullopt for fields never set.
   std::optional<std::string> SubtitleFontFamily() const;
   std::optional<std::int64_t> SubtitleFontSize() const;
+  std::optional<std::uint32_t> SubtitleFontColor() const;
 
   // The latest encoded preview frame, fed while the preview branch is
   // active. The web server reads from this buffer.

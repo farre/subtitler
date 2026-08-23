@@ -103,15 +103,16 @@ time:
   "time": 73400,
   "delay": 0,
   "font_family": "Sans",
-  "font_size": 24
+  "font_size": 24,
+  "font_color": "#ffd700"
 }
 ```
 
 `file` is the active library title, or `null` when no subtitles are
 attached. `time` is the current SRT position in milliseconds, `delay` the
-live trim in milliseconds (positive delays cues). `font_family` and
-`font_size` (points) are the cue font, `null` when never set — the
-renderer default.
+live trim in milliseconds (positive delays cues). `font_family`,
+`font_size` (points), and `font_color` are the cue style, `null` when
+never set — the renderer default.
 
 ### PUT /api/subtitle-state
 
@@ -133,6 +134,8 @@ await window.fetch("/api/subtitle-state?file=Show%20S01E01.srt", { method: "PUT"
 - `visible` — show/hide without disturbing the subtitle branch.
 - `font_family` — cue font family, one of `GET /api/fonts`.
 - `font_size` — cue font size in points; a positive integer.
+- `font_color` — cue color as `#rrggbb` (always opaque). The `#` must be
+  percent-encoded (`%23`) in the query string.
 
 ### GET /api/fonts
 

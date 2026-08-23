@@ -42,6 +42,9 @@ struct SubtitleState {
   // renderer's default.
   std::optional<std::string> font_family;
   std::optional<std::int64_t> font_size;
+  // The cue color, big-endian ARGB (0xFFRRGGBB for opaque #RRGGBB);
+  // nullopt keeps the renderer's default.
+  std::optional<std::uint32_t> font_color;
 };
 
 // A subset of SubtitleState to change (PUT /api/subtitle-state). An
@@ -54,6 +57,7 @@ struct SubtitleStatePatch {
   std::optional<std::int64_t> delay_ms;
   std::optional<std::string> font_family;
   std::optional<std::int64_t> font_size;
+  std::optional<std::uint32_t> font_color;
 };
 
 // The library titles, for GET /api/subtitles (#441).

@@ -620,8 +620,9 @@ TEST_CASE("web server subtitle state") {
 
   subtitler::PreviewFrameBuffer frames;
 
-  subtitler::SubtitleState state{{"Movie.srt"}, true,  false, 1234,
-                                 -150,          {"Sans"}, {24}};
+  subtitler::SubtitleState state{{"Movie.srt"}, true,  false,
+                                 1234,           -150,  {"Sans"},
+                                 {24},           {0xFF'FF'FF'FFu}};
   bool set_ok = true;
 
   subtitler::WebServerHooks hooks;
@@ -656,6 +657,9 @@ TEST_CASE("web server subtitle state") {
         if (patch.font_size) {
           state.font_size = *patch.font_size;
         }
+        if (patch.font_color) {
+          state.font_color = *patch.font_color;
+        }
         return true;
       };
 
@@ -670,17 +674,19 @@ TEST_CASE("web server subtitle state") {
     CHECK(response.body ==
           "{\"file\":\"Movie.srt\",\"visible\":true,\"paused\":false,"
           "\"time\":1234,\"delay\":-150,\"font_family\":\"Sans\","
-          "\"font_size\":24}");
+          "\"font_size\":24,\"font_color\":\"#ffffff\"}");
   }
 
   SUBCASE("GET with an unset font has null font fields") {
     state.font_family = std::nullopt;
     state.font_size = std::nullopt;
+    state.font_color = std::nullopt;
 
     const auto response = HttpGet(port, "/api/subtitle-state");
 
     CHECK(response.body.contains("\"font_family\":null"));
     CHECK(response.body.contains("\"font_size\":null"));
+    CHECK(response.body.contains("\"font_color\":null"));
   }
 
   SUBCASE("GET with detached subtitles has a null file") {
@@ -713,14 +719,18 @@ TEST_CASE("web server subtitle state") {
   }
 
   SUBCASE("PUT applies font changes and answers the new state") {
-    const auto response = HttpRequest(
-        "PUT", port, "/api/subtitle-state?font_family=Serif&font_size=36");
+    const auto response =
+        HttpRequest("PUT", port,
+                    "/api/subtitle-state?font_family=Serif&font_size=36&"
+                    "font_color=%23ffd700");
 
     CHECK(response.status == SOUP_STATUS_OK);
     CHECK(state.font_family == std::optional<std::string>{"Serif"});
     CHECK(state.font_size == std::optional<std::int64_t>{36});
+    CHECK(state.font_color == std::optional<std::uint32_t>{0xFF'FF'D7'00u});
     CHECK(response.body.contains("\"font_family\":\"Serif\""));
     CHECK(response.body.contains("\"font_size\":36"));
+    CHECK(response.body.contains("\"font_color\":\"#ffd700\""));
   }
 
   SUBCASE("PUT rejects bad values without touching the state") {
@@ -736,11 +746,19 @@ TEST_CASE("web server subtitle state") {
               .status == SOUP_STATUS_BAD_REQUEST);
     CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_family=")
               .status == SOUP_STATUS_BAD_REQUEST);
+    // font_color must be "#" plus six hex digits.
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_color=white")
+              .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_color=%23fff")
+              .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_color=%23gg0000")
+              .status == SOUP_STATUS_BAD_REQUEST);
     CHECK(HttpRequest("PUT", port, "/api/subtitle-state?bogus=1").status ==
           SOUP_STATUS_BAD_REQUEST);
     CHECK_FALSE(state.paused);
     CHECK(state.time_ms == 1234);
     CHECK(state.font_size == std::optional<std::int64_t>{24});
+    CHECK(state.font_color == std::optional<std::uint32_t>{0xFF'FF'FF'FFu});
   }
 
   SUBCASE("a failing set hook is a 400") {

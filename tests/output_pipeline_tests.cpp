@@ -109,6 +109,7 @@ struct SubtitleRenderStats {
   std::atomic_uint frames = 0;
   std::atomic_uint modified = 0;
   std::atomic_uint64_t differing_bytes = 0;
+  std::atomic_uint64_t differing_byte_sum = 0;
   std::atomic_uint64_t first_modified = GST_CLOCK_TIME_NONE;
   std::atomic_uint64_t last_modified = 0;
 };
@@ -125,15 +126,18 @@ void OnSubtitleHandoff(GstElement*, GstBuffer* buffer, GstPad*,
   }
 
   std::size_t differing = 0;
+  std::uint64_t byte_sum = 0;
   for (gsize i = 0; i < info.size; ++i) {
     if (info.data[i] != kSolidFill) {
       ++differing;
+      byte_sum += info.data[i];
     }
   }
 
   gst_buffer_unmap(buffer, &info);
 
   stats.differing_bytes += differing;
+  stats.differing_byte_sum += byte_sum;
 
   if (differing > info.size / 1000) {
     ++stats.modified;
@@ -384,6 +388,75 @@ constexpr GstClockTime kOneCueStart = kOneCueAnchor + 200 * GST_MSECOND;
 constexpr GstClockTime kOneCueEnd = kOneCueAnchor + 1400 * GST_MSECOND;
 constexpr auto kEdgeTolerance = 2 * kFrameDuration;
 
+struct CueRender {
+  std::uint64_t differing_bytes = 0;
+  std::uint64_t differing_byte_sum = 0;
+};
+
+// Renders the one-cue SRT through the subtitle rig, optionally
+// overriding the renderer's font-desc and color (big-endian ARGB) once
+// the child appears.
+CueRender RenderOneCue(const char* font_desc,
+                       std::optional<std::uint32_t> color_argb) {
+  SubtitleRenderStats stats;
+  auto rig = StartSubtitlePipeline(kOneCueSrt, kOneCueAnchor, stats);
+  REQUIRE(rig.has_value());
+
+  const auto app_src = GstView<GstAppSrc>{GST_APP_SRC(rig->source.get())};
+
+  // 3.5 s of frames like the anchoring test: the cue window sits
+  // inside with unmodified frames on both sides.
+  constexpr int kFrameCount = 210;
+  std::jthread pusher([&] {
+    CHECK(PushSolidFrames(app_src, kFrameCount, 0) == kFrameCount);
+  });
+
+  if (font_desc != nullptr || color_argb.has_value()) {
+    ElementPtr overlay{gst_bin_get_by_name(GST_BIN(rig->pipeline.get()),
+                                           "subtitle_overlay")};
+    REQUIRE(overlay != nullptr);
+
+    // The renderer is auto-plugged only once the video side sets up,
+    // so it appears while the first frames flow — comfortably before
+    // the cue window opens at 1.2 s.
+    ElementPtr renderer;
+    for (int attempt = 0; attempt < 500 && renderer == nullptr; ++attempt) {
+      renderer = ElementPtr{GST_ELEMENT(gst_child_proxy_get_child_by_name(
+          GST_CHILD_PROXY(overlay.get()), "renderer"))};
+      if (renderer == nullptr) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+      }
+    }
+    INFO("the renderer child never appeared");
+    REQUIRE(renderer != nullptr);
+
+    if (font_desc != nullptr) {
+      g_object_set(renderer.get(), "font-desc", font_desc, nullptr);
+
+      gchar* applied = nullptr;
+      g_object_get(renderer.get(), "font-desc", &applied, nullptr);
+      CHECK(std::string_view{applied != nullptr ? applied : ""} ==
+            font_desc);
+      g_free(applied);
+    }
+
+    if (color_argb.has_value()) {
+      g_object_set(renderer.get(), "color", *color_argb, nullptr);
+
+      guint applied = 0;
+      g_object_get(renderer.get(), "color", &applied, nullptr);
+      CHECK(applied == *color_argb);
+    }
+  }
+
+  pusher.join();
+  std::this_thread::sleep_for(std::chrono::milliseconds{500});
+
+  // Text actually rendered (needs fonts; the Pi target installs them).
+  REQUIRE(stats.modified.load() > 0);
+  return {stats.differing_bytes.load(), stats.differing_byte_sum.load()};
+}
+
 bool SubtitleElementsAvailable() {
   subtitler::GstPointer<GstElementFactory> overlay_factory{
       gst_element_factory_find("subtitleoverlay")};
@@ -611,61 +684,31 @@ TEST_CASE("output pipeline subtitle font") {
     return;
   }
 
-  const auto render_cue = [](const char* font_desc) {
-    SubtitleRenderStats stats;
-    auto rig = StartSubtitlePipeline(kOneCueSrt, kOneCueAnchor, stats);
-    REQUIRE(rig.has_value());
+  const CueRender plain = RenderOneCue(nullptr, std::nullopt);
+  const CueRender large = RenderOneCue("Sans 96", std::nullopt);
 
-    const auto app_src = GstView<GstAppSrc>{GST_APP_SRC(rig->source.get())};
+  INFO("cue pixels: default font ", plain.differing_bytes, ", 96 pt font ",
+       large.differing_bytes);
+  CHECK(large.differing_bytes > plain.differing_bytes * 2);
+}
 
-    // 3.5 s of frames like the anchoring test: the cue window sits
-    // inside with unmodified frames on both sides.
-    constexpr int kFrameCount = 210;
-    std::jthread pusher([&] {
-      CHECK(PushSolidFrames(app_src, kFrameCount, 0) == kFrameCount);
-    });
+// Cue color: the renderer's "color" property must visibly change
+// compositing — red text has far less luma than the default white, so
+// the differing bytes sum to much less (about 1.5x per pixel pair; the
+// check demands an average 10 per byte, a huge margin).
+TEST_CASE("output pipeline subtitle color") {
+  gst_init(nullptr, nullptr);
 
-    if (font_desc != nullptr) {
-      ElementPtr overlay{gst_bin_get_by_name(GST_BIN(rig->pipeline.get()),
-                                             "subtitle_overlay")};
-      REQUIRE(overlay != nullptr);
+  if (!SubtitleElementsAvailable()) {
+    return;
+  }
 
-      // The renderer is auto-plugged only once the video side sets up,
-      // so it appears while the first frames flow — comfortably before
-      // the cue window opens at 1.2 s.
-      ElementPtr renderer;
-      for (int attempt = 0; attempt < 500 && renderer == nullptr;
-           ++attempt) {
-        renderer = ElementPtr{GST_ELEMENT(gst_child_proxy_get_child_by_name(
-            GST_CHILD_PROXY(overlay.get()), "renderer"))};
-        if (renderer == nullptr) {
-          std::this_thread::sleep_for(std::chrono::milliseconds{10});
-        }
-      }
-      INFO("the renderer child never appeared");
-      REQUIRE(renderer != nullptr);
+  const CueRender plain = RenderOneCue(nullptr, std::nullopt);
+  const CueRender red = RenderOneCue(nullptr, 0xFF'FF'00'00u);
 
-      g_object_set(renderer.get(), "font-desc", font_desc, nullptr);
-
-      gchar* applied = nullptr;
-      g_object_get(renderer.get(), "font-desc", &applied, nullptr);
-      CHECK(std::string_view{applied != nullptr ? applied : ""} ==
-            font_desc);
-      g_free(applied);
-    }
-
-    pusher.join();
-    std::this_thread::sleep_for(std::chrono::milliseconds{500});
-
-    // Text actually rendered (needs fonts; the Pi target installs them).
-    REQUIRE(stats.modified.load() > 0);
-    return stats.differing_bytes.load();
-  };
-
-  const std::uint64_t default_bytes = render_cue(nullptr);
-  const std::uint64_t large_bytes = render_cue("Sans 96");
-
-  INFO("cue pixels: default font ", default_bytes, ", 96 pt font ",
-       large_bytes);
-  CHECK(large_bytes > default_bytes * 2);
+  INFO("cue byte sums: default ", plain.differing_byte_sum, ", red ",
+       red.differing_byte_sum);
+  CHECK(plain.differing_bytes > 0);
+  CHECK(red.differing_byte_sum + plain.differing_bytes * 10 <
+        plain.differing_byte_sum);
 }

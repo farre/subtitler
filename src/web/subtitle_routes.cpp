@@ -34,12 +34,17 @@ void RespondSubtitleState(SoupServerMessage* message,
   const std::string font_size = state.font_size.has_value()
                                     ? std::to_string(*state.font_size)
                                     : "null";
+  const std::string font_color =
+      state.font_color.has_value()
+          ? std::format("\"#{:06x}\"", *state.font_color & 0xFF'FF'FF)
+          : "null";
   RespondJson(message,
               std::format(
                   "{{\"file\":{},\"visible\":{},\"paused\":{},\"time\":{},"
-                  "\"delay\":{},\"font_family\":{},\"font_size\":{}}}",
+                  "\"delay\":{},\"font_family\":{},\"font_size\":{},"
+                  "\"font_color\":{}}}",
                   file, state.visible, state.paused, state.time_ms,
-                  state.delay_ms, font_family, font_size));
+                  state.delay_ms, font_family, font_size, font_color));
 }
 
 // PUT /api/subtitles/<title> (#212): stores and activates the SRT in
@@ -179,6 +184,20 @@ void HandleSubtitleState(SoupServer*, SoupServerMessage* message,
         break;
       }
       patch.font_family = std::string{param};
+    } else if (name == "font_color") {
+      // "#rrggbb"; the alpha is always opaque.
+      if (param.size() != 7 || param.front() != '#') {
+        valid = false;
+        break;
+      }
+      std::uint32_t rgb;
+      const auto [end, error] = std::from_chars(
+          param.data() + 1, param.data() + param.size(), rgb, 16);
+      if (error != std::errc{} || end != param.data() + param.size()) {
+        valid = false;
+        break;
+      }
+      patch.font_color = 0xFF'00'00'00 | rgb;
     } else if (name == "visible" || name == "paused") {
       if (param != "true" && param != "false") {
         valid = false;
