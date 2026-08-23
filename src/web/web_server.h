@@ -22,6 +22,8 @@ struct WebServerHooks {
   std::function<void(bool)> preview_activation;
   // PUT /api/subtitles/<title> (#212).
   SubtitleUploadHandler subtitle_upload;
+  // GET /api/subtitles/<title>.
+  SubtitleGetHandler subtitle_get;
   // GET /api/subtitles and GET/PUT /api/subtitle-state (#441).
   SubtitleListHandler subtitle_list;
   SubtitleStateGetHandler subtitle_state_get;

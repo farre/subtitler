@@ -193,6 +193,29 @@ inline std::optional<std::filesystem::path> FindLibrarySubtitle(
   return std::nullopt;
 }
 
+// The contents of a library entry (sharded or legacy flat); nullopt
+// for unusable titles, missing entries, or unreadable files.
+inline std::optional<std::string> LoadLibrarySubtitle(
+    const std::filesystem::path& state_dir, std::string_view title) {
+  const auto relative = FindLibrarySubtitle(state_dir, title);
+  if (!relative) {
+    return std::nullopt;
+  }
+
+  std::ifstream file{state_dir / "subtitles" / *relative, std::ios::binary};
+  if (!file) {
+    return std::nullopt;
+  }
+
+  std::string contents{std::istreambuf_iterator<char>{file},
+                       std::istreambuf_iterator<char>{}};
+  if (file.bad()) {
+    return std::nullopt;
+  }
+
+  return contents;
+}
+
 // The activatable library titles (those passing LibrarySubtitlePath),
 // sharded and legacy flat entries, sorted. Scanned on demand (#441).
 inline std::vector<std::string> ListSubtitles(

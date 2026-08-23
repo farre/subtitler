@@ -507,6 +507,8 @@ TEST_CASE("web server subtitle upload without a handler") {
 
   CHECK(HttpRequest("PUT", port, "/api/subtitles/movie.srt", "x").status ==
         SOUP_STATUS_NOT_FOUND);
+  CHECK(HttpGet(port, "/api/subtitles/movie.srt").status ==
+        SOUP_STATUS_NOT_FOUND);
   CHECK(HttpGet(port, "/api/subtitles").status == SOUP_STATUS_NOT_FOUND);
   CHECK(HttpGet(port, "/api/subtitle-state").status == SOUP_STATUS_NOT_FOUND);
   CHECK(HttpRequest("PUT", port, "/api/subtitle-state?paused=true").status ==
@@ -581,6 +583,49 @@ TEST_CASE("web server subtitle list") {
     CHECK(response.status == SOUP_STATUS_OK);
     CHECK(response.content_type == "application/json");
     CHECK(response.body == "[\"Movie.srt\",\"Quote\\\"Back\\\\.srt\"]");
+  }
+}
+
+TEST_CASE("web server subtitle get") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  std::string captured_title;
+  subtitler::WebServerHooks hooks;
+  hooks.subtitle_get = [&captured_title](std::string_view title)
+      -> std::optional<std::string> {
+    captured_title = title;
+    if (title == "missing.srt") {
+      return std::nullopt;
+    }
+    return std::string{"1\n00:00:01,000 --> 00:00:02,000\nHi \"there\"\n"};
+  };
+
+  auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
+  REQUIRE(server != nullptr);
+
+  SUBCASE("the stored SRT as JSON") {
+    const auto response = HttpGet(port, "/api/subtitles/Movie.srt");
+
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(response.content_type == "application/json");
+    CHECK(response.body ==
+          "{\"body\":\"1\\u000a00:00:01,000 --> 00:00:02,000\\u000aHi "
+          "\\\"there\\\"\\u000a\"}");
+    CHECK(captured_title == "Movie.srt");
+  }
+
+  SUBCASE("the title is percent-decoded") {
+    const auto response = HttpGet(port, "/api/subtitles/My%20Movie.srt");
+
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(captured_title == "My Movie.srt");
+  }
+
+  SUBCASE("an unknown title is a 404") {
+    CHECK(HttpGet(port, "/api/subtitles/missing.srt").status ==
+          SOUP_STATUS_NOT_FOUND);
   }
 }
 

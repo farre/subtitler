@@ -69,7 +69,7 @@ switched in live (re-anchored at the current running time).
 - `201 Created` — body is the library-relative name as JSON:
   `{"stored_name":"m/Movie.srt"}`
 - `400 Bad Request` — invalid title, bad percent-encoding, or empty body
-- `405 Method Not Allowed` — anything but PUT
+- `405 Method Not Allowed` — anything but GET or PUT
 - `413 Content Too Large` — body over 8 MiB
 - `500 Internal Server Error` — storage or live activation failed
 
@@ -80,6 +80,19 @@ const response = await window.fetch("/api/subtitles/Movie.srt", {
 });
 const { stored_name } = await response.json();
 ```
+
+### GET /api/subtitles/<title>
+
+The stored SRT for the percent-decoded `<title>`, as JSON:
+
+```json
+{
+  "body": "1\n00:00:00,200 --> 00:00:01,400\nHello subtitles\n"
+}
+```
+
+- `400 Bad Request` — bad percent-encoding
+- `404 Not Found` — no such library title
 
 ### GET /api/subtitles
 

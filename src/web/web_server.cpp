@@ -19,6 +19,7 @@ struct subtitler::WebServer::Implementation {
       : preview_{frames, std::move(hooks.preview_activation)},
         static_files_{std::move(hooks.web_root)} {
     subtitle_routes_.upload_ = std::move(hooks.subtitle_upload);
+    subtitle_routes_.get_ = std::move(hooks.subtitle_get);
     subtitle_routes_.list_ = std::move(hooks.subtitle_list);
     subtitle_routes_.state_get_ = std::move(hooks.subtitle_state_get);
     subtitle_routes_.state_set_ = std::move(hooks.subtitle_state_set);

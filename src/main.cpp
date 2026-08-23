@@ -334,6 +334,10 @@ int main(int argc, char** argv) {
                 relative->generic_string()};
       };
 
+      hooks.subtitle_get = [&state_dir](std::string_view title) {
+        return subtitler::LoadLibrarySubtitle(*state_dir, title);
+      };
+
       hooks.subtitle_list = [&state_dir] {
         return subtitler::ListSubtitles(*state_dir);
       };

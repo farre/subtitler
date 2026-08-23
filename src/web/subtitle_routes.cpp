@@ -99,6 +99,25 @@ void HandleSubtitleUpload(SoupServerMessage* message, const char* path,
   }
 }
 
+// GET /api/subtitles/<title>: the stored SRT as JSON.
+void HandleSubtitleGet(SoupServerMessage* message, const char* path,
+                       const SubtitleRoutes& self) {
+  const UniquePtr<gchar, g_free> decoded{
+      g_uri_unescape_string(path + kSubtitlesPrefix.size(), nullptr)};
+  if (decoded == nullptr) {
+    soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
+    return;
+  }
+
+  const auto body = self.get_(decoded.get());
+  if (!body) {
+    soup_server_message_set_status(message, SOUP_STATUS_NOT_FOUND, nullptr);
+    return;
+  }
+
+  RespondJson(message, std::format("{{\"body\":\"{}\"}}", JsonEscape(*body)));
+}
+
 void HandleSubtitles(SoupServer*, SoupServerMessage* message,
                      const char* path, GHashTable*, gpointer user_data) {
   auto& self = *static_cast<SubtitleRoutes*>(user_data);
@@ -111,6 +130,14 @@ void HandleSubtitles(SoupServer*, SoupServerMessage* message,
     return;
   }
 
+  // GET on an item answers the stored SRT. The handler is
+  // prefix-matched; the title is whatever follows the prefix.
+  if (method == "GET" && self.get_ && route.starts_with(kSubtitlesPrefix) &&
+      route.size() > kSubtitlesPrefix.size()) {
+    HandleSubtitleGet(message, path, self);
+    return;
+  }
+
   if (!self.upload_) {
     soup_server_message_set_status(message, SOUP_STATUS_NOT_FOUND, nullptr);
     return;
@@ -118,7 +145,8 @@ void HandleSubtitles(SoupServer*, SoupServerMessage* message,
 
   if (method != "PUT") {
     soup_message_headers_replace(
-        soup_server_message_get_response_headers(message), "Allow", "PUT");
+        soup_server_message_get_response_headers(message), "Allow",
+        self.get_ ? "GET, PUT" : "PUT");
     soup_server_message_set_status(message, SOUP_STATUS_METHOD_NOT_ALLOWED,
                                    nullptr);
     return;
@@ -245,7 +273,7 @@ void HandleSubtitleState(SoupServer*, SoupServerMessage* message,
 namespace subtitler {
 
 void SubtitleRoutes::Register(SoupServer* server) {
-  if (upload_ || list_) {
+  if (upload_ || list_ || get_) {
     soup_server_add_handler(server, "/api/subtitles", HandleSubtitles, this,
                             nullptr);
   }

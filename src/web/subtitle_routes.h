@@ -62,6 +62,10 @@ struct SubtitleStatePatch {
 
 // The library titles, for GET /api/subtitles (#441).
 using SubtitleListHandler = std::function<std::vector<std::string>()>;
+// The stored SRT for a library title, for GET /api/subtitles/<title>;
+// nullopt when the title isn't in the library, mapped to 404.
+using SubtitleGetHandler =
+    std::function<std::optional<std::string>(std::string_view title)>;
 // The live subtitle state getters/setters; the setter answers false on
 // an unusable value (e.g. a title not in the library), mapped to 400.
 using SubtitleStateGetHandler = std::function<SubtitleState()>;
@@ -69,10 +73,11 @@ using SubtitleStateSetHandler =
     std::function<bool(const SubtitleStatePatch&)>;
 
 // The /api/subtitles endpoints: PUT /api/subtitles/<title> uploads
-// (#212), GET /api/subtitles lists the library, GET/PUT
-// /api/subtitle-state reads and changes the live state (#441). An unset
-// hook disables its endpoint. Internal to the web module;
-// web_server.cpp composes the route modules.
+// (#212), GET /api/subtitles/<title> answers the stored SRT, GET
+// /api/subtitles lists the library, GET/PUT /api/subtitle-state reads
+// and changes the live state (#441). An unset hook disables its
+// endpoint. Internal to the web module; web_server.cpp composes the
+// route modules.
 struct SubtitleRoutes {
   // Adds the route handlers with this as user_data. Called on the io
   // thread.
@@ -80,6 +85,7 @@ struct SubtitleRoutes {
 
   SubtitleUploadHandler upload_;
   SubtitleListHandler list_;
+  SubtitleGetHandler get_;
   SubtitleStateGetHandler state_get_;
   SubtitleStateSetHandler state_set_;
 };
