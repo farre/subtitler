@@ -25,6 +25,10 @@ class Subtitler extends Rest {
     return this.put("subtitle-state", { paused: String(paused) });
   }
 
+  setVisible(visible) {
+    return this.put("subtitle-state", { visible: String(visible) });
+  }
+
   setTime(time) {
     return this.put("subtitle-state", { time });
   }

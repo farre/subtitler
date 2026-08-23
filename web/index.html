@@ -21,6 +21,8 @@
 
         <div class="controls">
           <button type="button" id="pause">Pause</button>
+          <input type="checkbox" id="visible" checked />
+          <label for="visible">Visible</label>
           <output id="position">00:00:00</output>
         </div>
 
@@ -79,6 +81,7 @@
 
       const library = document.getElementById("subtitles");
       const pause = document.getElementById("pause");
+      const visible = document.getElementById("visible");
       const position = document.getElementById("position");
       const time = document.getElementById("time");
       const seekForm = document.getElementById("seek-form");
@@ -231,6 +234,7 @@
       function applyState({
         paused: isPaused,
         time: position,
+        visible: isVisible,
         font_family: family,
         font_size: size,
         font_color: color,
@@ -240,6 +244,9 @@
         updatePause();
         // Absent keys (hand-made states) keep the current values; null
         // means "renderer default" and leaves the controls alone.
+        if (isVisible !== undefined) {
+          visible.checked = isVisible;
+        }
         if (family !== undefined) {
           currentFontFamily = family;
           if (family !== null) {
@@ -333,6 +340,7 @@
         }
         if (
           state.paused !== paused ||
+          state.visible !== visible.checked ||
           state.font_family !== currentFontFamily ||
           state.font_size !== currentFontSize ||
           state.font_color !== currentFontColor ||
@@ -358,6 +366,9 @@
           applyState(await subtitler.select(event.target.value));
         });
         pause.addEventListener("click", togglePause);
+        visible.addEventListener("change", async () => {
+          applyState(await subtitler.setVisible(visible.checked));
+        });
         seekForm.addEventListener("submit", async (event) => {
           event.preventDefault();
           await seekTo();
