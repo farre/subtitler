@@ -48,6 +48,10 @@ class Subtitler extends Rest {
   upload(filename, body) {
     return this.put(`subtitles/${filename}`, {}, { body });
   }
+
+  download(file) {
+    return this.get(`subtitles/${file}`);
+  }
 }
 
 export { Subtitler };

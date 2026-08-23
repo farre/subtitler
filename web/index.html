@@ -51,6 +51,17 @@
           <input type="color" id="font-color" value="#ffffff" />
           <div id="color-presets"></div>
         </div>
+
+        <div class="controls">
+          <label for="convert-fps">Convert to</label>
+          <select id="convert-fps">
+            <option value="23.976">23.976 (NTSC film)</option>
+            <option value="24">24 (film)</option>
+            <option value="25">25 (PAL)</option>
+            <option value="29.97">29.97 (NTSC)</option>
+          </select>
+          <button type="button" id="convert">Convert</button>
+        </div>
       </section>
 
       <section>
@@ -78,6 +89,7 @@
     <script type="module">
       import { Subtitler } from "./modules/Subtitler.mjs";
       import { OpenSubtitles } from "./modules/OpenSubtitles.mjs";
+      import { convertTo } from "./modules/SRT.mjs";
 
       const library = document.getElementById("subtitles");
       const pause = document.getElementById("pause");
@@ -92,6 +104,8 @@
       const fontSize = document.getElementById("font-size");
       const fontColor = document.getElementById("font-color");
       const colorPresets = document.getElementById("color-presets");
+      const convertFps = document.getElementById("convert-fps");
+      const convert = document.getElementById("convert");
 
       // The classic subtitle colors first; the picker covers the rest.
       const presetColors = ["#ffffff", "#ffff00", "#00ffff", "#00ff00"];
@@ -124,6 +138,12 @@
 
       function imdbId(name) {
         return name.match(/tt(\d+)\.srt$/i)?.[1];
+      }
+
+      // The rate tag in `<title>.<fps>fps.tt<id>.srt`; "" when the
+      // filename doesn't carry one.
+      function fpsTag(name) {
+        return name.match(/\.(\d+(?:\.\d+)?)fps\.tt\d+\.srt$/i)?.[1] ?? "";
       }
 
       function subtitleRow(file, index) {
@@ -168,6 +188,7 @@
         );
         if (radio) {
           radio.checked = true;
+          updateConvertState();
         }
       }
 
@@ -200,9 +221,55 @@
           files[0].file_id,
           feature_details.movie_name,
         );
+        // Tag the release's rate so the convert control knows the source
+        // timing; 0 means unknown and stays untagged.
+        const tag = Number(attributes.fps) > 0 ? `.${attributes.fps}fps` : "";
         const { stored_name } = await subtitler.upload(
-          `${feature_details.movie_name}.tt${id}.srt`,
+          `${feature_details.movie_name}${tag}.tt${id}.srt`,
           result,
+        );
+        await refreshSubtitles();
+        checkSubtitle(stored_name);
+        // The appliance switches to the upload live: position 0, unpaused.
+        applyState({ paused: false, time: 0 });
+      }
+
+      function selectedSubtitle() {
+        return library.querySelector("input:checked")?.value;
+      }
+
+      // Converting needs a tagged source rate and a different target.
+      function updateConvertState() {
+        const source = fpsTag(selectedSubtitle() ?? "");
+        convert.disabled =
+          source === "" ||
+          Number.parseFloat(source) === Number.parseFloat(convertFps.value);
+      }
+
+      async function convertSelected() {
+        const file = selectedSubtitle();
+        const source = file ? fpsTag(file) : "";
+        const target = convertFps.value;
+        if (
+          source === "" ||
+          Number.parseFloat(source) === Number.parseFloat(target)
+        ) {
+          return;
+        }
+
+        const { body } = await subtitler.download(file);
+        const converted = convertTo(
+          body,
+          Number.parseFloat(source),
+          Number.parseFloat(target),
+        );
+        const converted_name = file.replace(
+          /\.\d+(?:\.\d+)?fps\.tt(\d+)\.srt$/i,
+          `.${target}fps.tt$1.srt`,
+        );
+        const { stored_name } = await subtitler.upload(
+          converted_name,
+          converted,
         );
         await refreshSubtitles();
         checkSubtitle(stored_name);
@@ -361,9 +428,11 @@
         await refreshSubtitles();
         await refreshFonts();
         applyState(await subtitler.state());
+        updateConvertState();
 
         library.addEventListener("change", async (event) => {
           applyState(await subtitler.select(event.target.value));
+          updateConvertState();
         });
         pause.addEventListener("click", togglePause);
         visible.addEventListener("change", async () => {
@@ -388,6 +457,8 @@
         fontColor.addEventListener("change", () =>
           setFontColor(fontColor.value),
         );
+        convertFps.addEventListener("change", updateConvertState);
+        convert.addEventListener("click", convertSelected);
         loginForm.addEventListener("submit", async (event) => {
           event.preventDefault();
           await authenticate();
