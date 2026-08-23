@@ -18,7 +18,7 @@ class Subtitler extends Rest {
   }
 
   setPaused(paused) {
-    return this.put("subtitle-state", { paused: paused ? 1 : 0 });
+    return this.put("subtitle-state", { paused: String(paused) });
   }
 
   setTime(time) {

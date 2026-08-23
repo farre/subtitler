@@ -1,168 +1,280 @@
 <!doctype html>
-<meta charset="utf-8" />
-<title>subtitler</title>
-<details>
-  <img src="/api/preview.mjpeg" alt="Video preview" loading="lazy" />
-</details>
-<div id="output"></div>
-<div>
-  <input type="button" id="pause" value="Pause" />
-</div>
-<div>
-  <input type="time" id="time" step="1" max="05:00:00" />
-  <input type="button" id="seek" value="Set" />
-</div>
-<div>
-  <input type="number" id="nudge" min="0" step="any" value="10" />
-  <input type="button" id="nudge-back" value="-" />
-  <input type="button" id="nudge-forward" value="+" />
-</div>
-<script type="module">
-  import { Subtitler } from "./modules/Subtitler.mjs";
-  import { OpenSubtitles } from "./modules/OpenSubtitles.mjs";
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>subtitler</title>
+    <link rel="stylesheet" href="./assets/style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>subtitler</h1>
 
-  await new Promise((resolve) => addEventListener("load", resolve));
+      <details>
+        <summary>Preview</summary>
+        <img src="/api/preview.mjpeg" alt="Video preview" loading="lazy" />
+      </details>
 
-  const output = document.getElementById("output");
-  const username = document.getElementById("username");
-  const password = document.getElementById("password");
-  const login = document.getElementById("login");
-  const search = document.getElementById("search");
-  const save = document.getElementById("save");
-  const pause = document.getElementById("pause");
-  const time = document.getElementById("time");
-  const seek = document.getElementById("seek");
-  const nudge = document.getElementById("nudge");
-  const nudgeBack = document.getElementById("nudge-back");
-  const nudgeForward = document.getElementById("nudge-forward");
-  const select = document.createElement("select");
+      <section>
+        <h2>Subtitles</h2>
+        <div id="subtitles" class="subtitle-list"></div>
 
-  const subtitler = new Subtitler(new URL("api/", location.href).href);
+        <div class="controls">
+          <button type="button" id="pause">Pause</button>
+          <output id="position">00:00:00</output>
+        </div>
 
-  const endpoint = "https://api.opensubtitles.com/api/v1/";
-  const { api_key } = await subtitler.apiKey();
-  const subtitles = new OpenSubtitles(endpoint, api_key);
+        <form id="seek-form" class="controls">
+          <label for="time">Position</label>
+          <input type="time" id="time" step="1" max="05:00:00" />
+          <button type="submit">Set</button>
+        </form>
 
-  async function authenticate() {
-    await subtitles.login(username.value, password.value);
-  }
+        <div class="controls">
+          <label for="nudge">Nudge (s)</label>
+          <input type="number" id="nudge" min="0" step="any" value="10" />
+          <button type="button" id="nudge-back">-</button>
+          <button type="button" id="nudge-forward">+</button>
+        </div>
+      </section>
 
-  function imdbId(name) {
-    return name.match(/tt(\d+)\.srt$/i)?.[1];
-  }
+      <section>
+        <h2>OpenSubtitles</h2>
+        <form id="login-form">
+          <label for="username">User name</label>
+          <input type="text" id="username" autocomplete="username" />
+          <label for="password">Password</label>
+          <input
+            type="password"
+            id="password"
+            autocomplete="current-password"
+          />
+          <button type="submit">Log in</button>
+        </form>
 
-  async function refreshSubtitles() {
-    select.replaceChildren();
-    const files = await subtitler.list();
-    for (const file of files) {
-      const option = document.createElement("option");
-      option.value = file;
-      option.innerText = file;
-      select.appendChild(option);
-    }
-    return files;
-  }
+        <form id="search-form">
+          <label for="search">IMDb id</label>
+          <input type="text" id="search" placeholder="tt1234567" />
+          <button type="submit">Save</button>
+        </form>
+      </section>
+    </main>
 
-  async function download() {
-    const id = search.value.trim().toLowerCase().replace(/^tt/, "");
-    const known = await refreshSubtitles();
-    const existing = known.find((file) => imdbId(file) === id);
-    if (existing) {
-      select.value = existing;
-      await subtitler.select(existing);
-      return;
-    }
+    <script type="module">
+      import { Subtitler } from "./modules/Subtitler.mjs";
+      import { OpenSubtitles } from "./modules/OpenSubtitles.mjs";
 
-    if (!subtitles.authenticated) {
-      await authenticate();
-    }
+      const library = document.getElementById("subtitles");
+      const pause = document.getElementById("pause");
+      const position = document.getElementById("position");
+      const time = document.getElementById("time");
+      const seekForm = document.getElementById("seek-form");
+      const nudge = document.getElementById("nudge");
+      const nudgeBack = document.getElementById("nudge-back");
+      const nudgeForward = document.getElementById("nudge-forward");
+      const username = document.getElementById("username");
+      const password = document.getElementById("password");
+      const loginForm = document.getElementById("login-form");
+      const search = document.getElementById("search");
+      const searchForm = document.getElementById("search-form");
 
-    const { data } = await subtitles.search(search.value);
-    if (data.length < 1) {
-      return;
-    }
+      const subtitler = new Subtitler(new URL("api/", location.href).href);
 
-    const { attributes } = data[0];
-    const { files, feature_details } = attributes;
-    if (files < 1) {
-      return;
-    }
+      const endpoint = "https://api.opensubtitles.com/api/v1/";
+      const { api_key } = await subtitler.apiKey();
+      const subtitles = new OpenSubtitles(endpoint, api_key);
 
-    const result = await subtitles.download(
-      files[0].file_id,
-      feature_details.movie_name,
-    );
-    const { stored_name } = await subtitler.upload(
-      `${feature_details.movie_name}.tt${id}.srt`,
-      result,
-    );
-    await refreshSubtitles();
-    select.value = stored_name;
-  }
+      async function authenticate() {
+        await subtitles.login(username.value, password.value);
+      }
 
-  let paused = false;
+      function imdbId(name) {
+        return name.match(/tt(\d+)\.srt$/i)?.[1];
+      }
 
-  function updatePause() {
-    pause.value = paused ? "Play" : "Pause";
-  }
+      function subtitleRow(file, index) {
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "subtitle";
+        radio.id = `subtitle-${index}`;
+        radio.value = file;
 
-  async function togglePause() {
-    ({ paused } = await subtitler.setPaused(!paused));
-    updatePause();
-  }
+        const label = document.createElement("label");
+        label.htmlFor = radio.id;
 
-  async function seekTo() {
-    const ms = time.valueAsNumber;
-    if (Number.isNaN(ms) || !time.validity.valid) {
-      return;
-    }
-    ({ paused } = await subtitler.setTime(ms));
-    updatePause();
-  }
+        const base = file.replace(/^.\//, "").replace(/\.srt$/i, "");
+        const parsed = base.match(/^(.*)\.(tt\d+)$/i);
+        const title = document.createElement("span");
+        title.textContent = parsed ? parsed[1] : base;
+        label.appendChild(title);
 
-  async function nudgeTime(direction) {
-    const seconds = nudge.valueAsNumber;
-    if (Number.isNaN(seconds) || !nudge.validity.valid) {
-      return;
-    }
-    const { time_ms } = await subtitler.state();
-    ({ paused } = await subtitler.setTime(
-      Math.max(0, Math.round(time_ms + direction * seconds * 1000)),
-    ));
-    updatePause();
-  }
+        if (parsed) {
+          const imdb = document.createElement("span");
+          imdb.className = "imdb";
+          imdb.textContent = parsed[2];
+          label.appendChild(imdb);
+        }
 
-  async function create() {
-    await refreshSubtitles();
-    output.appendChild(select);
+        const row = document.createElement("div");
+        row.className = "subtitle";
+        row.append(radio, label);
+        return row;
+      }
 
-    ({ paused } = await subtitler.state());
-    updatePause();
+      async function refreshSubtitles() {
+        library.replaceChildren();
+        const files = await subtitler.list();
+        files.forEach((file, i) => library.appendChild(subtitleRow(file, i)));
+        return files;
+      }
 
-    login.addEventListener("click", authenticate);
-    save.addEventListener("click", download);
-    pause.addEventListener("click", togglePause);
-    seek.addEventListener("click", seekTo);
-    nudgeBack.addEventListener("click", () => nudgeTime(-1));
-    nudgeForward.addEventListener("click", () => nudgeTime(1));
-  }
+      function checkSubtitle(file) {
+        const radio = library.querySelector(
+          `input[value="${CSS.escape(file)}"]`,
+        );
+        if (radio) {
+          radio.checked = true;
+        }
+      }
 
-  create();
-</script>
-<br />
-<div>
-  <dl>
-    <dt><label for="username">User Name: </label></dt>
-    <dd><input type="text" id="username" /></dd>
-    <dt><label for="password">Password: </label></dt>
-    <dd><input type="password" id="password" /></dd>
-  </dl>
-  <input type="button" id="login" value="Submit" />
-</div>
-<div>
-  <dl>
-    <dt><label for="search">Search: </label></dt>
-    <dd><input type="text" id="search" /></dd>
-  </dl>
-  <input type="button" id="save" value="Save" />
-</div>
+      async function download() {
+        const id = search.value.trim().toLowerCase().replace(/^tt/, "");
+        const known = await refreshSubtitles();
+        const existing = known.find((file) => imdbId(file) === id);
+        if (existing) {
+          checkSubtitle(existing);
+          applyState(await subtitler.select(existing));
+          return;
+        }
+
+        if (!subtitles.authenticated) {
+          await authenticate();
+        }
+
+        const { data } = await subtitles.search(search.value);
+        if (data.length < 1) {
+          return;
+        }
+
+        const { attributes } = data[0];
+        const { files, feature_details } = attributes;
+        if (files < 1) {
+          return;
+        }
+
+        const result = await subtitles.download(
+          files[0].file_id,
+          feature_details.movie_name,
+        );
+        const { stored_name } = await subtitler.upload(
+          `${feature_details.movie_name}.tt${id}.srt`,
+          result,
+        );
+        await refreshSubtitles();
+        checkSubtitle(stored_name);
+        // The appliance switches to the upload live: position 0, unpaused.
+        applyState({ paused: false, time: 0 });
+      }
+
+      let paused = false;
+      let positionMs = 0;
+      let anchoredAt = performance.now();
+
+      function anchorPosition(ms) {
+        if (!Number.isFinite(ms)) {
+          return;
+        }
+        positionMs = ms;
+        anchoredAt = performance.now();
+      }
+
+      function currentPosition() {
+        return paused
+          ? positionMs
+          : positionMs + performance.now() - anchoredAt;
+      }
+
+      function applyState({ paused: isPaused, time: position }) {
+        paused = isPaused;
+        anchorPosition(position);
+        updatePause();
+      }
+
+      function updatePause() {
+        pause.textContent = paused ? "Play" : "Pause";
+      }
+
+      function formatTime(ms) {
+        const total = Math.max(0, Math.floor(ms / 1000));
+        const units = [
+          Math.floor(total / 3600),
+          Math.floor((total % 3600) / 60),
+          total % 60,
+        ];
+        return units.map((unit) => String(unit).padStart(2, "0")).join(":");
+      }
+
+      function tick() {
+        const text = formatTime(currentPosition());
+        if (position.textContent !== text) {
+          position.textContent = text;
+        }
+      }
+
+      async function togglePause() {
+        applyState(await subtitler.setPaused(!paused));
+      }
+
+      async function seekTo() {
+        const ms = time.valueAsNumber;
+        if (Number.isNaN(ms) || !time.validity.valid) {
+          return;
+        }
+        applyState(await subtitler.setTime(ms));
+      }
+
+      async function nudgeTime(direction) {
+        const seconds = nudge.valueAsNumber;
+        if (Number.isNaN(seconds) || !nudge.validity.valid) {
+          return;
+        }
+        applyState(
+          await subtitler.setTime(
+            Math.max(
+              0,
+              Math.round(currentPosition() + direction * seconds * 1000),
+            ),
+          ),
+        );
+      }
+
+      async function create() {
+        await refreshSubtitles();
+        applyState(await subtitler.state());
+
+        library.addEventListener("change", async (event) => {
+          applyState(await subtitler.select(event.target.value));
+        });
+        pause.addEventListener("click", togglePause);
+        seekForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          await seekTo();
+        });
+        nudgeBack.addEventListener("click", () => nudgeTime(-1));
+        nudgeForward.addEventListener("click", () => nudgeTime(1));
+        loginForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          await authenticate();
+        });
+        searchForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          await download();
+        });
+
+        setInterval(tick, 250);
+      }
+
+      create();
+    </script>
+  </body>
+</html>
