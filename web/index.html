@@ -36,6 +36,13 @@
           <button type="button" id="nudge-back">-</button>
           <button type="button" id="nudge-forward">+</button>
         </div>
+
+        <div class="controls">
+          <label for="font">Font</label>
+          <select id="font"></select>
+          <label for="font-size">Size (pt)</label>
+          <input type="number" id="font-size" min="1" step="1" value="24" />
+        </div>
       </section>
 
       <section>
@@ -72,6 +79,8 @@
       const nudge = document.getElementById("nudge");
       const nudgeBack = document.getElementById("nudge-back");
       const nudgeForward = document.getElementById("nudge-forward");
+      const font = document.getElementById("font");
+      const fontSize = document.getElementById("font-size");
       const username = document.getElementById("username");
       const password = document.getElementById("password");
       const loginForm = document.getElementById("login-form");
@@ -179,6 +188,8 @@
       let paused = false;
       let positionMs = 0;
       let anchoredAt = performance.now();
+      let currentFontFamily = null;
+      let currentFontSize = null;
 
       function anchorPosition(ms) {
         if (!Number.isFinite(ms)) {
@@ -194,10 +205,29 @@
           : positionMs + performance.now() - anchoredAt;
       }
 
-      function applyState({ paused: isPaused, time: position }) {
+      function applyState({
+        paused: isPaused,
+        time: position,
+        font_family: family,
+        font_size: size,
+      }) {
         paused = isPaused;
         anchorPosition(position);
         updatePause();
+        // Absent keys (hand-made states) keep the current values; null
+        // means "renderer default" and leaves the controls alone.
+        if (family !== undefined) {
+          currentFontFamily = family;
+          if (family !== null) {
+            font.value = family;
+          }
+        }
+        if (size !== undefined) {
+          currentFontSize = size;
+          if (size !== null) {
+            fontSize.value = size;
+          }
+        }
       }
 
       function updatePause() {
@@ -263,14 +293,24 @@
         }
         if (
           state.paused !== paused ||
+          state.font_family !== currentFontFamily ||
+          state.font_size !== currentFontSize ||
           Math.abs(state.time - currentPosition()) > syncToleranceMs
         ) {
           applyState(state);
         }
       }
 
+      async function refreshFonts() {
+        const families = await subtitler.fonts();
+        font.replaceChildren(
+          families.map((family) => new Option(family, family)),
+        );
+      }
+
       async function create() {
         await refreshSubtitles();
+        await refreshFonts();
         applyState(await subtitler.state());
 
         library.addEventListener("change", async (event) => {
@@ -283,6 +323,16 @@
         });
         nudgeBack.addEventListener("click", () => nudgeTime(-1));
         nudgeForward.addEventListener("click", () => nudgeTime(1));
+        font.addEventListener("change", async () => {
+          applyState(await subtitler.setFontFamily(font.value));
+        });
+        fontSize.addEventListener("change", async () => {
+          const size = fontSize.valueAsNumber;
+          if (Number.isNaN(size) || !fontSize.validity.valid) {
+            return;
+          }
+          applyState(await subtitler.setFontSize(size));
+        });
         loginForm.addEventListener("submit", async (event) => {
           event.preventDefault();
           await authenticate();

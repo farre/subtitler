@@ -13,6 +13,10 @@ class Subtitler extends Rest {
     return this.put("subtitle-state", { file });
   }
 
+  fonts() {
+    return this.get("fonts");
+  }
+
   state() {
     return this.get("subtitle-state");
   }
@@ -23,6 +27,14 @@ class Subtitler extends Rest {
 
   setTime(time) {
     return this.put("subtitle-state", { time });
+  }
+
+  setFontFamily(font_family) {
+    return this.put("subtitle-state", { font_family });
+  }
+
+  setFontSize(font_size) {
+    return this.put("subtitle-state", { font_size });
   }
 
   upload(filename, body) {
