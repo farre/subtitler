@@ -38,6 +38,10 @@ struct SubtitleState {
   bool paused = false;
   std::int64_t time_ms = 0;
   std::int64_t delay_ms = 0;
+  // The cue font (#159): family and size in points; nullopt keeps the
+  // renderer's default.
+  std::optional<std::string> font_family;
+  std::optional<std::int64_t> font_size;
 };
 
 // A subset of SubtitleState to change (PUT /api/subtitle-state). An
@@ -48,6 +52,8 @@ struct SubtitleStatePatch {
   std::optional<bool> paused;
   std::optional<std::int64_t> time_ms;
   std::optional<std::int64_t> delay_ms;
+  std::optional<std::string> font_family;
+  std::optional<std::int64_t> font_size;
 };
 
 // The library titles, for GET /api/subtitles (#441).

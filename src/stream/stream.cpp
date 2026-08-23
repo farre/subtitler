@@ -593,6 +593,10 @@ struct Stream::Implementation {
   bool SubtitlesPaused();
   bool SubtitlesVisible();
   std::int64_t SubtitleDelay();
+  void SetSubtitleFontFamily(std::string family);
+  void SetSubtitleFontSize(std::int64_t size_pt);
+  std::optional<std::string> SubtitleFontFamily() const;
+  std::optional<std::int64_t> SubtitleFontSize() const;
 
   PreviewFrameBuffer& PreviewFrames() { return preview_frames_; }
 
@@ -656,6 +660,24 @@ struct Stream::Implementation {
   // The SetSubtitlesVisible state, re-applied to the overlay at every
   // output (re)start so it survives rebuilds. Guarded by mutex_.
   bool subtitles_visible_ = true;
+  // The cue font (#159); both fields stay nullopt until SetSubtitleFont*
+  // runs. An atomic snapshot because the child-added handler reads it
+  // from a streaming thread, where mutex_ must not be taken (StartOutput
+  // holds it while the pipeline prerolls).
+  struct SubtitleFont {
+    std::optional<std::string> family;
+    std::optional<std::int64_t> size_pt;
+  };
+  std::atomic<std::shared_ptr<const SubtitleFont>> subtitle_font_;
+  // The overlay's auto-plugged text renderer, its GstChildProxy child
+  // named "renderer"; null until the pipeline runs.
+  ElementPtr SubtitleRenderer() const;
+  // Applies the stored font to the renderer, composing a Pango
+  // font-desc (unset fields keep the renderer's defaults; "Sans 24",
+  // "Serif", and "24" all parse). Safe to call from any thread.
+  void ApplySubtitleFont(GstElement* renderer) const;
+  static void OnSubtitleChildAdded(GstChildProxy*, GObject* child,
+                                   gchar* name, gpointer user_data);
   // Applies subtitle_anchor_ + subtitle_delay_ as the parser's pad
   // offset. The offset reaches only cues parsed after the change, so
   // position and delay changes must follow up with ReparseSubtitles.
@@ -1003,6 +1025,13 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
     if (!subtitles_visible_) {
       g_object_set(subtitle_overlay_.get(), "silent", TRUE, nullptr);
     }
+
+    // The renderer child is auto-plugged only once the pipeline runs,
+    // so the stored font rides child-added (#159); the direct call
+    // covers a renderer that already exists.
+    g_signal_connect(subtitle_overlay_.get(), "child-added",
+                     G_CALLBACK(&OnSubtitleChildAdded), this);
+    ApplySubtitleFont(SubtitleRenderer().get());
   }
 
   output_bus_ = BusPtr{gst_element_get_bus(output_pipeline_.get())};
@@ -1321,6 +1350,81 @@ std::int64_t Stream::Implementation::SubtitleDelay() {
   return subtitle_delay_.load() / static_cast<std::int64_t>(GST_MSECOND);
 }
 
+ElementPtr Stream::Implementation::SubtitleRenderer() const {
+  if (subtitle_overlay_ == nullptr) {
+    return nullptr;
+  }
+  // Transfer-full; the GObject cast adds no reference.
+  return ElementPtr{GST_ELEMENT(gst_child_proxy_get_child_by_name(
+      GST_CHILD_PROXY(subtitle_overlay_.get()), "renderer"))};
+}
+
+void Stream::Implementation::ApplySubtitleFont(GstElement* renderer) const {
+  const auto font = subtitle_font_.load();
+  if (renderer == nullptr || font == nullptr) {
+    return;
+  }
+
+  std::string desc = font->family.value_or("");
+  if (font->size_pt.has_value()) {
+    if (!desc.empty()) {
+      desc += ' ';
+    }
+    desc += std::to_string(*font->size_pt);
+  }
+  g_object_set(renderer, "font-desc", desc.c_str(), nullptr);
+}
+
+/* static */
+void Stream::Implementation::OnSubtitleChildAdded(GstChildProxy*,
+                                                  GObject* child, gchar* name,
+                                                  gpointer user_data) {
+  if (std::string_view{name} == "renderer") {
+    static_cast<Implementation*>(user_data)->ApplySubtitleFont(
+        GST_ELEMENT(child));
+  }
+}
+
+void Stream::Implementation::SetSubtitleFontFamily(std::string family) {
+  std::lock_guard lock{mutex_};
+
+  auto font = std::make_shared<SubtitleFont>();
+  if (const auto current = subtitle_font_.load(); current != nullptr) {
+    *font = *current;
+  }
+  font->family = std::move(family);
+  subtitle_font_ = std::move(font);
+
+  ApplySubtitleFont(SubtitleRenderer().get());
+}
+
+void Stream::Implementation::SetSubtitleFontSize(std::int64_t size_pt) {
+  std::lock_guard lock{mutex_};
+
+  auto font = std::make_shared<SubtitleFont>();
+  if (const auto current = subtitle_font_.load(); current != nullptr) {
+    *font = *current;
+  }
+  font->size_pt = size_pt;
+  subtitle_font_ = std::move(font);
+
+  ApplySubtitleFont(SubtitleRenderer().get());
+}
+
+std::optional<std::string> Stream::Implementation::SubtitleFontFamily() const {
+  if (const auto font = subtitle_font_.load(); font != nullptr) {
+    return font->family;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::int64_t> Stream::Implementation::SubtitleFontSize() const {
+  if (const auto font = subtitle_font_.load(); font != nullptr) {
+    return font->size_pt;
+  }
+  return std::nullopt;
+}
+
 void Stream::Implementation::RunScreensaver(std::stop_token stop) {
   auto next_frame = std::chrono::steady_clock::now();
   // Timestamp in the shared running time: no-signal buffers flow through
@@ -1585,6 +1689,22 @@ bool Stream::SubtitlesVisible() const {
 
 std::int64_t Stream::SubtitleDelay() const {
   return implementation_->SubtitleDelay();
+}
+
+void Stream::SetSubtitleFontFamily(std::string family) {
+  implementation_->SetSubtitleFontFamily(std::move(family));
+}
+
+void Stream::SetSubtitleFontSize(std::int64_t size_pt) {
+  implementation_->SetSubtitleFontSize(size_pt);
+}
+
+std::optional<std::string> Stream::SubtitleFontFamily() const {
+  return implementation_->SubtitleFontFamily();
+}
+
+std::optional<std::int64_t> Stream::SubtitleFontSize() const {
+  return implementation_->SubtitleFontSize();
 }
 
 bool Stream::Failed() const { return implementation_->Failed(); }

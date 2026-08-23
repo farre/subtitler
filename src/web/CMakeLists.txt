@@ -1,5 +1,6 @@
 add_library(
     web
+    font_routes.cpp
     json_helpers.cpp
     opensubtitles_routes.cpp
     preview_routes.cpp

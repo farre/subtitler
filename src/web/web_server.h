@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 
+#include "web/font_routes.h"
 #include "web/subtitle_routes.h"
 
 namespace subtitler {
@@ -25,6 +26,8 @@ struct WebServerHooks {
   SubtitleListHandler subtitle_list;
   SubtitleStateGetHandler subtitle_state_get;
   SubtitleStateSetHandler subtitle_state_set;
+  // GET /api/fonts (#159).
+  FontListHandler font_list;
   // The static file fallback (#212); without it unmatched paths are 404.
   std::optional<std::filesystem::path> web_root;
   // Open Subtitles API Key

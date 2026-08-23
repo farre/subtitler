@@ -35,4 +35,23 @@ void RespondJson(SoupServerMessage* message, const std::string& json) {
   soup_server_message_set_status(message, SOUP_STATUS_OK, nullptr);
 }
 
+void RespondStringList(SoupServerMessage* message,
+                       const std::vector<std::string>& entries) {
+  std::string json = "[";
+
+  bool first = true;
+  for (const auto& entry : entries) {
+    if (!first) {
+      json += ',';
+    }
+    first = false;
+    json += '"';
+    json += JsonEscape(entry);
+    json += '"';
+  }
+
+  json += ']';
+  RespondJson(message, json);
+}
+
 }  // namespace subtitler

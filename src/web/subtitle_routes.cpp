@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #include "utils/unique_ptr.h"
 #include "web/json_helpers.h"
@@ -26,31 +27,19 @@ void RespondSubtitleState(SoupServerMessage* message,
   const std::string file = state.file.has_value()
                                ? std::format("\"{}\"", JsonEscape(*state.file))
                                : "null";
+  const std::string font_family =
+      state.font_family.has_value()
+          ? std::format("\"{}\"", JsonEscape(*state.font_family))
+          : "null";
+  const std::string font_size = state.font_size.has_value()
+                                    ? std::to_string(*state.font_size)
+                                    : "null";
   RespondJson(message,
               std::format(
                   "{{\"file\":{},\"visible\":{},\"paused\":{},\"time\":{},"
-                  "\"delay\":{}}}",
+                  "\"delay\":{},\"font_family\":{},\"font_size\":{}}}",
                   file, state.visible, state.paused, state.time_ms,
-                  state.delay_ms));
-}
-
-void HandleSubtitleList(SoupServerMessage* message,
-                        const SubtitleRoutes& self) {
-  std::string json = "[";
-
-  bool first = true;
-  for (const auto& title : self.list_()) {
-    if (!first) {
-      json += ',';
-    }
-    first = false;
-    json += '"';
-    json += JsonEscape(title);
-    json += '"';
-  }
-
-  json += ']';
-  RespondJson(message, json);
+                  state.delay_ms, font_family, font_size));
 }
 
 // PUT /api/subtitles/<title> (#212): stores and activates the SRT in
@@ -113,7 +102,7 @@ void HandleSubtitles(SoupServer*, SoupServerMessage* message,
 
   // GET on the collection lists the library titles (#441).
   if (method == "GET" && route == kSubtitlesRoute && self.list_) {
-    HandleSubtitleList(message, self);
+    RespondStringList(message, self.list_());
     return;
   }
 
@@ -184,6 +173,12 @@ void HandleSubtitleState(SoupServer*, SoupServerMessage* message,
 
     if (name == "file") {
       patch.file = std::string{param};
+    } else if (name == "font_family") {
+      if (param.empty()) {
+        valid = false;
+        break;
+      }
+      patch.font_family = std::string{param};
     } else if (name == "visible" || name == "paused") {
       if (param != "true" && param != "false") {
         valid = false;
@@ -194,7 +189,7 @@ void HandleSubtitleState(SoupServer*, SoupServerMessage* message,
       } else {
         patch.paused = param == "true";
       }
-    } else if (name == "time" || name == "delay") {
+    } else if (name == "time" || name == "delay" || name == "font_size") {
       std::int64_t parsed;
       const auto [end, error] = std::from_chars(
           param.data(), param.data() + param.size(), parsed);
@@ -204,8 +199,13 @@ void HandleSubtitleState(SoupServer*, SoupServerMessage* message,
       }
       if (name == "time") {
         patch.time_ms = parsed;
-      } else {
+      } else if (name == "delay") {
         patch.delay_ms = parsed;
+      } else if (parsed > 0) {
+        patch.font_size = parsed;
+      } else {
+        valid = false;
+        break;
       }
     } else {
       valid = false;

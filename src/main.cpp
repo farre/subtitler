@@ -10,6 +10,7 @@
 #include <thread>
 #include <utility>
 
+#include "stream/fonts.h"
 #include "stream/stream.h"
 #include "utils/logging.h"
 #include "utils/paths.h"
@@ -200,6 +201,10 @@ int main(int argc, char** argv) {
         return subtitler::ListSubtitles(*state_dir);
       };
 
+      hooks.font_list = [] {
+        return subtitler::AvailableFontFamilies();
+      };
+
       hooks.subtitle_state_get = [&stream, &active_title] {
         return subtitler::SubtitleState{
             .file = active_title,
@@ -207,6 +212,8 @@ int main(int argc, char** argv) {
             .paused = stream->SubtitlesPaused(),
             .time_ms = stream->SubtitleTime().value_or(0),
             .delay_ms = stream->SubtitleDelay(),
+            .font_family = stream->SubtitleFontFamily(),
+            .font_size = stream->SubtitleFontSize(),
         };
       };
 
@@ -250,6 +257,12 @@ int main(int argc, char** argv) {
         }
         if (patch.delay_ms) {
           stream->SetSubtitleDelay(*patch.delay_ms);
+        }
+        if (patch.font_family) {
+          stream->SetSubtitleFontFamily(*patch.font_family);
+        }
+        if (patch.font_size) {
+          stream->SetSubtitleFontSize(*patch.font_size);
         }
 
         return true;

@@ -98,6 +98,17 @@ class Stream {
   // The current delay trim in milliseconds.
   std::int64_t SubtitleDelay() const;
 
+  // Live cue font controls (#159): family and size in points, composed
+  // into the subtitle renderer's Pango font-desc. Fields never set keep
+  // the renderer's default. Re-applied when the auto-plugged renderer
+  // child appears and across output rebuilds. No-op without subtitles.
+  void SetSubtitleFontFamily(std::string family);
+  void SetSubtitleFontSize(std::int64_t size_pt);
+
+  // The SetSubtitleFont* state; nullopt for fields never set.
+  std::optional<std::string> SubtitleFontFamily() const;
+  std::optional<std::int64_t> SubtitleFontSize() const;
+
   // The latest encoded preview frame, fed while the preview branch is
   // active. The web server reads from this buffer.
   PreviewFrameBuffer& PreviewFrames();

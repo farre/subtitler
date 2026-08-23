@@ -511,6 +511,7 @@ TEST_CASE("web server subtitle upload without a handler") {
   CHECK(HttpGet(port, "/api/subtitle-state").status == SOUP_STATUS_NOT_FOUND);
   CHECK(HttpRequest("PUT", port, "/api/subtitle-state?paused=true").status ==
         SOUP_STATUS_NOT_FOUND);
+  CHECK(HttpGet(port, "/api/fonts").status == SOUP_STATUS_NOT_FOUND);
   CHECK(HttpGet(port, "/api/opensubtitles").status == SOUP_STATUS_NOT_FOUND);
 }
 
@@ -583,12 +584,44 @@ TEST_CASE("web server subtitle list") {
   }
 }
 
+TEST_CASE("web server subtitle fonts") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  subtitler::WebServerHooks hooks;
+  hooks.font_list = [] {
+    return std::vector<std::string>{"Cantarell", "DejaVu Sans"};
+  };
+
+  auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
+  REQUIRE(server != nullptr);
+
+  SUBCASE("the renderer-available families as a JSON array") {
+    const auto response = HttpGet(port, "/api/fonts");
+
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(response.content_type == "application/json");
+    CHECK(response.body == "[\"Cantarell\",\"DejaVu Sans\"]");
+  }
+
+  SUBCASE("methods other than GET are a 405") {
+    CHECK(HttpRequest("PUT", port, "/api/fonts", "x").status ==
+          SOUP_STATUS_METHOD_NOT_ALLOWED);
+  }
+
+  SUBCASE("a longer path is a 404") {
+    CHECK(HttpGet(port, "/api/fonts/extra").status == SOUP_STATUS_NOT_FOUND);
+  }
+}
+
 TEST_CASE("web server subtitle state") {
   const std::uint16_t port = FindFreePort();
 
   subtitler::PreviewFrameBuffer frames;
 
-  subtitler::SubtitleState state{{"Movie.srt"}, true, false, 1234, -150};
+  subtitler::SubtitleState state{{"Movie.srt"}, true,  false, 1234,
+                                 -150,          {"Sans"}, {24}};
   bool set_ok = true;
 
   subtitler::WebServerHooks hooks;
@@ -617,6 +650,12 @@ TEST_CASE("web server subtitle state") {
         if (patch.delay_ms) {
           state.delay_ms = *patch.delay_ms;
         }
+        if (patch.font_family) {
+          state.font_family = *patch.font_family;
+        }
+        if (patch.font_size) {
+          state.font_size = *patch.font_size;
+        }
         return true;
       };
 
@@ -630,7 +669,18 @@ TEST_CASE("web server subtitle state") {
     CHECK(response.content_type == "application/json");
     CHECK(response.body ==
           "{\"file\":\"Movie.srt\",\"visible\":true,\"paused\":false,"
-          "\"time\":1234,\"delay\":-150}");
+          "\"time\":1234,\"delay\":-150,\"font_family\":\"Sans\","
+          "\"font_size\":24}");
+  }
+
+  SUBCASE("GET with an unset font has null font fields") {
+    state.font_family = std::nullopt;
+    state.font_size = std::nullopt;
+
+    const auto response = HttpGet(port, "/api/subtitle-state");
+
+    CHECK(response.body.contains("\"font_family\":null"));
+    CHECK(response.body.contains("\"font_size\":null"));
   }
 
   SUBCASE("GET with detached subtitles has a null file") {
@@ -662,15 +712,35 @@ TEST_CASE("web server subtitle state") {
     CHECK(state.file == std::nullopt);
   }
 
+  SUBCASE("PUT applies font changes and answers the new state") {
+    const auto response = HttpRequest(
+        "PUT", port, "/api/subtitle-state?font_family=Serif&font_size=36");
+
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(state.font_family == std::optional<std::string>{"Serif"});
+    CHECK(state.font_size == std::optional<std::int64_t>{36});
+    CHECK(response.body.contains("\"font_family\":\"Serif\""));
+    CHECK(response.body.contains("\"font_size\":36"));
+  }
+
   SUBCASE("PUT rejects bad values without touching the state") {
     CHECK(HttpRequest("PUT", port, "/api/subtitle-state?time=abc").status ==
           SOUP_STATUS_BAD_REQUEST);
     CHECK(HttpRequest("PUT", port, "/api/subtitle-state?paused=yes").status ==
           SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_size=0").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_size=-3")
+              .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_size=big")
+              .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_family=")
+              .status == SOUP_STATUS_BAD_REQUEST);
     CHECK(HttpRequest("PUT", port, "/api/subtitle-state?bogus=1").status ==
           SOUP_STATUS_BAD_REQUEST);
     CHECK_FALSE(state.paused);
     CHECK(state.time_ms == 1234);
+    CHECK(state.font_size == std::optional<std::int64_t>{24});
   }
 
   SUBCASE("a failing set hook is a 400") {

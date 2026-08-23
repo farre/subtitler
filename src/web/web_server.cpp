@@ -22,6 +22,7 @@ struct subtitler::WebServer::Implementation {
     subtitle_routes_.list_ = std::move(hooks.subtitle_list);
     subtitle_routes_.state_get_ = std::move(hooks.subtitle_state_get);
     subtitle_routes_.state_set_ = std::move(hooks.subtitle_state_set);
+    font_routes_.list_ = std::move(hooks.font_list);
     opensubtitles_routes_.api_key_ = std::move(hooks.api_key);
 
     std::promise<bool> ready;
@@ -60,6 +61,7 @@ struct subtitler::WebServer::Implementation {
 
     preview_.Register(server_);
     subtitle_routes_.Register(server_);
+    font_routes_.Register(server_);
     opensubtitles_routes_.Register(server_);
     static_files_.Register(server_);
 
@@ -94,6 +96,7 @@ struct subtitler::WebServer::Implementation {
 
   PreviewRoutes preview_;
   SubtitleRoutes subtitle_routes_;
+  FontRoutes font_routes_;
   OpenSubtitlesRoutes opensubtitles_routes_;
   StaticFiles static_files_;
 

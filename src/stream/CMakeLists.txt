@@ -1,5 +1,6 @@
 add_library(
     stream
+    fonts.cpp
     frame_buffer.cpp
     preview_gate.cpp
     stream.cpp
@@ -15,6 +16,7 @@ target_link_libraries(
     PRIVATE
     PkgConfig::ALSA
     PkgConfig::GSTREAMER
+    PkgConfig::PANGO
     subtitler::utils
 )
 

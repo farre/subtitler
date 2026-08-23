@@ -108,6 +108,7 @@ int PushSolidFrames(GstView<GstAppSrc> source, int count,
 struct SubtitleRenderStats {
   std::atomic_uint frames = 0;
   std::atomic_uint modified = 0;
+  std::atomic_uint64_t differing_bytes = 0;
   std::atomic_uint64_t first_modified = GST_CLOCK_TIME_NONE;
   std::atomic_uint64_t last_modified = 0;
 };
@@ -131,6 +132,8 @@ void OnSubtitleHandoff(GstElement*, GstBuffer* buffer, GstPad*,
   }
 
   gst_buffer_unmap(buffer, &info);
+
+  stats.differing_bytes += differing;
 
   if (differing > info.size / 1000) {
     ++stats.modified;
@@ -595,4 +598,74 @@ TEST_CASE("output pipeline subtitle pause and resume") {
   CHECK(stats.first_modified.load() < kResumedStart + 4 * kFrameDuration);
   CHECK(stats.last_modified.load() >= kResumedEnd - 4 * kFrameDuration);
   CHECK(stats.last_modified.load() < kResumedEnd + kEdgeTolerance);
+}
+
+// Cue font (#159): the production lookup — the overlay's auto-plugged
+// text renderer is its GstChildProxy child named "renderer" — and
+// setting its font-desc must visibly change compositing: a much larger
+// font touches more pixels over the same cue.
+TEST_CASE("output pipeline subtitle font") {
+  gst_init(nullptr, nullptr);
+
+  if (!SubtitleElementsAvailable()) {
+    return;
+  }
+
+  const auto render_cue = [](const char* font_desc) {
+    SubtitleRenderStats stats;
+    auto rig = StartSubtitlePipeline(kOneCueSrt, kOneCueAnchor, stats);
+    REQUIRE(rig.has_value());
+
+    const auto app_src = GstView<GstAppSrc>{GST_APP_SRC(rig->source.get())};
+
+    // 3.5 s of frames like the anchoring test: the cue window sits
+    // inside with unmodified frames on both sides.
+    constexpr int kFrameCount = 210;
+    std::jthread pusher([&] {
+      CHECK(PushSolidFrames(app_src, kFrameCount, 0) == kFrameCount);
+    });
+
+    if (font_desc != nullptr) {
+      ElementPtr overlay{gst_bin_get_by_name(GST_BIN(rig->pipeline.get()),
+                                             "subtitle_overlay")};
+      REQUIRE(overlay != nullptr);
+
+      // The renderer is auto-plugged only once the video side sets up,
+      // so it appears while the first frames flow — comfortably before
+      // the cue window opens at 1.2 s.
+      ElementPtr renderer;
+      for (int attempt = 0; attempt < 500 && renderer == nullptr;
+           ++attempt) {
+        renderer = ElementPtr{GST_ELEMENT(gst_child_proxy_get_child_by_name(
+            GST_CHILD_PROXY(overlay.get()), "renderer"))};
+        if (renderer == nullptr) {
+          std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+      }
+      INFO("the renderer child never appeared");
+      REQUIRE(renderer != nullptr);
+
+      g_object_set(renderer.get(), "font-desc", font_desc, nullptr);
+
+      gchar* applied = nullptr;
+      g_object_get(renderer.get(), "font-desc", &applied, nullptr);
+      CHECK(std::string_view{applied != nullptr ? applied : ""} ==
+            font_desc);
+      g_free(applied);
+    }
+
+    pusher.join();
+    std::this_thread::sleep_for(std::chrono::milliseconds{500});
+
+    // Text actually rendered (needs fonts; the Pi target installs them).
+    REQUIRE(stats.modified.load() > 0);
+    return stats.differing_bytes.load();
+  };
+
+  const std::uint64_t default_bytes = render_cue(nullptr);
+  const std::uint64_t large_bytes = render_cue("Sans 96");
+
+  INFO("cue pixels: default font ", default_bytes, ", 96 pt font ",
+       large_bytes);
+  CHECK(large_bytes > default_bytes * 2);
 }

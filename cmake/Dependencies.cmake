@@ -40,3 +40,11 @@ pkg_check_modules(
     IMPORTED_TARGET
     libsoup-3.0
 )
+
+# Font enumeration for the subtitle renderer (#159).
+pkg_check_modules(
+    PANGO
+    REQUIRED
+    IMPORTED_TARGET
+    pangocairo
+)
