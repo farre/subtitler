@@ -43,6 +43,12 @@
           <label for="font-size">Size (pt)</label>
           <input type="number" id="font-size" min="1" step="1" value="24" />
         </div>
+
+        <div class="controls">
+          <label for="font-color">Color</label>
+          <input type="color" id="font-color" value="#ffffff" />
+          <div id="color-presets"></div>
+        </div>
       </section>
 
       <section>
@@ -81,6 +87,22 @@
       const nudgeForward = document.getElementById("nudge-forward");
       const font = document.getElementById("font");
       const fontSize = document.getElementById("font-size");
+      const fontColor = document.getElementById("font-color");
+      const colorPresets = document.getElementById("color-presets");
+
+      // The classic subtitle colors first; the picker covers the rest.
+      const presetColors = ["#ffffff", "#ffff00", "#00ffff", "#00ff00"];
+
+      for (const color of presetColors) {
+        const swatch = document.createElement("button");
+        swatch.type = "button";
+        swatch.className = "swatch";
+        swatch.dataset.color = color;
+        swatch.style.background = color;
+        swatch.setAttribute("aria-label", `Set subtitle color ${color}`);
+        swatch.addEventListener("click", () => setFontColor(color));
+        colorPresets.appendChild(swatch);
+      }
       const username = document.getElementById("username");
       const password = document.getElementById("password");
       const loginForm = document.getElementById("login-form");
@@ -190,6 +212,7 @@
       let anchoredAt = performance.now();
       let currentFontFamily = null;
       let currentFontSize = null;
+      let currentFontColor = null;
 
       function anchorPosition(ms) {
         if (!Number.isFinite(ms)) {
@@ -210,6 +233,7 @@
         time: position,
         font_family: family,
         font_size: size,
+        font_color: color,
       }) {
         paused = isPaused;
         anchorPosition(position);
@@ -228,6 +252,22 @@
             fontSize.value = size;
           }
         }
+        if (color !== undefined) {
+          currentFontColor = color;
+          if (color !== null) {
+            fontColor.value = color;
+            for (const swatch of colorPresets.children) {
+              swatch.classList.toggle(
+                "selected",
+                swatch.dataset.color === color,
+              );
+            }
+          }
+        }
+      }
+
+      async function setFontColor(color) {
+        applyState(await subtitler.setFontColor(color));
       }
 
       function updatePause() {
@@ -295,6 +335,7 @@
           state.paused !== paused ||
           state.font_family !== currentFontFamily ||
           state.font_size !== currentFontSize ||
+          state.font_color !== currentFontColor ||
           Math.abs(state.time - currentPosition()) > syncToleranceMs
         ) {
           applyState(state);
@@ -333,6 +374,9 @@
           }
           applyState(await subtitler.setFontSize(size));
         });
+        fontColor.addEventListener("change", () =>
+          setFontColor(fontColor.value),
+        );
         loginForm.addEventListener("submit", async (event) => {
           event.preventDefault();
           await authenticate();

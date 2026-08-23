@@ -37,6 +37,10 @@ class Subtitler extends Rest {
     return this.put("subtitle-state", { font_size });
   }
 
+  setFontColor(font_color) {
+    return this.put("subtitle-state", { font_color });
+  }
+
   upload(filename, body) {
     return this.put(`subtitles/${filename}`, {}, { body });
   }

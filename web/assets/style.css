@@ -130,6 +130,7 @@ input[type="text"],
 input[type="password"],
 input[type="time"],
 input[type="number"],
+input[type="color"],
 select {
   background: var(--raised);
   border: 1px solid var(--border);
@@ -157,6 +158,26 @@ select {
 
 #font-size {
   width: 5.5rem;
+}
+
+#font-color {
+  padding: 0.25rem;
+  width: 3.5rem;
+}
+
+#color-presets {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.swatch {
+  padding: 0;
+  width: 2.75rem;
+}
+
+.swatch.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 #position {
