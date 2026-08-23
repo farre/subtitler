@@ -304,7 +304,7 @@
       async function refreshFonts() {
         const families = await subtitler.fonts();
         font.replaceChildren(
-          families.map((family) => new Option(family, family)),
+          ...families.map((family) => new Option(family, family)),
         );
       }
 
