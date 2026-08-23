@@ -19,6 +19,9 @@ struct EnvGuard {
     if (const char* value = std::getenv("XDG_STATE_HOME")) {
       xdg_state_home = value;
     }
+    if (const char* value = std::getenv("XDG_CONFIG_HOME")) {
+      xdg_config_home = value;
+    }
     if (const char* value = std::getenv("XDG_DATA_HOME")) {
       xdg_data_home = value;
     }
@@ -32,6 +35,7 @@ struct EnvGuard {
 
   ~EnvGuard() {
     Restore("XDG_STATE_HOME", xdg_state_home);
+    Restore("XDG_CONFIG_HOME", xdg_config_home);
     Restore("XDG_DATA_HOME", xdg_data_home);
     Restore("XDG_DATA_DIRS", xdg_data_dirs);
     Restore("HOME", home);
@@ -47,6 +51,7 @@ struct EnvGuard {
   }
 
   std::optional<std::string> xdg_state_home;
+  std::optional<std::string> xdg_config_home;
   std::optional<std::string> xdg_data_home;
   std::optional<std::string> xdg_data_dirs;
   std::optional<std::string> home;
@@ -75,6 +80,30 @@ TEST_CASE("state directory resolution") {
     unsetenv("XDG_STATE_HOME");
     unsetenv("HOME");
     CHECK(subtitler::StateDirectory() == std::nullopt);
+  }
+}
+
+TEST_CASE("config directory resolution") {
+  const EnvGuard guard;
+
+  SUBCASE("XDG_CONFIG_HOME wins") {
+    setenv("XDG_CONFIG_HOME", "/tmp/xdg-config", 1);
+    setenv("HOME", "/tmp/home", 1);
+    CHECK(subtitler::ConfigDirectory() ==
+          std::filesystem::path{"/tmp/xdg-config/subtitler"});
+  }
+
+  SUBCASE("falls back to ~/.config") {
+    unsetenv("XDG_CONFIG_HOME");
+    setenv("HOME", "/tmp/home", 1);
+    CHECK(subtitler::ConfigDirectory() ==
+          std::filesystem::path{"/tmp/home/.config/subtitler"});
+  }
+
+  SUBCASE("unresolvable without either variable") {
+    unsetenv("XDG_CONFIG_HOME");
+    unsetenv("HOME");
+    CHECK(subtitler::ConfigDirectory() == std::nullopt);
   }
 }
 

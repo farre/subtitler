@@ -3,6 +3,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <print>
 #include <string>
@@ -10,6 +11,7 @@
 #include <thread>
 #include <utility>
 
+#include "config/config.h"
 #include "stream/fonts.h"
 #include "stream/stream.h"
 #include "utils/logging.h"
@@ -37,6 +39,42 @@ std::optional<int> ParseInteger(std::string_view text) {
   return value;
 }
 
+std::optional<subtitler::OutputMode> ParseOutputMode(std::string_view name) {
+  if (name == "software") {
+    return subtitler::OutputMode::kKmsSoftware;
+  }
+  if (name == "pisp") {
+    return subtitler::OutputMode::kKmsPisp;
+  }
+  if (name == "window") {
+    return subtitler::OutputMode::kWindow;
+  }
+  if (name == "null") {
+    return subtitler::OutputMode::kNull;
+  }
+  return std::nullopt;
+}
+
+// The persisted style, (re)applied whenever subtitles attach: a file
+// switch resets the delay, and the setters are no-ops without subtitles,
+// so values configured while detached land here on the next attach.
+void ApplySubtitleStyle(subtitler::Stream& stream,
+                        const subtitler::Config& config) {
+  const auto& values = config.values();
+  if (values.subtitle_font_family) {
+    stream.SetSubtitleFontFamily(*values.subtitle_font_family);
+  }
+  if (values.subtitle_font_size_pt) {
+    stream.SetSubtitleFontSize(*values.subtitle_font_size_pt);
+  }
+  if (values.subtitle_font_color) {
+    stream.SetSubtitleFontColor(*values.subtitle_font_color);
+  }
+  if (values.subtitle_delay_ms) {
+    stream.SetSubtitleDelay(*values.subtitle_delay_ms);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -50,6 +88,9 @@ int main(int argc, char** argv) {
   std::optional<std::filesystem::path> web_root;
   std::optional<std::string> api_key;
   std::optional<std::string> subtitles;
+  // A --subtitles flag names a file strictly; a config-named file that's
+  // gone is dropped like a dangling boot-resume marker (#220).
+  bool explicit_subtitles = false;
   // The active library title, mirrored for the web state endpoint.
   // Written at boot resume and, once the server runs, only on its io
   // thread.
@@ -59,6 +100,7 @@ int main(int argc, char** argv) {
   const auto usage = [&] {
     std::println(stderr,
                  "Usage: {} [video-device] [connector-id] "
+                 "[--config=<path>] "
                  "[--output=software|pisp|window|null] [--no-audio] "
                  "[--audio-output-device=<alsa-device>] "
                  "[--audio-offset=<ms>] [--subtitles=<srt-file>] "
@@ -66,20 +108,89 @@ int main(int argc, char** argv) {
                  argv[0]);
   };
 
+  // The config file (#16): --config=<path>, else
+  // <ConfigDirectory()>/config.ini. A missing file starts empty and
+  // comes into existence on the first web-API write-back (#221).
+  std::optional<std::filesystem::path> config_path;
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view arg{argv[i]};
+    if (arg.starts_with("--config=")) {
+      const auto value = arg.substr(std::string_view{"--config="}.size());
+      if (value.empty()) {
+        std::println(stderr, "Empty --config path");
+        return EXIT_FAILURE;
+      }
+      config_path = std::string{value};
+    }
+  }
+  if (!config_path) {
+    if (const auto dir = subtitler::ConfigDirectory()) {
+      config_path = *dir / "config.ini";
+    }
+  }
+
+  std::unique_ptr<subtitler::Config> config;
+  if (config_path) {
+    config = subtitler::Config::Load(*config_path);
+  }
+
+  // The file provides the base values; the command line overrides them.
+  if (config) {
+    const auto& values = config->values();
+    if (values.device) {
+      device = *values.device;
+    }
+    if (values.audio) {
+      audio = *values.audio;
+    }
+    if (values.output_mode) {
+      if (const auto mode = ParseOutputMode(*values.output_mode)) {
+        output_mode = *mode;
+      } else {
+        std::println(stderr, "Ignoring invalid config output mode: {}",
+                     *values.output_mode);
+      }
+    }
+    if (values.connector_id) {
+      connector_id = *values.connector_id;
+    }
+    if (values.audio_output_device) {
+      audio_output_device = *values.audio_output_device;
+    }
+    if (values.audio_offset_ms) {
+      audio_offset_ms = *values.audio_offset_ms;
+    }
+    if (values.web) {
+      web = *values.web;
+    }
+    if (values.web_root) {
+      web_root = *values.web_root;
+    }
+    if (values.api_key) {
+      api_key = *values.api_key;
+    }
+    if (values.subtitle_file) {
+      subtitles = *values.subtitle_file;
+    }
+  }
+
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg{argv[i]};
 
     if (arg == "-h" || arg == "--help") {
       usage();
       return EXIT_SUCCESS;
-    } else if (arg == "--output=pisp") {
-      output_mode = subtitler::OutputMode::kKmsPisp;
-    } else if (arg == "--output=software") {
-      output_mode = subtitler::OutputMode::kKmsSoftware;
-    } else if (arg == "--output=window") {
-      output_mode = subtitler::OutputMode::kWindow;
-    } else if (arg == "--output=null") {
-      output_mode = subtitler::OutputMode::kNull;
+    } else if (arg.starts_with("--output=")) {
+      const auto mode =
+          ParseOutputMode(arg.substr(std::string_view{"--output="}.size()));
+      if (!mode) {
+        std::println(stderr, "Invalid output mode: {}", arg);
+        usage();
+        return EXIT_FAILURE;
+      }
+      output_mode = *mode;
+    } else if (arg.starts_with("--config=")) {
+      // Already consumed by the pre-scan.
     } else if (arg == "--no-audio") {
       audio = false;
     } else if (arg == "--web") {
@@ -98,6 +209,7 @@ int main(int argc, char** argv) {
     } else if (arg.starts_with("--subtitles=")) {
       subtitles =
           std::string{arg.substr(std::string_view{"--subtitles="}.size())};
+      explicit_subtitles = true;
     } else if (arg.starts_with("--web-root=")) {
       web_root =
           std::string{arg.substr(std::string_view{"--web-root="}.size())};
@@ -130,14 +242,18 @@ int main(int argc, char** argv) {
 
   const auto state_dir = subtitler::StateDirectory();
 
-  if (subtitles) {
+  if (subtitles && !std::filesystem::exists(*subtitles)) {
     // An explicit flag must name a real file: a missing one would only
     // surface later as a filesrc bus error.
-    if (!std::filesystem::exists(*subtitles)) {
+    if (explicit_subtitles) {
       std::println(stderr, "Subtitle file not found: {}", *subtitles);
       return EXIT_FAILURE;
     }
-  } else if (state_dir) {
+    std::println(stderr, "Configured subtitle file not found: {}", *subtitles);
+    subtitles = std::nullopt;
+  }
+
+  if (!subtitles && state_dir) {
     // Boot resume: replay the SRT selected the last time around (#438).
     if (const auto active = subtitler::ActiveSubtitleFile(*state_dir)) {
       subtitles = active->string();
@@ -154,6 +270,16 @@ int main(int argc, char** argv) {
   if (!stream) {
     std::println(stderr, "Failed to create stream");
     return EXIT_FAILURE;
+  }
+
+  // The persisted style (#222/#223) lands after the SRT is attached.
+  if (config) {
+    if (subtitles) {
+      ApplySubtitleStyle(*stream, *config);
+    }
+    if (config->values().subtitles_visible) {
+      stream->SetSubtitlesVisible(*config->values().subtitles_visible);
+    }
   }
 
   // Declared after stream, so it is destroyed first: the server reads from
@@ -178,7 +304,7 @@ int main(int argc, char** argv) {
     // live-switch the stream to the new SRT.
     if (state_dir) {
       hooks.subtitle_upload =
-          [&stream, &state_dir, &active_title](
+          [&stream, &state_dir, &active_title, &config](
               std::string_view title,
               std::string_view contents) -> subtitler::SubtitleUploadResult {
         const auto relative = subtitler::LibrarySubtitlePath(title);
@@ -193,6 +319,17 @@ int main(int argc, char** argv) {
         }
 
         active_title = std::string{title};
+
+        if (config) {
+          config->SetSubtitleFile(stored->string());
+          // The switch reset the delay; restore the persisted style.
+          ApplySubtitleStyle(*stream, *config);
+          if (!config->Save()) {
+            MAIN_LOG(subtitler::LogLevel::kWarning,
+                     "Could not save the configuration");
+          }
+        }
+
         return {subtitler::SubtitleUploadStatus::kStored,
                 relative->generic_string()};
       };
@@ -201,9 +338,7 @@ int main(int argc, char** argv) {
         return subtitler::ListSubtitles(*state_dir);
       };
 
-      hooks.font_list = [] {
-        return subtitler::AvailableFontFamilies();
-      };
+      hooks.font_list = [] { return subtitler::AvailableFontFamilies(); };
 
       hooks.subtitle_state_get = [&stream, &active_title] {
         return subtitler::SubtitleState{
@@ -219,8 +354,8 @@ int main(int argc, char** argv) {
       };
 
       hooks.subtitle_state_set =
-          [&stream, &state_dir,
-           &active_title](const subtitler::SubtitleStatePatch& patch) -> bool {
+          [&stream, &state_dir, &active_title,
+           &config](const subtitler::SubtitleStatePatch& patch) -> bool {
         if (patch.file) {
           if (patch.file->empty()) {
             if (!stream->SetSubtitleFile(std::nullopt)) {
@@ -228,6 +363,9 @@ int main(int argc, char** argv) {
             }
             subtitler::ClearActiveSubtitle(*state_dir);
             active_title = std::nullopt;
+            if (config) {
+              config->SetSubtitleFile(std::nullopt);
+            }
           } else {
             const auto relative =
                 subtitler::FindLibrarySubtitle(*state_dir, *patch.file);
@@ -242,6 +380,13 @@ int main(int argc, char** argv) {
                        "Could not write the active subtitle marker");
             }
             active_title = *patch.file;
+            if (config) {
+              config->SetSubtitleFile(
+                  (*state_dir / "subtitles" / *relative).string());
+              // The switch reset the delay; restore the persisted style.
+              // Patch-supplied fields below still override it.
+              ApplySubtitleStyle(*stream, *config);
+            }
           }
         }
 
@@ -249,6 +394,9 @@ int main(int argc, char** argv) {
         // reset, so the remaining changes apply afterwards.
         if (patch.visible) {
           stream->SetSubtitlesVisible(*patch.visible);
+          if (config) {
+            config->SetSubtitlesVisible(*patch.visible);
+          }
         }
         if (patch.paused) {
           stream->SetSubtitlesPaused(*patch.paused);
@@ -258,15 +406,37 @@ int main(int argc, char** argv) {
         }
         if (patch.delay_ms) {
           stream->SetSubtitleDelay(*patch.delay_ms);
+          if (config) {
+            config->SetSubtitleDelayMs(*patch.delay_ms);
+          }
         }
         if (patch.font_family) {
           stream->SetSubtitleFontFamily(*patch.font_family);
+          if (config) {
+            config->SetSubtitleFontFamily(*patch.font_family);
+          }
         }
         if (patch.font_size) {
           stream->SetSubtitleFontSize(*patch.font_size);
+          if (config) {
+            config->SetSubtitleFontSizePt(*patch.font_size);
+          }
         }
         if (patch.font_color) {
           stream->SetSubtitleFontColor(*patch.font_color);
+          if (config) {
+            config->SetSubtitleFontColor(*patch.font_color);
+          }
+        }
+
+        // Position and pause are playback state, not configuration.
+        if (config &&
+            (patch.file || patch.visible || patch.delay_ms ||
+             patch.font_family || patch.font_size || patch.font_color)) {
+          if (!config->Save()) {
+            MAIN_LOG(subtitler::LogLevel::kWarning,
+                     "Could not save the configuration");
+          }
         }
 
         return true;

@@ -107,20 +107,21 @@ inline void LogMessage(std::string_view name, LogLevel level,
                        const std::string& message) {
   const auto now = std::chrono::floor<std::chrono::milliseconds>(
       std::chrono::system_clock::now());
-  std::println(stderr, "{:%F %T}Z [{}] [{}] {}", now, LogLevelName(level),
-               name, message);
+  std::println(stderr, "{:%F %T}Z [{}] [{}] {}", now, LogLevelName(level), name,
+               message);
 }
 
 }  // namespace subtitler
 
-#define SUBTITLER_LOG(name, level, ...)                              \
-  do {                                                               \
-    if (::subtitler::LogEnabled(name, level)) {                      \
+#define SUBTITLER_LOG(name, level, ...)                               \
+  do {                                                                \
+    if (::subtitler::LogEnabled(name, level)) {                       \
       ::subtitler::LogMessage(name, level, std::format(__VA_ARGS__)); \
-    }                                                                \
+    }                                                                 \
   } while (0)
 
 // Label-specific macros, one per directory, for all compilation units.
+#define CONFIG_LOG(level, ...) SUBTITLER_LOG("config", level, __VA_ARGS__)
 #define MAIN_LOG(level, ...) SUBTITLER_LOG("main", level, __VA_ARGS__)
 #define STREAM_LOG(level, ...) SUBTITLER_LOG("stream", level, __VA_ARGS__)
 #define WEB_LOG(level, ...) SUBTITLER_LOG("web", level, __VA_ARGS__)

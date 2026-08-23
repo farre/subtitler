@@ -49,6 +49,7 @@ target_link_libraries(
     subtitler
     PRIVATE
     PkgConfig::GSTREAMER
+    config
     stream
     web
     subtitler::utils
@@ -68,5 +69,12 @@ install(
 # Static web assets (#212), resolved at runtime as <data-dir>/subtitler/web.
 install(
     DIRECTORY web
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/subtitler"
+)
+
+# The documented example configuration (#16); copy to
+# <config-dir>/subtitler/config.ini.
+install(
+    FILES config/subtitler.example.ini
     DESTINATION "${CMAKE_INSTALL_DATADIR}/subtitler"
 )

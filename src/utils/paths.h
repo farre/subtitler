@@ -29,6 +29,22 @@ inline std::optional<std::filesystem::path> StateDirectory() {
   return std::nullopt;
 }
 
+// $XDG_CONFIG_HOME/subtitler, or ~/.config/subtitler when the XDG
+// variable is unset. nullopt when neither variable gives a usable root.
+inline std::optional<std::filesystem::path> ConfigDirectory() {
+  if (const char* xdg = std::getenv("XDG_CONFIG_HOME");
+      xdg != nullptr && *xdg != '\0') {
+    return std::filesystem::path{xdg} / "subtitler";
+  }
+
+  if (const char* home = std::getenv("HOME");
+      home != nullptr && *home != '\0') {
+    return std::filesystem::path{home} / ".config" / "subtitler";
+  }
+
+  return std::nullopt;
+}
+
 // The directory static web assets are served from: the first existing
 // <dir>/subtitler/web across $XDG_DATA_HOME and $XDG_DATA_DIRS
 // (defaulting to ~/.local/share and /usr/local/share:/usr/share).

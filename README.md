@@ -98,7 +98,7 @@ output.
 ## Running
 
 ```sh
-./build/subtitler [video-device] [connector-id] [--output=software|pisp|window|null] [--no-audio] [--audio-output-device=<alsa-device>] [--audio-offset=<ms>] [--subtitles=<srt-file>] [--web] [--web-root=<dir>]
+./build/subtitler [video-device] [connector-id] [--config=<path>] [--output=software|pisp|window|null] [--no-audio] [--audio-output-device=<alsa-device>] [--audio-offset=<ms>] [--subtitles=<srt-file>] [--web] [--web-root=<dir>]
 ```
 
 - `video-device` — V4L2 capture device (default `/dev/video0`). It must
@@ -136,12 +136,23 @@ output.
   `<data-dir>/subtitler/web` found across `$XDG_DATA_HOME` and
   `$XDG_DATA_DIRS` (e.g. `/usr/local/share/subtitler/web` after
   installation). Use `--web-root=web` to serve the repo's `web/`
-  directory in development.
+   directory in development.
+
+## Configuration
+
+Every command-line option can instead live in an INI file at
+`$XDG_CONFIG_HOME/subtitler/config.ini` (usually
+`~/.config/subtitler/config.ini`; `--config=<path>` overrides). The
+command line wins over the file. The subtitle state changed through the
+web API — selected file, visibility, delay, and cue font family, size,
+and color — is written back atomically, so the appliance restores it
+after a reboot. `subtitler.example.ini` (installed next to the web
+assets under `<data-dir>/subtitler/`) documents every key.
 
 Structured logging is opt-in via the `SUBTITLER_LOG` environment variable: a
 comma-separated list of `<label>:<level>` entries, where level is `error`,
 `warn`, `info`, or `debug` (enabling that level and above for the label).
-Labels are named per directory: `main`, `stream`, `web`; the catch-all label
+Labels are named per directory: `config`, `main`, `stream`, `web`; the catch-all label
 `all` enables every label (a label's own entry wins over `all`). Example:
 `SUBTITLER_LOG="all:info,stream:debug" ./build/subtitler --web`. Fatal errors
 are always printed regardless of `SUBTITLER_LOG`.

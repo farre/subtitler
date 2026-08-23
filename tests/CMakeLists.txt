@@ -63,3 +63,32 @@ target_compile_options(
 )
 
 doctest_discover_tests(web_tests)
+
+add_executable(
+    config_tests
+    config_tests.cpp
+)
+
+target_link_libraries(
+    config_tests
+    PRIVATE
+    subtitler::config
+    doctest::doctest
+    PkgConfig::GLIB
+)
+
+target_compile_options(
+    config_tests
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+target_include_directories(
+    config_tests
+    PRIVATE
+        "${PROJECT_SOURCE_DIR}/src"
+)
+
+doctest_discover_tests(config_tests)
