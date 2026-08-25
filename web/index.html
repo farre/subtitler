@@ -129,11 +129,25 @@
       const subtitler = new Subtitler(new URL("api/", location.href).href);
 
       const endpoint = "https://api.opensubtitles.com/api/v1/";
-      const { api_key } = await subtitler.apiKey();
-      const subtitles = new OpenSubtitles(endpoint, api_key);
+      // Without --api-key the key endpoint isn't registered; the
+      // OpenSubtitles section stays disabled but must not take the
+      // subtitle controls down with it.
+      const subtitles = await subtitler
+        .apiKey()
+        .then(({ api_key }) => new OpenSubtitles(endpoint, api_key))
+        .catch(() => null);
 
       async function authenticate() {
+        if (subtitles === null) {
+          return;
+        }
         await subtitles.login(username.value, password.value);
+      }
+
+      // Uploads answer the library-relative <bucket>/<title>; the
+      // library list and the radio values use the bare title.
+      function libraryTitle(name) {
+        return name.replace(/^.\//, "");
       }
 
       function imdbId(name) {
@@ -156,7 +170,7 @@
         const label = document.createElement("label");
         label.htmlFor = radio.id;
 
-        const base = file.replace(/^.\//, "").replace(/\.srt$/i, "");
+        const base = libraryTitle(file).replace(/\.srt$/i, "");
         const parsed = base.match(/^(.*)\.(tt\d+)$/i);
         const title = document.createElement("span");
         title.textContent = parsed ? parsed[1] : base;
@@ -193,6 +207,10 @@
       }
 
       async function download() {
+        if (subtitles === null) {
+          return;
+        }
+
         const id = search.value.trim().toLowerCase().replace(/^tt/, "");
         const known = await refreshSubtitles();
         const existing = known.find((file) => imdbId(file) === id);
@@ -213,7 +231,7 @@
 
         const { attributes } = data[0];
         const { files, feature_details } = attributes;
-        if (files < 1) {
+        if (files.length < 1) {
           return;
         }
 
@@ -229,7 +247,7 @@
           result,
         );
         await refreshSubtitles();
-        checkSubtitle(stored_name);
+        checkSubtitle(libraryTitle(stored_name));
         // The appliance switches to the upload live: position 0, unpaused.
         applyState({ paused: false, time: 0 });
       }
@@ -272,7 +290,7 @@
           converted,
         );
         await refreshSubtitles();
-        checkSubtitle(stored_name);
+        checkSubtitle(libraryTitle(stored_name));
         // The appliance switches to the upload live: position 0, unpaused.
         applyState({ paused: false, time: 0 });
       }
@@ -427,7 +445,11 @@
       async function create() {
         await refreshSubtitles();
         await refreshFonts();
-        applyState(await subtitler.state());
+        const state = await subtitler.state();
+        applyState(state);
+        if (state.file !== null) {
+          checkSubtitle(state.file);
+        }
         updateConvertState();
 
         library.addEventListener("change", async (event) => {
