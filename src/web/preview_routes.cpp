@@ -192,7 +192,11 @@ void HandleMjpeg(SoupServer*, SoupServerMessage* message, const char*,
   // connects between stores (e.g. while only the placeholder exists) has
   // something to show.
   if (const auto frame = self.frames_.Latest()) {
-    SendPart(*raw_client, MakePart(*frame), frame->sequence);
+    // SendPart hands the body's own reference to libsoup; release ours,
+    // mirroring the pending-part path in OnWroteChunk.
+    GBytes* part = MakePart(*frame);
+    SendPart(*raw_client, part, frame->sequence);
+    g_bytes_unref(part);
   }
 }
 
