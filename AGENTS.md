@@ -38,6 +38,27 @@ numbered into the #80s). The numeric prefix defines execution order — GitHub
 has no milestone ordering — so keep prefixes sequential when adding or
 inserting milestones.
 
+## Threat model
+
+The only supported deployment is a **trusted LAN**. The web server
+(port 8080) listens on all interfaces with no authentication or TLS,
+all state-changing endpoints are unauthenticated, and
+`GET /api/opensubtitles` serves the configured OpenSubtitles API key
+to anyone who can reach the port. These are deliberate appliance
+trade-offs, not oversights; if the deployment ever changes, revisit
+binding and authentication before exposing the port.
+
+Consequently the HTTP-input hardening work is **chores, not pressing
+security fixes**: #445 (pipeline-syntax injection), #446 (unbounded
+numeric REST inputs), #447 (output-bus failure propagation), #448
+(transactional subtitle activation). Suggested order: #446 first
+(cheapest), then #445 and #448 together (both restructure
+`StartOutput`'s construction/teardown ordering), and #447 alongside
+the systemd unit — its value is mostly exit-code/restart semantics,
+and whether an output failure should exit the process is an open
+design question tied to the unit's restart policy. Per-issue triage
+notes live in comments on the issues.
+
 ## Technology
 
 C++26 is allowed! We use CMake and ninja.
