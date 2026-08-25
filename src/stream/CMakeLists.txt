@@ -18,6 +18,7 @@ target_link_libraries(
     PkgConfig::GSTREAMER
     PkgConfig::PANGO
     subtitler::utils
+    subtitler_warnings
 )
 
 target_include_directories(

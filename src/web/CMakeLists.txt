@@ -19,6 +19,7 @@ target_link_libraries(
     PRIVATE
     PkgConfig::LIBSOUP
     subtitler::utils
+    subtitler_warnings
 )
 
 target_include_directories(

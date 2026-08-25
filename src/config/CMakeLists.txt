@@ -13,6 +13,7 @@ target_link_libraries(
     PRIVATE
     PkgConfig::GLIB
     subtitler::utils
+    subtitler_warnings
 )
 
 target_include_directories(
