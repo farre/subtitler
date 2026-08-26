@@ -21,6 +21,7 @@
 #include "stream/deleters.h"
 #include "stream/frame_buffer.h"
 #include "stream/preview_gate.h"
+#include "stream/whisper_transcriber.h"
 #include "utils/logging.h"
 #include "utils/reset_guard.h"
 
@@ -45,6 +46,9 @@ constexpr std::size_t kAudioBufferCapacity = 16;
 constexpr std::uint64_t kSilenceFramesPerChunk = kAudioRate / kFramesPerSecond;
 constexpr auto kAudioChunkDuration =
     kSilenceFramesPerChunk * GST_SECOND / kAudioRate;
+
+// The whisper tap's sample rate: the only rate whisper consumes.
+constexpr int kWhisperRate = 16000;
 
 // Time-based in-flight limit for the output appsrcs: comfortably above
 // the worst-case computed latency so the render schedule never starves
@@ -320,10 +324,14 @@ BufferPtr CopyCapturedBuffer(GstView<GstSample> sample) {
 
 namespace subtitler {
 
-std::string CapturePipelineDescription(std::string_view device, bool audio) {
+std::string CapturePipelineDescription(std::string_view device, bool audio,
+                                       bool whisper) {
   auto description = VideoCapturePipelineDescription(device);
   if (audio) {
-    description += " " + AudioCapturePipelineDescription(kAudioDevice);
+    description += " " + AudioCapturePipelineDescription(kAudioDevice, whisper);
+    if (whisper) {
+      description += " " + WhisperCapturePipelineDescription();
+    }
   }
   return description;
 }
@@ -347,9 +355,14 @@ std::string VideoCapturePipelineDescription(std::string_view device) {
       device, kWidth, kHeight, kFramesPerSecond);
 }
 
-std::string AudioCapturePipelineDescription(std::string_view device) {
+std::string AudioCapturePipelineDescription(std::string_view device,
+                                            bool whisper) {
   // A single linear chain so that a tee for the whisper tap (#19) can be
-  // inserted without touching the passthrough path.
+  // inserted without touching the passthrough path. Like the output
+  // tee's HDMI branch, the passthrough side of the tee gets its own
+  // non-leaky queue: without it the two sinks' preroll waits serialize
+  // through the tee and deadlock the live source's PLAYING transition
+  // (covered by the "whisper tap flows converted audio" test).
   return std::format(
       "alsasrc "
       "device=\"{}\" "
@@ -358,12 +371,48 @@ std::string AudioCapturePipelineDescription(std::string_view device) {
       "format=S16LE,"
       "rate={},"
       "channels={} "
+      "{}"
       "! appsink "
       "name=capture_audio_sink "
       "sync=false "
       "max-buffers=8 "
       "drop=true",
-      device, kAudioRate, kAudioChannels);
+      device, kAudioRate, kAudioChannels,
+      whisper ? "! tee name=whisper_tee "
+                "! queue "
+                "max-size-buffers=8 "
+                "max-size-bytes=0 "
+                "max-size-time=0 "
+              : "");
+}
+
+std::string WhisperCapturePipelineDescription() {
+  // The whisper tap (#19 spike). The leaky queue decouples the branch
+  // from the tee (every tee branch needs its own queue — see the
+  // passthrough comment) and drops backlog older than a couple of
+  // seconds; the dropping appsink is the backstop. Between them the
+  // recognition lag stays bounded while a window is being transcribed,
+  // and inference can never stall the passthrough.
+  return std::format(
+      "whisper_tee. "
+      "! queue "
+      "name=whisper_queue "
+      "max-size-buffers=0 "
+      "max-size-bytes=0 "
+      "max-size-time=2000000000 "
+      "leaky=downstream "
+      "! audioconvert "
+      "! audioresample "
+      "! audio/x-raw,"
+      "format=F32LE,"
+      "rate={},"
+      "channels=1 "
+      "! appsink "
+      "name=whisper_sink "
+      "sync=false "
+      "max-buffers=300 "
+      "drop=true",
+      kWhisperRate);
 }
 
 std::string OutputPipelineDescription(
@@ -560,7 +609,8 @@ struct Stream::Implementation {
                   std::optional<int> connector_id, bool audio,
                   const std::optional<std::string>& audio_output_device,
                   std::int64_t audio_offset_ms, bool preview,
-                  const std::optional<std::string>& subtitles);
+                  const std::optional<std::string>& subtitles,
+                  const std::optional<std::string>& whisper_model);
 
   ~Implementation() { Stop(); }
 
@@ -581,6 +631,7 @@ struct Stream::Implementation {
   void RunAudioOutput(std::stop_token stop);
   void RunScreensaver(std::stop_token stop);
   void RunPreview(std::stop_token stop);
+  void RunWhisper(std::stop_token stop);
 
   void SetPreviewActive(bool active);
 
@@ -692,6 +743,11 @@ struct Stream::Implementation {
   // held.
   void ReparseSubtitles();
 
+  // The whisper tap (#19 spike): set at Initialize; the transcriber is
+  // fed only from whisper_thread_ and needs no locking.
+  bool whisper_enabled_ = false;
+  std::unique_ptr<WhisperTranscriber> whisper_transcriber_;
+
   // Set at Initialize: whether the output pipeline has a preview branch.
   bool preview_enabled_ = false;
   // Shared with the preview gate's pad probe on the streaming thread.
@@ -703,6 +759,7 @@ struct Stream::Implementation {
   ElementPtr capture_pipeline_;
   ElementPtr capture_sink_;
   ElementPtr capture_audio_sink_;
+  ElementPtr whisper_sink_;
   BusPtr capture_bus_;
 
   ElementPtr output_pipeline_;
@@ -720,6 +777,9 @@ struct Stream::Implementation {
   // Drains the audio branch while capturing; joinable only when audio is
   // enabled.
   std::jthread audio_thread_;
+  // Drains the whisper tap's appsink into whisper_transcriber_; joinable
+  // only while capturing with the whisper tap enabled.
+  std::jthread whisper_thread_;
   std::jthread output_thread_;
   // Feeds the audio branch of the output pipeline; joinable only when
   // audio is enabled.
@@ -749,10 +809,11 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
   StopCapturePipeline(lock);
 
   ResetGuard reset{capture_pipeline_, capture_sink_, capture_audio_sink_,
-                   capture_bus_};
+                   whisper_sink_, capture_bus_};
 
   capture_pipeline_ = ParsePipeline(
-      "capture", CapturePipelineDescription(device, audio_enabled_));
+      "capture",
+      CapturePipelineDescription(device, audio_enabled_, whisper_enabled_));
 
   if (!capture_pipeline_) {
     std::println(stderr, "Couldn't create capture pipeline");
@@ -773,6 +834,16 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
 
     if (!capture_audio_sink_) {
       std::println(stderr, "Couldn't find audio appsink");
+      return false;
+    }
+  }
+
+  if (whisper_enabled_) {
+    whisper_sink_ = ElementPtr{
+        gst_bin_get_by_name(GST_BIN(capture_pipeline_.get()), "whisper_sink")};
+
+    if (!whisper_sink_) {
+      std::println(stderr, "Couldn't find whisper appsink");
       return false;
     }
   }
@@ -800,6 +871,11 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
   if (audio_enabled_) {
     audio_thread_ =
         std::jthread{[this](std::stop_token stop) { RunAudioCapture(stop); }};
+  }
+
+  if (whisper_enabled_) {
+    whisper_thread_ =
+        std::jthread{[this](std::stop_token stop) { RunWhisper(stop); }};
   }
 
   capture_state_ = CaptureState::kCapturing;
@@ -906,6 +982,44 @@ void Stream::Implementation::RunAudioCapture(std::stop_token stop) {
   }
 
   capture_active_.store(false);
+}
+
+void Stream::Implementation::RunWhisper(std::stop_token stop) {
+  const auto sink = GstView<GstAppSink>{GST_APP_SINK(whisper_sink_.get())};
+
+  while (!stop.stop_requested()) {
+    SamplePtr sample =
+        SamplePtr{gst_app_sink_try_pull_sample(sink, 100 * GST_MSECOND)};
+
+    if (sample == nullptr) {
+      if (gst_app_sink_is_eos(sink)) {
+        break;
+      }
+
+      continue;
+    }
+
+    // gst_sample_get_buffer is transfer-none.
+    const GstView<GstBuffer> buffer = gst_sample_get_buffer(sample.get());
+
+    GstMapInfo info;
+
+    if (buffer == nullptr || !gst_buffer_map(buffer, &info, GST_MAP_READ)) {
+      continue;
+    }
+
+    // The tap's caps pin F32LE; buffers hold whole frames.
+    const std::span<const float> samples{
+        reinterpret_cast<const float*>(info.data), info.size / sizeof(float)};
+
+    auto text = whisper_transcriber_->Push(samples);
+
+    gst_buffer_unmap(buffer, &info);
+
+    if (text && !text->empty()) {
+      STREAM_LOG(LogLevel::kInfo, "Whisper heard: {}", *text);
+    }
+  }
 }
 
 bool Stream::Implementation::StartOutput(OutputMode output_mode,
@@ -1505,6 +1619,7 @@ void Stream::Implementation::StopCapturePipeline(
   if (capture_thread_.joinable()) {
     capture_thread_.request_stop();
     audio_thread_.request_stop();
+    whisper_thread_.request_stop();
 
     // Changing state unblocks pending appsink operations.
     if (capture_pipeline_ != nullptr) {
@@ -1517,13 +1632,19 @@ void Stream::Implementation::StopCapturePipeline(
       audio_thread_.join();
     }
 
+    // Joining can take a full window's inference time; whisper_full has
+    // no cancellation point.
+    if (whisper_thread_.joinable()) {
+      whisper_thread_.join();
+    }
+
     // No partial capture data may survive into the no-signal screen (or
     // a restarted capture): drop whatever the frame buffers still hold.
     frames_.Flush();
     audio_.Flush();
 
     ResetGuard reset{capture_pipeline_, capture_sink_, capture_audio_sink_,
-                     capture_bus_};
+                     whisper_sink_, capture_bus_};
   }
 
   capture_state_ = CaptureState::kStopped;
@@ -1593,11 +1714,14 @@ bool Stream::Implementation::Initialize(
     std::optional<int> connector_id, bool audio,
     const std::optional<std::string>& audio_output_device,
     std::int64_t audio_offset_ms, bool preview,
-    const std::optional<std::string>& subtitles) {
+    const std::optional<std::string>& subtitles,
+    const std::optional<std::string>& whisper_model) {
   audio_enabled_ = audio;
   audio_offset_ = audio_offset_ms * GST_MSECOND;
   preview_enabled_ = preview;
   subtitle_path_ = subtitles;
+  // main() rejects --whisper with --no-audio; the tap needs the branch.
+  whisper_enabled_ = audio_enabled_ && whisper_model.has_value();
 
   if (preview_enabled_) {
     if (auto placeholder = EncodePlaceholderJpeg()) {
@@ -1613,15 +1737,26 @@ bool Stream::Implementation::Initialize(
         audio_output_device ? *audio_output_device : DefaultAudioOutputDevice();
   }
 
+  if (whisper_enabled_) {
+    whisper_transcriber_ = WhisperTranscriber::Create(*whisper_model);
+
+    if (!whisper_transcriber_) {
+      std::println(stderr, "Couldn't load the whisper model: {}",
+                   *whisper_model);
+      return false;
+    }
+  }
+
   const std::optional<std::string_view> branch_device =
       audio_enabled_
           ? std::make_optional<std::string_view>(audio_output_device_)
           : std::nullopt;
 
-  STREAM_LOG(LogLevel::kDebug, "Capture pipeline:\n{}\n\nOutput pipeline:\n{}",
-             CapturePipelineDescription(device, audio_enabled_),
-             OutputPipelineDescription(output_mode, connector_id, branch_device,
-                                       preview_enabled_, subtitle_path_));
+  STREAM_LOG(
+      LogLevel::kDebug, "Capture pipeline:\n{}\n\nOutput pipeline:\n{}",
+      CapturePipelineDescription(device, audio_enabled_, whisper_enabled_),
+      OutputPipelineDescription(output_mode, connector_id, branch_device,
+                                preview_enabled_, subtitle_path_));
 
   return StartOutput(output_mode, connector_id) && StartCapture(device);
 }
@@ -1634,7 +1769,8 @@ std::unique_ptr<Stream> Stream::Create(
     std::optional<int> connector_id, bool audio,
     const std::optional<std::string>& audio_output_device,
     std::int64_t audio_offset_ms, bool preview,
-    const std::optional<std::string>& subtitles) {
+    const std::optional<std::string>& subtitles,
+    const std::optional<std::string>& whisper_model) {
   static bool gst_initialized = false;
   if (!gst_initialized) {
     gst_initialized = true;
@@ -1656,7 +1792,7 @@ std::unique_ptr<Stream> Stream::Create(
       kAudioBufferCapacity + extra_audio_chunks);
   if (!implementation->Initialize(device, output_mode, connector_id, audio,
                                   audio_output_device, audio_offset_ms, preview,
-                                  subtitles)) {
+                                  subtitles, whisper_model)) {
     return nullptr;
   }
 

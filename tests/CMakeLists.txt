@@ -11,6 +11,10 @@ add_executable(
     output_pipeline_tests.cpp
 )
 
+if(SUBTITLER_ENABLE_WHISPER)
+    target_sources(stream_tests PRIVATE whisper_tests.cpp)
+endif()
+
 target_link_libraries(
     stream_tests
     PRIVATE

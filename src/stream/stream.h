@@ -19,10 +19,17 @@ enum class OutputMode {
 
 // The full capture pipeline: video branch plus, when audio is true, the
 // audio branch. The branches are separate functions so machines without
-// the capture device's ALSA card can run video-only.
-std::string CapturePipelineDescription(std::string_view device, bool audio);
+// the capture device's ALSA card can run video-only. When whisper is
+// true the audio branch tees off a whisper tap (#19 spike).
+std::string CapturePipelineDescription(std::string_view device, bool audio,
+                                       bool whisper = false);
 std::string VideoCapturePipelineDescription(std::string_view device);
-std::string AudioCapturePipelineDescription(std::string_view device);
+std::string AudioCapturePipelineDescription(std::string_view device,
+                                            bool whisper = false);
+// The whisper tap: a branch off the audio tee converting the capture
+// audio to the 16 kHz mono float format whisper consumes, into a
+// dropping appsink so a slow transcriber can never stall the passthrough.
+std::string WhisperCapturePipelineDescription();
 
 // The full output pipeline: video branch plus, when audio_device is set,
 // the audio branch playing through that ALSA device. When preview is true
@@ -47,13 +54,16 @@ class Stream {
   // negative advances it (realized by delaying video; latency grows by
   // |offset|). When subtitles is set, cues from the SRT at that path are
   // composited onto the video, anchored at the running time the output
-  // starts (#438).
+  // starts (#438). When whisper_model names a ggml model file (and audio
+  // is enabled), the audio capture tees off a whisper tap that logs
+  // transcriptions (#19 spike).
   static std::unique_ptr<Stream> Create(
       const std::string& device, OutputMode output_mode,
       std::optional<int> connector_id, bool audio,
       const std::optional<std::string>& audio_output_device,
       std::int64_t audio_offset_ms = 0, bool preview = false,
-      const std::optional<std::string>& subtitles = std::nullopt);
+      const std::optional<std::string>& subtitles = std::nullopt,
+      const std::optional<std::string>& whisper_model = std::nullopt);
   ~Stream();
 
   void Poll();

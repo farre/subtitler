@@ -95,6 +95,8 @@ int main(int argc, char** argv) {
   // Written at boot resume and, once the server runs, only on its io
   // thread.
   std::optional<std::string> active_title;
+  // The whisper tap's ggml model (#19 spike); experimental.
+  std::optional<std::string> whisper_model;
   int positional = 0;
 
   const auto usage = [&] {
@@ -104,7 +106,8 @@ int main(int argc, char** argv) {
                  "[--output=software|pisp|window|null] [--no-audio] "
                  "[--audio-output-device=<alsa-device>] "
                  "[--audio-offset=<ms>] [--subtitles=<srt-file>] "
-                 "[--web] [--web-root=<dir>] [--api-key=<key>]",
+                 "[--web] [--web-root=<dir>] [--api-key=<key>] "
+                 "[--whisper=<ggml-model>]",
                  argv[0]);
   };
 
@@ -215,6 +218,9 @@ int main(int argc, char** argv) {
           std::string{arg.substr(std::string_view{"--web-root="}.size())};
     } else if (arg.starts_with(std::string_view("--api-key="))) {
       api_key = std::string{arg.substr(std::string_view{"--api-key="}.size())};
+    } else if (arg.starts_with("--whisper=")) {
+      whisper_model =
+          std::string{arg.substr(std::string_view{"--whisper="}.size())};
     } else if (arg.starts_with("--")) {
       std::println(stderr, "Unknown option: {}", arg);
       usage();
@@ -263,9 +269,23 @@ int main(int argc, char** argv) {
     }
   }
 
-  auto stream = subtitler::Stream::Create(device, output_mode, connector_id,
-                                          audio, audio_output_device,
-                                          audio_offset_ms, web, subtitles);
+  if (whisper_model) {
+    // The tap lives on the capture side's audio branch (#19).
+    if (!audio) {
+      std::println(stderr,
+                   "--whisper needs the audio branch (--no-audio "
+                   "was given)");
+      return EXIT_FAILURE;
+    }
+    if (!std::filesystem::exists(*whisper_model)) {
+      std::println(stderr, "Whisper model not found: {}", *whisper_model);
+      return EXIT_FAILURE;
+    }
+  }
+
+  auto stream = subtitler::Stream::Create(
+      device, output_mode, connector_id, audio, audio_output_device,
+      audio_offset_ms, web, subtitles, whisper_model);
 
   if (!stream) {
     std::println(stderr, "Failed to create stream");

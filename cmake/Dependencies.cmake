@@ -48,3 +48,29 @@ pkg_check_modules(
     IMPORTED_TARGET
     pangocairo
 )
+
+# The whisper speech-recognition tap (#19 spike): whisper.cpp, fetched and
+# built from source. OFF by default; the whisper tap module compiles to a
+# stub without it.
+option(SUBTITLER_ENABLE_WHISPER "Fetch whisper.cpp and enable the whisper audio tap" OFF)
+
+if(SUBTITLER_ENABLE_WHISPER)
+    include(FetchContent)
+
+    FetchContent_Declare(
+        whisper
+        GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp.git
+        GIT_TAG v1.9.3
+        GIT_SHALLOW TRUE
+    )
+
+    # CACHE FORCE: whisper.cpp's own cmake_minimum_required resets CMP0077
+    # to OLD in its scope, which would ignore plain variables.
+    set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    # whisper.cpp defaults BUILD_SHARED_LIBS to ON; keep the project's
+    # libraries static so the binaries stay self-contained.
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+    FetchContent_MakeAvailable(whisper)
+endif()

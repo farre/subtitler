@@ -75,6 +75,52 @@ TEST_CASE("capture pipeline description") {
     CHECK(without_audio.contains("v4l2src"));
   }
 
+  SUBCASE("audio branch tees off only with the whisper tap") {
+    CHECK_FALSE(
+        subtitler::AudioCapturePipelineDescription("hw:CARD=Video,DEV=0")
+            .contains("tee"));
+    const auto description =
+        subtitler::AudioCapturePipelineDescription("hw:CARD=Video,DEV=0", true);
+
+    // Load-bearing, like the output tee's HDMI branch: the passthrough
+    // side needs its own queue or the two sinks' preroll waits deadlock
+    // the live source's PLAYING transition.
+    CHECK(description.contains("! tee name=whisper_tee ! queue "));
+    CHECK(description.contains("! appsink name=capture_audio_sink"));
+  }
+
+  SUBCASE("whisper branch contains the key tap properties") {
+    const auto description = subtitler::WhisperCapturePipelineDescription();
+
+    CHECK(description.contains("whisper_tee."));
+    CHECK(description.contains("audioconvert"));
+    CHECK(description.contains("audioresample"));
+    CHECK(description.contains("format=F32LE"));
+    CHECK(description.contains("rate=16000"));
+    CHECK(description.contains("channels=1"));
+    CHECK(description.contains("appsink"));
+    CHECK(description.contains("name=whisper_sink"));
+    // Load-bearing: the tap may never stall the passthrough, and the
+    // backlog bounds the recognition lag (#19). Every tee branch needs
+    // its own queue.
+    CHECK(description.contains("leaky=downstream"));
+    CHECK(description.contains("drop=true"));
+  }
+
+  SUBCASE("whisper branch is optional and requires audio") {
+    const auto plain =
+        subtitler::CapturePipelineDescription("/dev/video0", true);
+    const auto tapped =
+        subtitler::CapturePipelineDescription("/dev/video0", true, true);
+    const auto no_audio =
+        subtitler::CapturePipelineDescription("/dev/video0", false, true);
+
+    CHECK_FALSE(plain.contains("whisper_sink"));
+    CHECK(tapped.contains("whisper_sink"));
+    CHECK(tapped.contains("tee name=whisper_tee"));
+    CHECK_FALSE(no_audio.contains("whisper_sink"));
+  }
+
   SUBCASE("is constructible") {
     CheckConstructible(
         subtitler::CapturePipelineDescription("/dev/video0", false));
@@ -84,6 +130,8 @@ TEST_CASE("capture pipeline description") {
     if (alsa_factory != nullptr) {
       CheckConstructible(
           subtitler::CapturePipelineDescription("/dev/video0", true));
+      CheckConstructible(
+          subtitler::CapturePipelineDescription("/dev/video0", true, true));
     }
   }
 }
