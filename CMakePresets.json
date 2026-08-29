@@ -6,6 +6,7 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++"
       }
     },
@@ -14,6 +15,7 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/asan-ubsan",
       "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++",
         "SUBTITLER_ENABLE_ASAN": "ON",
         "SUBTITLER_ENABLE_UBSAN": "ON"

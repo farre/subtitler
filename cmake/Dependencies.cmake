@@ -50,9 +50,12 @@ pkg_check_modules(
 )
 
 # The whisper speech-recognition tap (#19 spike): whisper.cpp, fetched and
-# built from source. OFF by default; the whisper tap module compiles to a
-# stub without it.
-option(SUBTITLER_ENABLE_WHISPER "Fetch whisper.cpp and enable the whisper audio tap" OFF)
+# built from source. ON by default — whisper is part of the standard build
+# and --whisper=<model> is the runtime opt-in; OFF only for offline or
+# minimal builds (the tap module then compiles to a stub and --whisper
+# just fails model loading). The first configure of a build dir clones
+# whisper.cpp, so it needs network.
+option(SUBTITLER_ENABLE_WHISPER "Fetch whisper.cpp and enable the whisper audio tap" ON)
 
 if(SUBTITLER_ENABLE_WHISPER)
     include(FetchContent)
