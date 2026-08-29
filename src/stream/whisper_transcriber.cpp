@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <print>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -27,6 +28,32 @@ constexpr std::size_t kWindowSamples = kSampleRate * kWindowSeconds;
 // Leaves cores for the passthrough on the 4-core Pi 5.
 constexpr int kThreads = 2;
 
+// Routes whisper.cpp's own logging (the model-load banner is INFO) into
+// the stream label: errors/warnings surface, the rest is debug noise.
+void WhisperLogCallback(enum ggml_log_level level, const char* text,
+                        void* /*user_data*/) {
+  try {
+    std::string_view message{text};
+    if (!message.empty() && message.back() == '\n') {
+      message.remove_suffix(1);
+    }
+
+    switch (level) {
+      case GGML_LOG_LEVEL_ERROR:
+        STREAM_LOG(LogLevel::kError, "whisper: {}", message);
+        break;
+      case GGML_LOG_LEVEL_WARN:
+        STREAM_LOG(LogLevel::kWarning, "whisper: {}", message);
+        break;
+      default:
+        STREAM_LOG(LogLevel::kDebug, "whisper: {}", message);
+        break;
+    }
+  } catch (...) {
+    // A logging callback must never throw into the C API.
+  }
+}
+
 }  // namespace
 
 struct WhisperTranscriber::Implementation {
@@ -37,6 +64,9 @@ struct WhisperTranscriber::Implementation {
 /* static */
 std::unique_ptr<WhisperTranscriber> WhisperTranscriber::Create(
     const std::string& model_path) {
+  // Global, idempotent; there is one transcriber per process.
+  whisper_log_set(WhisperLogCallback, nullptr);
+
   auto implementation = std::make_unique<Implementation>();
   implementation->context.reset(whisper_init_from_file_with_params(
       model_path.c_str(), whisper_context_default_params()));
