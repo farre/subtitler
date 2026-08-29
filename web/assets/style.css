@@ -101,6 +101,17 @@ details img {
   font-size: 0.85em;
 }
 
+.subtitle .delete {
+  min-height: 0;
+  margin-left: 0.25rem;
+  padding: 0.6rem 0.75rem;
+  color: var(--muted);
+}
+
+.subtitle .delete:hover {
+  color: var(--text);
+}
+
 .subtitle input:checked + label {
   border-color: var(--accent);
   background: var(--raised);

@@ -382,6 +382,35 @@ int main(int argc, char** argv) {
         return subtitler::ListSubtitles(*state_dir);
       };
 
+      // Deletion (#453): removes the library entry; deleting the
+      // attached subtitle detaches it like an empty state-set file.
+      hooks.subtitle_delete =
+          [&stream, &state_dir, &active_title,
+           &config](std::string_view title) -> subtitler::SubtitleDeleteStatus {
+        if (!subtitler::FindLibrarySubtitle(*state_dir, title)) {
+          return subtitler::SubtitleDeleteStatus::kNotFound;
+        }
+
+        if (active_title.has_value() && *active_title == title) {
+          if (!stream->SetSubtitleFile(std::nullopt)) {
+            return subtitler::SubtitleDeleteStatus::kFailed;
+          }
+          subtitler::ClearActiveSubtitle(*state_dir);
+          active_title = std::nullopt;
+          if (config) {
+            config->SetSubtitleFile(std::nullopt);
+            if (!config->Save()) {
+              MAIN_LOG(subtitler::LogLevel::kWarning,
+                       "Could not save the configuration");
+            }
+          }
+        }
+
+        return subtitler::RemoveLibrarySubtitle(*state_dir, title)
+                   ? subtitler::SubtitleDeleteStatus::kDeleted
+                   : subtitler::SubtitleDeleteStatus::kFailed;
+      };
+
       hooks.font_list = [] { return subtitler::AvailableFontFamilies(); };
 
       // The one-shot auto-sync (#433): the stream owns the session.

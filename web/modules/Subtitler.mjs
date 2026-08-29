@@ -53,6 +53,10 @@ class Subtitler extends Rest {
     return this.get(`subtitles/${file}`);
   }
 
+  remove(file) {
+    return this.delete(`subtitles/${file}`);
+  }
+
   whisper() {
     return this.get("whisper");
   }

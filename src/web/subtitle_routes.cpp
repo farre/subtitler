@@ -116,6 +116,30 @@ void HandleSubtitleGet(SoupServerMessage* message, const char* path,
   RespondJson(message, std::format("{{\"body\":\"{}\"}}", JsonEscape(*body)));
 }
 
+// DELETE /api/subtitles/<title> (#453): removes the library entry.
+void HandleSubtitleDelete(SoupServerMessage* message, const char* path,
+                          const SubtitleRoutes& self) {
+  const UniquePtr<gchar, g_free> decoded{
+      g_uri_unescape_string(path + kSubtitlesPrefix.size(), nullptr)};
+  if (decoded == nullptr) {
+    soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
+    return;
+  }
+
+  switch (self.delete_(decoded.get())) {
+    case SubtitleDeleteStatus::kDeleted:
+      soup_server_message_set_status(message, SOUP_STATUS_NO_CONTENT, nullptr);
+      break;
+    case SubtitleDeleteStatus::kNotFound:
+      soup_server_message_set_status(message, SOUP_STATUS_NOT_FOUND, nullptr);
+      break;
+    case SubtitleDeleteStatus::kFailed:
+      soup_server_message_set_status(message, SOUP_STATUS_INTERNAL_SERVER_ERROR,
+                                     nullptr);
+      break;
+  }
+}
+
 void HandleSubtitles(SoupServer*, SoupServerMessage* message, const char* path,
                      GHashTable*, gpointer user_data) {
   auto& self = *static_cast<SubtitleRoutes*>(user_data);
@@ -128,37 +152,55 @@ void HandleSubtitles(SoupServer*, SoupServerMessage* message, const char* path,
     return;
   }
 
-  // GET on an item answers the stored SRT. The handler is
-  // prefix-matched; the title is whatever follows the prefix.
-  if (method == "GET" && self.get_ && route.starts_with(kSubtitlesPrefix) &&
-      route.size() > kSubtitlesPrefix.size()) {
+  // The item routes are prefix-matched; the title is whatever follows
+  // the prefix.
+  const bool item = route.starts_with(kSubtitlesPrefix) &&
+                    route.size() > kSubtitlesPrefix.size();
+
+  if (item && method == "GET" && self.get_) {
     HandleSubtitleGet(message, path, self);
     return;
   }
 
-  if (!self.upload_) {
-    soup_server_message_set_status(message, SOUP_STATUS_NOT_FOUND, nullptr);
+  if (item && method == "PUT" && self.upload_) {
+    HandleSubtitleUpload(message, path, self);
     return;
   }
 
-  if (method != "PUT") {
-    soup_message_headers_replace(
-        soup_server_message_get_response_headers(message), "Allow",
-        self.get_ ? "GET, PUT" : "PUT");
-    soup_server_message_set_status(message, SOUP_STATUS_METHOD_NOT_ALLOWED,
-                                   nullptr);
+  if (item && method == "DELETE" && self.delete_) {
+    HandleSubtitleDelete(message, path, self);
     return;
   }
 
-  // The handler is prefix-matched; the title is whatever follows the
-  // prefix, percent-encoded.
-  if (!route.starts_with(kSubtitlesPrefix) ||
-      route.size() == kSubtitlesPrefix.size()) {
+  // PUT and DELETE need a title.
+  if ((method == "PUT" || method == "DELETE") && !item) {
     soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
     return;
   }
 
-  HandleSubtitleUpload(message, path, self);
+  // Anything else is a method the route doesn't support; Allow lists
+  // the enabled ones.
+  std::string allow;
+  const auto extend = [&allow](std::string_view name) {
+    if (!allow.empty()) {
+      allow += ", ";
+    }
+    allow += name;
+  };
+  if (self.list_ || self.get_) {
+    extend("GET");
+  }
+  if (self.upload_) {
+    extend("PUT");
+  }
+  if (self.delete_) {
+    extend("DELETE");
+  }
+  soup_message_headers_replace(
+      soup_server_message_get_response_headers(message), "Allow",
+      allow.c_str());
+  soup_server_message_set_status(message, SOUP_STATUS_METHOD_NOT_ALLOWED,
+                                 nullptr);
 }
 
 // GET/PUT /api/subtitle-state (#441). PUT takes its changes as query
@@ -346,7 +388,7 @@ void HandleSubtitleSync(SoupServer*, SoupServerMessage* message,
 namespace subtitler {
 
 void SubtitleRoutes::Register(SoupServer* server) {
-  if (upload_ || list_ || get_) {
+  if (upload_ || list_ || get_ || delete_) {
     soup_server_add_handler(server, "/api/subtitles", HandleSubtitles, this,
                             nullptr);
   }

@@ -16,7 +16,7 @@ class Rest {
         `${method} ${url} failed: ${response.status} ${response.statusText}`,
       );
     }
-    return response.json();
+    return response.status === 204 ? null : response.json();
   }
 
   get(endpoint, ...args) {
@@ -29,6 +29,10 @@ class Rest {
 
   post(endpoint, ...args) {
     return this.api(endpoint, "POST", ...args);
+  }
+
+  delete(endpoint, ...args) {
+    return this.api(endpoint, "DELETE", ...args);
   }
 }
 

@@ -216,6 +216,20 @@ inline std::optional<std::string> LoadLibrarySubtitle(
   return contents;
 }
 
+// Removes the library entry for a title (sharded or legacy flat, #453).
+// false when no entry exists or the removal fails.
+inline bool RemoveLibrarySubtitle(const std::filesystem::path& state_dir,
+                                  std::string_view title) {
+  const auto relative = FindLibrarySubtitle(state_dir, title);
+  if (!relative) {
+    return false;
+  }
+
+  std::error_code error;
+  return std::filesystem::remove(state_dir / "subtitles" / *relative, error) &&
+         !error;
+}
+
 // The activatable library titles (those passing LibrarySubtitlePath),
 // sharded and legacy flat entries, sorted. Scanned on demand (#441).
 inline std::vector<std::string> ListSubtitles(

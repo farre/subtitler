@@ -331,6 +331,23 @@ TEST_CASE("subtitle library listing and lookup") {
     CHECK(subtitler::LoadLibrarySubtitle(root, "missing.srt") == std::nullopt);
   }
 
+  SUBCASE("removal deletes sharded and legacy flat entries") {
+    REQUIRE(subtitler::StoreSubtitle(root, "Movie.srt", "x\n").has_value());
+    std::ofstream{root / "subtitles" / "legacy.srt"} << "x\n";
+
+    CHECK(subtitler::RemoveLibrarySubtitle(root, "Movie.srt"));
+    CHECK(subtitler::FindLibrarySubtitle(root, "Movie.srt") == std::nullopt);
+
+    CHECK(subtitler::RemoveLibrarySubtitle(root, "legacy.srt"));
+    CHECK(subtitler::FindLibrarySubtitle(root, "legacy.srt") == std::nullopt);
+  }
+
+  SUBCASE("removal rejects unusable or missing titles") {
+    CHECK_FALSE(subtitler::RemoveLibrarySubtitle(root, "../evil.srt"));
+    CHECK_FALSE(subtitler::RemoveLibrarySubtitle(root, "no-extension"));
+    CHECK_FALSE(subtitler::RemoveLibrarySubtitle(root, "missing.srt"));
+  }
+
   SUBCASE("the active marker is set and cleared") {
     REQUIRE(subtitler::StoreSubtitle(root, "Movie.srt", "x\n").has_value());
     REQUIRE(subtitler::SetActiveSubtitle(root, "m/Movie.srt"));

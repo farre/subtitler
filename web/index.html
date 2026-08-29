@@ -233,10 +233,31 @@
           label.appendChild(imdb);
         }
 
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "delete";
+        remove.textContent = "✕";
+        remove.setAttribute("aria-label", `Delete ${base}`);
+        remove.addEventListener("click", () => deleteSubtitle(file));
+
         const row = document.createElement("div");
         row.className = "subtitle";
-        row.append(radio, label);
+        row.append(radio, label, remove);
         return row;
+      }
+
+      async function deleteSubtitle(file) {
+        await subtitler.remove(file);
+        await refreshSubtitles();
+        // The delete may have detached the active subtitle; pull the
+        // state and re-check whatever is attached now.
+        const state = await subtitler.state();
+        applyState(state);
+        if (state.file !== null) {
+          checkSubtitle(state.file);
+        } else {
+          updateConvertState();
+        }
       }
 
       let knownFiles = [];
@@ -329,9 +350,13 @@
         await fetchCandidate(data[0], id);
       }
 
-      // Advances to the best-ranked candidate the library doesn't carry
-      // yet (#452). Legacy uploads carry no version tag and can't be
-      // skipped — they cost one re-download that fixes the bookkeeping.
+      // Advances to the first candidate ranked past the frontier
+      // (#453): the newest remaining download is the tombstone, so
+      // everything ranked at or before the furthest-ranked version the
+      // library carries counts as tried — deleting bad downloads behind
+      // the frontier never re-fetches them; deleting everything for a
+      // title starts over. Legacy uploads carry no version tag and
+      // can't anchor the frontier — they cost one re-download.
       async function tryNextCandidate() {
         if (subtitles === null) {
           return;
@@ -347,15 +372,19 @@
         }
 
         const { data } = await subtitles.search(search.value);
-        const tried = new Set(
-          knownFiles
-            .filter((file) => imdbId(file) === id)
-            .map(subtitleVersion)
-            .filter((version) => version !== null),
-        );
-        const candidate = data.find(
-          ({ attributes }) => !tried.has(attributes.subtitle_id),
-        );
+        const ranked = data.map(({ attributes }) => attributes.subtitle_id);
+        let frontier = -1;
+        for (const file of knownFiles) {
+          if (imdbId(file) !== id) {
+            continue;
+          }
+          const version = subtitleVersion(file);
+          if (version !== null) {
+            // A version missing from the current page can't anchor.
+            frontier = Math.max(frontier, ranked.indexOf(version));
+          }
+        }
+        const candidate = data.find((unused, index) => index > frontier);
         if (candidate !== undefined) {
           await fetchCandidate(candidate, id);
         }

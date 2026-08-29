@@ -25,6 +25,8 @@ struct WebServerHooks {
   SubtitleUploadHandler subtitle_upload;
   // GET /api/subtitles/<title>.
   SubtitleGetHandler subtitle_get;
+  // DELETE /api/subtitles/<title> (#453).
+  SubtitleDeleteHandler subtitle_delete;
   // GET /api/subtitles and GET/PUT /api/subtitle-state (#441).
   SubtitleListHandler subtitle_list;
   SubtitleStateGetHandler subtitle_state_get;

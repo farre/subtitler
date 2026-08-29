@@ -69,7 +69,7 @@ switched in live (re-anchored at the current running time).
 - `201 Created` — body is the library-relative name as JSON:
   `{"stored_name":"m/Movie.srt"}`
 - `400 Bad Request` — invalid title, bad percent-encoding, or empty body
-- `405 Method Not Allowed` — anything but GET or PUT
+- `405 Method Not Allowed` — anything but GET, PUT, or DELETE
 - `413 Content Too Large` — body over 8 MiB
 - `500 Internal Server Error` — storage or live activation failed
 
@@ -93,6 +93,21 @@ The stored SRT for the percent-decoded `<title>`, as JSON:
 
 - `400 Bad Request` — bad percent-encoding
 - `404 Not Found` — no such library title
+
+### DELETE /api/subtitles/<title>
+
+Removes the percent-decoded `<title>` from the library. Deleting the
+attached subtitle detaches it (like `PUT /api/subtitle-state?file=`)
+and clears the `active` marker.
+
+```js
+await window.fetch("/api/subtitles/Movie.srt", { method: "DELETE" });
+```
+
+- `204 No Content` — deleted
+- `400 Bad Request` — bad percent-encoding or missing title
+- `404 Not Found` — no such library title
+- `500 Internal Server Error` — removal or live detach failed
 
 ### GET /api/subtitles
 

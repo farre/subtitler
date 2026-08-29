@@ -510,6 +510,8 @@ TEST_CASE("web server subtitle upload without a handler") {
         SOUP_STATUS_NOT_FOUND);
   CHECK(HttpGet(port, "/api/subtitles/movie.srt").status ==
         SOUP_STATUS_NOT_FOUND);
+  CHECK(HttpRequest("DELETE", port, "/api/subtitles/movie.srt").status ==
+        SOUP_STATUS_NOT_FOUND);
   CHECK(HttpGet(port, "/api/subtitles").status == SOUP_STATUS_NOT_FOUND);
   CHECK(HttpGet(port, "/api/subtitle-state").status == SOUP_STATUS_NOT_FOUND);
   CHECK(HttpRequest("PUT", port, "/api/subtitle-state?paused=true").status ==
@@ -627,6 +629,61 @@ TEST_CASE("web server subtitle get") {
   SUBCASE("an unknown title is a 404") {
     CHECK(HttpGet(port, "/api/subtitles/missing.srt").status ==
           SOUP_STATUS_NOT_FOUND);
+  }
+}
+
+TEST_CASE("web server subtitle delete") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  std::string captured_title;
+  subtitler::SubtitleDeleteStatus next_status =
+      subtitler::SubtitleDeleteStatus::kDeleted;
+
+  subtitler::WebServerHooks hooks;
+  hooks.subtitle_delete = [&](std::string_view title) {
+    captured_title = title;
+    return next_status;
+  };
+
+  auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
+  REQUIRE(server != nullptr);
+
+  SUBCASE("a deleted entry is a 204") {
+    const auto response =
+        HttpRequest("DELETE", port, "/api/subtitles/My%20Movie.srt");
+
+    CHECK(response.status == SOUP_STATUS_NO_CONTENT);
+    CHECK(captured_title == "My Movie.srt");
+  }
+
+  SUBCASE("an unknown title is a 404") {
+    next_status = subtitler::SubtitleDeleteStatus::kNotFound;
+
+    CHECK(HttpRequest("DELETE", port, "/api/subtitles/missing.srt").status ==
+          SOUP_STATUS_NOT_FOUND);
+  }
+
+  SUBCASE("a removal failure is a 500") {
+    next_status = subtitler::SubtitleDeleteStatus::kFailed;
+
+    CHECK(HttpRequest("DELETE", port, "/api/subtitles/movie.srt").status ==
+          SOUP_STATUS_INTERNAL_SERVER_ERROR);
+  }
+
+  SUBCASE("methods other than DELETE are a 405") {
+    CHECK(HttpGet(port, "/api/subtitles/movie.srt").status ==
+          SOUP_STATUS_METHOD_NOT_ALLOWED);
+    CHECK(HttpRequest("PUT", port, "/api/subtitles/movie.srt", "x").status ==
+          SOUP_STATUS_METHOD_NOT_ALLOWED);
+  }
+
+  SUBCASE("a missing title is a 400") {
+    CHECK(HttpRequest("DELETE", port, "/api/subtitles").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("DELETE", port, "/api/subtitles/").status ==
+          SOUP_STATUS_BAD_REQUEST);
   }
 }
 

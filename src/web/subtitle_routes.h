@@ -66,6 +66,17 @@ using SubtitleListHandler = std::function<std::vector<std::string>()>;
 // nullopt when the title isn't in the library, mapped to 404.
 using SubtitleGetHandler =
     std::function<std::optional<std::string>(std::string_view title)>;
+
+// The result of removing a library entry (#453).
+enum class SubtitleDeleteStatus : std::uint8_t {
+  kDeleted,
+  kNotFound,  // no such library title
+  kFailed,    // removal or live detach failed
+};
+
+// Removes a library title, for DELETE /api/subtitles/<title>.
+using SubtitleDeleteHandler =
+    std::function<SubtitleDeleteStatus(std::string_view title)>;
 // The live subtitle state getters/setters; the setter answers false on
 // an unusable value (e.g. a title not in the library), mapped to 400.
 using SubtitleStateGetHandler = std::function<SubtitleState()>;
@@ -101,12 +112,12 @@ using SubtitleSyncGetHandler = std::function<SubtitleSyncState()>;
 using SubtitleSyncStartHandler = std::function<SubtitleSyncStartResult()>;
 
 // The /api/subtitles endpoints: PUT /api/subtitles/<title> uploads
-// (#212), GET /api/subtitles/<title> answers the stored SRT, GET
-// /api/subtitles lists the library, GET/PUT /api/subtitle-state reads
-// and changes the live state (#441), and GET/PUT /api/subtitle-sync
-// runs the one-shot auto-sync (#433). An unset hook disables its
-// endpoint. Internal to the web module; web_server.cpp composes the
-// route modules.
+// (#212), GET /api/subtitles/<title> answers the stored SRT, DELETE
+// /api/subtitles/<title> removes it (#453), GET /api/subtitles lists
+// the library, GET/PUT /api/subtitle-state reads and changes the live
+// state (#441), and GET/PUT /api/subtitle-sync runs the one-shot
+// auto-sync (#433). An unset hook disables its endpoint. Internal to
+// the web module; web_server.cpp composes the route modules.
 struct SubtitleRoutes {
   // Adds the route handlers with this as user_data. Called on the io
   // thread.
@@ -115,6 +126,7 @@ struct SubtitleRoutes {
   SubtitleUploadHandler upload_;
   SubtitleListHandler list_;
   SubtitleGetHandler get_;
+  SubtitleDeleteHandler delete_;
   SubtitleStateGetHandler state_get_;
   SubtitleStateSetHandler state_set_;
   SubtitleSyncGetHandler sync_get_;
