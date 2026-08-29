@@ -101,6 +101,7 @@
           <label for="search">IMDb id</label>
           <input type="text" id="search" placeholder="tt1234567" />
           <button type="submit">Save</button>
+          <button type="button" id="try-next" hidden>Try next</button>
         </form>
       </section>
     </main>
@@ -166,6 +167,7 @@
       const loginForm = document.getElementById("login-form");
       const search = document.getElementById("search");
       const searchForm = document.getElementById("search-form");
+      const tryNext = document.getElementById("try-next");
 
       const subtitler = new Subtitler(new URL("api/", location.href).href);
 
@@ -201,6 +203,13 @@
         return name.match(/\.(\d+(?:\.\d+)?)fps\.tt\d+\.srt$/i)?.[1] ?? "";
       }
 
+      // The OpenSubtitles version tag in
+      // `<title>.os<subtitle-id>[.<fps>fps].tt<id>.srt`; null for legacy
+      // uploads that predate tagging.
+      function subtitleVersion(name) {
+        return name.match(/\.os(\d+)\./i)?.[1] ?? null;
+      }
+
       function subtitleRow(file, index) {
         const radio = document.createElement("input");
         radio.type = "radio";
@@ -230,11 +239,30 @@
         return row;
       }
 
+      let knownFiles = [];
+
       async function refreshSubtitles() {
         library.replaceChildren();
-        const files = await subtitler.list();
-        files.forEach((file, i) => library.appendChild(subtitleRow(file, i)));
-        return files;
+        knownFiles = await subtitler.list();
+        knownFiles.forEach((file, i) =>
+          library.appendChild(subtitleRow(file, i)),
+        );
+        updateTryNextState();
+        return knownFiles;
+      }
+
+      function searchedImdbId() {
+        return search.value.trim().toLowerCase().replace(/^tt/, "");
+      }
+
+      // Trying the next candidate makes sense once the library carries
+      // anything for the searched title.
+      function updateTryNextState() {
+        const id = searchedImdbId();
+        tryNext.hidden =
+          subtitles === null ||
+          id === "" ||
+          !knownFiles.some((file) => imdbId(file) === id);
       }
 
       function checkSubtitle(file) {
@@ -247,12 +275,40 @@
         }
       }
 
+      // Downloads the candidate, stores it under its version tag, and
+      // selects it. The appliance switches to the upload live: position
+      // 0, unpaused.
+      async function fetchCandidate({ attributes }, id) {
+        const { files, feature_details } = attributes;
+        if (files.length < 1) {
+          return;
+        }
+
+        const result = await subtitles.download(
+          files[0].file_id,
+          feature_details.movie_name,
+        );
+        // Tag the release's rate so the convert control knows the source
+        // timing; 0 means unknown and stays untagged. The version tag is
+        // how try-next tells apart the candidates already in the
+        // library.
+        const tag = Number(attributes.fps) > 0 ? `.${attributes.fps}fps` : "";
+        const version = `.os${attributes.subtitle_id}`;
+        const { stored_name } = await subtitler.upload(
+          `${feature_details.movie_name}${version}${tag}.tt${id}.srt`,
+          result,
+        );
+        await refreshSubtitles();
+        checkSubtitle(libraryTitle(stored_name));
+        applyState({ paused: false, time: 0 });
+      }
+
       async function download() {
         if (subtitles === null) {
           return;
         }
 
-        const id = search.value.trim().toLowerCase().replace(/^tt/, "");
+        const id = searchedImdbId();
         const known = await refreshSubtitles();
         const existing = known.find((file) => imdbId(file) === id);
         if (existing) {
@@ -270,27 +326,39 @@
           return;
         }
 
-        const { attributes } = data[0];
-        const { files, feature_details } = attributes;
-        if (files.length < 1) {
+        await fetchCandidate(data[0], id);
+      }
+
+      // Advances to the best-ranked candidate the library doesn't carry
+      // yet (#452). Legacy uploads carry no version tag and can't be
+      // skipped — they cost one re-download that fixes the bookkeeping.
+      async function tryNextCandidate() {
+        if (subtitles === null) {
           return;
         }
 
-        const result = await subtitles.download(
-          files[0].file_id,
-          feature_details.movie_name,
+        const id = searchedImdbId();
+        if (id === "") {
+          return;
+        }
+
+        if (!subtitles.authenticated) {
+          await authenticate();
+        }
+
+        const { data } = await subtitles.search(search.value);
+        const tried = new Set(
+          knownFiles
+            .filter((file) => imdbId(file) === id)
+            .map(subtitleVersion)
+            .filter((version) => version !== null),
         );
-        // Tag the release's rate so the convert control knows the source
-        // timing; 0 means unknown and stays untagged.
-        const tag = Number(attributes.fps) > 0 ? `.${attributes.fps}fps` : "";
-        const { stored_name } = await subtitler.upload(
-          `${feature_details.movie_name}${tag}.tt${id}.srt`,
-          result,
+        const candidate = data.find(
+          ({ attributes }) => !tried.has(attributes.subtitle_id),
         );
-        await refreshSubtitles();
-        checkSubtitle(libraryTitle(stored_name));
-        // The appliance switches to the upload live: position 0, unpaused.
-        applyState({ paused: false, time: 0 });
+        if (candidate !== undefined) {
+          await fetchCandidate(candidate, id);
+        }
       }
 
       function selectedSubtitle() {
@@ -698,6 +766,8 @@
           event.preventDefault();
           await download();
         });
+        search.addEventListener("input", updateTryNextState);
+        tryNext.addEventListener("click", tryNextCandidate);
 
         setInterval(tick, 250);
         setInterval(syncState, syncIntervalMs);
