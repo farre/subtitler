@@ -9,6 +9,9 @@ add_executable(
     frame_buffer_tests.cpp
     integration_tests.cpp
     output_pipeline_tests.cpp
+    srt_cues_tests.cpp
+    sync_matcher_tests.cpp
+    sync_session_tests.cpp
 )
 
 if(SUBTITLER_ENABLE_WHISPER)
