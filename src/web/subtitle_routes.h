@@ -69,13 +69,42 @@ using SubtitleGetHandler =
 // The live subtitle state getters/setters; the setter answers false on
 // an unusable value (e.g. a title not in the library), mapped to 400.
 using SubtitleStateGetHandler = std::function<SubtitleState()>;
-using SubtitleStateSetHandler =
-    std::function<bool(const SubtitleStatePatch&)>;
+using SubtitleStateSetHandler = std::function<bool(const SubtitleStatePatch&)>;
+
+// The one-shot auto-sync state, exposed at GET /api/subtitle-sync
+// (#433).
+enum class SubtitleSyncStatus : std::uint8_t {
+  kIdle,
+  kListening,
+  kSynced,
+  kFailed,
+};
+
+struct SubtitleSyncState {
+  SubtitleSyncStatus status = SubtitleSyncStatus::kIdle;
+  // The matched SRT position in ms; set when synced.
+  std::optional<std::int64_t> time_ms;
+  // Why the session failed; set when failed.
+  std::optional<std::string> reason;
+};
+
+// PUT /api/subtitle-sync's outcome; the non-started answers map to 409
+// with an explanatory body.
+enum class SubtitleSyncStartResult : std::uint8_t {
+  kStarted,
+  kNoSubtitles,
+  kNoWhisper,
+  kUnparseableSubtitles,
+};
+
+using SubtitleSyncGetHandler = std::function<SubtitleSyncState()>;
+using SubtitleSyncStartHandler = std::function<SubtitleSyncStartResult()>;
 
 // The /api/subtitles endpoints: PUT /api/subtitles/<title> uploads
 // (#212), GET /api/subtitles/<title> answers the stored SRT, GET
 // /api/subtitles lists the library, GET/PUT /api/subtitle-state reads
-// and changes the live state (#441). An unset hook disables its
+// and changes the live state (#441), and GET/PUT /api/subtitle-sync
+// runs the one-shot auto-sync (#433). An unset hook disables its
 // endpoint. Internal to the web module; web_server.cpp composes the
 // route modules.
 struct SubtitleRoutes {
@@ -88,6 +117,8 @@ struct SubtitleRoutes {
   SubtitleGetHandler get_;
   SubtitleStateGetHandler state_get_;
   SubtitleStateSetHandler state_set_;
+  SubtitleSyncGetHandler sync_get_;
+  SubtitleSyncStartHandler sync_start_;
 };
 
 }  // namespace subtitler

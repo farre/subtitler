@@ -29,6 +29,9 @@ struct WebServerHooks {
   SubtitleListHandler subtitle_list;
   SubtitleStateGetHandler subtitle_state_get;
   SubtitleStateSetHandler subtitle_state_set;
+  // GET/PUT /api/subtitle-sync (#433).
+  SubtitleSyncGetHandler subtitle_sync_get;
+  SubtitleSyncStartHandler subtitle_sync_start;
   // GET /api/fonts (#159).
   FontListHandler font_list;
   // GET/PUT /api/whisper (#19): the tap's live state. The state dir

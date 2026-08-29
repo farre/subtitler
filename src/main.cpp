@@ -384,13 +384,53 @@ int main(int argc, char** argv) {
 
       hooks.font_list = [] { return subtitler::AvailableFontFamilies(); };
 
+      // The one-shot auto-sync (#433): the stream owns the session.
+      hooks.subtitle_sync_get = [&stream] {
+        const auto state = stream->SubtitleSync();
+        subtitler::SubtitleSyncState result;
+        switch (state.status) {
+          case subtitler::Stream::SyncStatus::kIdle:
+            result.status = subtitler::SubtitleSyncStatus::kIdle;
+            break;
+          case subtitler::Stream::SyncStatus::kListening:
+            result.status = subtitler::SubtitleSyncStatus::kListening;
+            break;
+          case subtitler::Stream::SyncStatus::kSynced:
+            result.status = subtitler::SubtitleSyncStatus::kSynced;
+            result.time_ms = state.time_ms;
+            break;
+          case subtitler::Stream::SyncStatus::kFailed:
+            result.status = subtitler::SubtitleSyncStatus::kFailed;
+            if (!state.reason.empty()) {
+              result.reason = state.reason;
+            }
+            break;
+        }
+        return result;
+      };
+
+      hooks.subtitle_sync_start = [&stream] {
+        switch (stream->StartSubtitleSync()) {
+          case subtitler::Stream::SyncStartResult::kStarted:
+            return subtitler::SubtitleSyncStartResult::kStarted;
+          case subtitler::Stream::SyncStartResult::kNoSubtitles:
+            return subtitler::SubtitleSyncStartResult::kNoSubtitles;
+          case subtitler::Stream::SyncStartResult::kNoWhisper:
+            return subtitler::SubtitleSyncStartResult::kNoWhisper;
+          case subtitler::Stream::SyncStartResult::kUnparseableSubtitles:
+            return subtitler::SubtitleSyncStartResult::kUnparseableSubtitles;
+        }
+        return subtitler::SubtitleSyncStartResult::kNoSubtitles;
+      };
+
       // The whisper tap (#19): state changes apply live on the stream
       // and persist to the config; the state dir anchors the model
       // store the routes list and store into.
       hooks.state_dir = *state_dir;
 
       hooks.whisper_state_get = [&stream] {
-        subtitler::WhisperRouteState state{.enabled = stream->WhisperEnabled()};
+        subtitler::WhisperRouteState state;
+        state.enabled = stream->WhisperEnabled();
         if (const auto model = stream->WhisperModel()) {
           state.model = std::filesystem::path{*model}.filename().string();
         }

@@ -142,6 +142,30 @@ class Stream {
   bool WhisperEnabled() const;
   std::optional<std::string> WhisperModel() const;
 
+  // One-shot subtitle auto-sync (#433): listens to the capture audio,
+  // matches the transcript against the attached SRT, and jumps the SRT
+  // clock to the matched position. Needs subtitles attached and whisper
+  // running; restarting a running session starts it over.
+  enum class SyncStartResult : std::uint8_t {
+    kStarted,
+    kNoSubtitles,
+    kNoWhisper,
+    kUnparseableSubtitles,
+  };
+  SyncStartResult StartSubtitleSync();
+
+  enum class SyncStatus : std::uint8_t { kIdle, kListening, kSynced, kFailed };
+  struct SyncState {
+    SyncStatus status = SyncStatus::kIdle;
+    // The matched SRT position in ms; set when synced.
+    std::optional<std::int64_t> time_ms;
+    // Why the session failed; set when failed.
+    std::string reason;
+  };
+  // The current or last session's state; idle before the first start
+  // and after a cancel (subtitle switch, manual seek, whisper toggle).
+  SyncState SubtitleSync() const;
+
   bool Failed() const;
   std::uint64_t DroppedFrames() const;
 

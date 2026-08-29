@@ -24,6 +24,8 @@
           <input type="checkbox" id="visible" checked />
           <label for="visible">Visible</label>
           <output id="position">00:00:00</output>
+          <button type="button" id="auto-sync" hidden>Auto Sync</button>
+          <output id="sync-status"></output>
         </div>
 
         <form id="seek-form" class="controls">
@@ -131,6 +133,8 @@
       );
       const whisperDownload = document.getElementById("whisper-download");
       const whisperStatus = document.getElementById("whisper-status");
+      const autoSync = document.getElementById("auto-sync");
+      const syncStatus = document.getElementById("sync-status");
 
       // The ggml models the appliance can run, fetched by the browser
       // straight from HuggingFace (CORS is allowed on both the resolve
@@ -353,7 +357,20 @@
           : positionMs + performance.now() - anchoredAt;
       }
 
+      let currentFile = null;
+      let syncAvailable = false;
+      let syncPoll = null;
+
+      function updateAutoSyncState() {
+        autoSync.disabled =
+          !syncAvailable ||
+          currentFile === null ||
+          !whisperEnabled.checked ||
+          syncPoll !== null;
+      }
+
       function applyState({
+        file,
         paused: isPaused,
         time: position,
         visible: isVisible,
@@ -361,8 +378,12 @@
         font_size: size,
         font_color: color,
       }) {
+        if (file !== undefined) {
+          currentFile = file;
+        }
         paused = isPaused;
         anchorPosition(position);
+        updateAutoSyncState();
         updatePause();
         // Absent keys (hand-made states) keep the current values; null
         // means "renderer default" and leaves the controls alone.
@@ -497,6 +518,46 @@
           ...missing.map(({ file, label }) => new Option(label, file)),
         );
         whisperDownload.disabled = missing.length === 0;
+        updateAutoSyncState();
+      }
+
+      async function startAutoSync() {
+        syncStatus.value = "";
+        if (syncPoll !== null) {
+          clearInterval(syncPoll);
+          syncPoll = null;
+        }
+        try {
+          await subtitler.startSubtitleSync();
+        } catch {
+          syncStatus.value = "Couldn't start auto-sync";
+          return;
+        }
+        syncStatus.value = "Listening…";
+        updateAutoSyncState();
+        syncPoll = setInterval(async () => {
+          let state;
+          try {
+            state = await subtitler.subtitleSync();
+          } catch {
+            return;
+          }
+          if (state.state === "listening") {
+            return;
+          }
+          clearInterval(syncPoll);
+          syncPoll = null;
+          updateAutoSyncState();
+          if (state.state === "synced") {
+            syncStatus.value = `Synced to ${formatTime(state.time)}`;
+            // Pull the corrected position in right away.
+            syncState();
+          } else if (state.state === "failed") {
+            syncStatus.value = state.reason ?? "Sync failed";
+          } else {
+            syncStatus.value = "";
+          }
+        }, 2000);
       }
 
       async function downloadWhisperModel() {
@@ -557,12 +618,21 @@
         updateConvertState();
 
         // The whisper section degrades like OpenSubtitles: without the
-        // endpoint (no state dir, no model store) it stays hidden.
+        // endpoint (no state dir, no model store) it stays hidden. Auto
+        // Sync hides with the sync endpoint the same way.
         try {
           applyWhisperState(await subtitler.whisper());
           whisperSection.hidden = false;
         } catch {
           whisperSection.hidden = true;
+        }
+        try {
+          await subtitler.subtitleSync();
+          syncAvailable = true;
+          autoSync.hidden = false;
+          updateAutoSyncState();
+        } catch {
+          autoSync.hidden = true;
         }
 
         library.addEventListener("change", async (event) => {
@@ -619,6 +689,7 @@
           }
         });
         whisperDownload.addEventListener("click", downloadWhisperModel);
+        autoSync.addEventListener("click", startAutoSync);
         loginForm.addEventListener("submit", async (event) => {
           event.preventDefault();
           await authenticate();

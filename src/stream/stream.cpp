@@ -8,6 +8,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -21,6 +23,8 @@
 #include "stream/deleters.h"
 #include "stream/drop_gate.h"
 #include "stream/frame_buffer.h"
+#include "stream/sync_matcher.h"
+#include "stream/sync_session.h"
 #include "stream/whisper_transcriber.h"
 #include "utils/logging.h"
 #include "utils/reset_guard.h"
@@ -49,6 +53,11 @@ constexpr auto kAudioChunkDuration =
 
 // The whisper tap's sample rate: the only rate whisper consumes.
 constexpr int kWhisperRate = 16000;
+
+// The one-shot sync session's listening window (#433): long enough for
+// several whisper windows of dialogue, short enough that a failed sync
+// is answered promptly. Nanoseconds, the shared-timeline unit.
+constexpr std::int64_t kSyncListenWindowNs = 45'000'000'000;
 
 // Time-based in-flight limit for the output appsrcs: comfortably above
 // the worst-case computed latency so the render schedule never starves
@@ -644,11 +653,19 @@ struct Stream::Implementation {
   bool WhisperEnabled() const { return whisper_enabled_.load(); }
   std::optional<std::string> WhisperModel() const;
 
+  SyncStartResult StartSubtitleSync();
+  Stream::SyncState SubtitleSync() const;
+
   bool SetSubtitleFile(const std::optional<std::string>& path);
   void SetSubtitleDelay(std::int64_t delay_ms);
   void SetSubtitlesVisible(bool visible);
   std::optional<std::int64_t> SubtitleTime();
   void SetSubtitleTime(std::int64_t time_ms);
+  // Moves the SRT position; call with mutex_ held.
+  void ApplySubtitleTimeLocked(std::int64_t time_ms);
+  // Drops the sync session and resets its public state; call with
+  // mutex_ held.
+  void CancelSyncLocked();
   void SetSubtitlesPaused(bool paused);
   bool SubtitlesPaused();
   bool SubtitlesVisible();
@@ -763,6 +780,16 @@ struct Stream::Implementation {
   std::atomic_bool whisper_enabled_ = false;
   std::atomic<std::shared_ptr<WhisperTranscriber>> whisper_transcriber_;
   mutable std::mutex whisper_mutex_;
+
+  // The one-shot sync session (#433). Guarded by sync_mutex_, which is
+  // always taken after mutex_ (Poll applies a lock) or whisper_mutex_
+  // (whisper disable), never the other way. The whisper thread feeds
+  // windows; Poll applies a lock's position (a direct anchor set, since
+  // Poll already holds mutex_).
+  mutable std::mutex sync_mutex_;
+  std::optional<SyncSession> sync_session_;
+  Stream::SyncState sync_state_;
+  bool sync_apply_pending_ = false;
   std::string whisper_model_path_;
   DropGate whisper_gate_{1};
 
@@ -1015,6 +1042,12 @@ void Stream::Implementation::RunAudioCapture(std::stop_token stop) {
 void Stream::Implementation::RunWhisper(std::stop_token stop) {
   const auto sink = GstView<GstAppSink>{GST_APP_SINK(whisper_sink_.get())};
 
+  // The running time the current window's audio ends at: the last
+  // buffer's PTS plus duration (do-timestamp stamps in the shared
+  // timeline domain). Windows with drops in them end slightly early;
+  // the vote absorbs it.
+  GstClockTime window_end = GST_CLOCK_TIME_NONE;
+
   while (!stop.stop_requested()) {
     SamplePtr sample =
         SamplePtr{gst_app_sink_try_pull_sample(sink, 100 * GST_MSECOND)};
@@ -1043,6 +1076,13 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
       continue;
     }
 
+    if (GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer))) {
+      window_end = GST_BUFFER_PTS(buffer);
+      if (GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DURATION(buffer))) {
+        window_end += GST_BUFFER_DURATION(buffer);
+      }
+    }
+
     // The tap's caps pin F32LE; buffers hold whole frames.
     const std::span<const float> samples{
         reinterpret_cast<const float*>(info.data), info.size / sizeof(float)};
@@ -1051,8 +1091,38 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
 
     gst_buffer_unmap(buffer, &info);
 
-    if (text && !text->empty()) {
+    if (!text) {
+      continue;
+    }
+
+    if (!text->empty()) {
       STREAM_LOG(LogLevel::kInfo, "Whisper heard: {}", *text);
+    }
+
+    const auto audio_end = GST_CLOCK_TIME_IS_VALID(window_end)
+                               ? static_cast<std::int64_t>(window_end)
+                               : static_cast<std::int64_t>(MasterRunningTime());
+
+    std::lock_guard sync_lock{sync_mutex_};
+    if (sync_session_) {
+      const auto result = sync_session_->Feed({std::move(*text), audio_end},
+                                              MasterRunningTime());
+
+      if (result.state == SyncSession::State::kSynced) {
+        STREAM_LOG(LogLevel::kInfo, "Subtitle sync locked at {} ms",
+                   *result.time_ms);
+        sync_state_.status = SyncStatus::kSynced;
+        sync_state_.time_ms = result.time_ms;
+        // Poll applies the position: it already holds mutex_ for the
+        // anchor and re-parse, this thread must not take it.
+        sync_apply_pending_ = true;
+        sync_session_.reset();
+      } else if (result.state == SyncSession::State::kFailed) {
+        STREAM_LOG(LogLevel::kInfo, "Subtitle sync failed: {}", result.reason);
+        sync_state_.status = SyncStatus::kFailed;
+        sync_state_.reason = result.reason;
+        sync_session_.reset();
+      }
     }
   }
 }
@@ -1071,6 +1141,14 @@ bool Stream::Implementation::SetWhisperState(
     // the next enable.
     if (model_path) {
       whisper_model_path_ = *model_path;
+    }
+
+    // A listening session depends on the tap.
+    std::lock_guard sync_lock{sync_mutex_};
+    if (sync_session_) {
+      sync_state_.status = SyncStatus::kFailed;
+      sync_state_.reason = "whisper disabled";
+      sync_session_.reset();
     }
     return true;
   }
@@ -1464,9 +1542,68 @@ bool Stream::Implementation::SetSubtitleFile(
     subtitle_delay_.store(0);
     output_mode = output_mode_;
     connector_id = connector_id_;
+    // The session belongs to the previous file; a switch cancels it.
+    CancelSyncLocked();
   }
 
   return StartOutput(output_mode, connector_id);
+}
+
+// Drops the session and resets the public state; call with mutex_
+// held.
+void Stream::Implementation::CancelSyncLocked() {
+  std::lock_guard lock{sync_mutex_};
+  sync_session_.reset();
+  sync_state_ = {};
+  sync_apply_pending_ = false;
+}
+
+Stream::SyncStartResult Stream::Implementation::StartSubtitleSync() {
+  std::optional<std::string> path;
+  {
+    std::lock_guard lock{mutex_};
+    path = subtitle_path_;
+  }
+
+  if (!path) {
+    return SyncStartResult::kNoSubtitles;
+  }
+
+  if (!whisper_enabled_.load()) {
+    return SyncStartResult::kNoWhisper;
+  }
+
+  std::ifstream file{*path};
+  if (!file) {
+    return SyncStartResult::kUnparseableSubtitles;
+  }
+  const std::string contents{std::istreambuf_iterator<char>{file},
+                             std::istreambuf_iterator<char>{}};
+
+  auto cues = ParseSrtCues(contents);
+  if (cues.empty()) {
+    return SyncStartResult::kUnparseableSubtitles;
+  }
+
+  // The deadline rides the shared timeline, so a capture clock that
+  // stops also stops the session's idea of elapsed time.
+  const auto deadline =
+      static_cast<std::int64_t>(MasterRunningTime()) + kSyncListenWindowNs;
+
+  {
+    std::lock_guard lock{sync_mutex_};
+    sync_session_.emplace(std::move(cues), MatchTranscript, deadline);
+    sync_state_ = {};
+    sync_state_.status = SyncStatus::kListening;
+    sync_apply_pending_ = false;
+  }
+
+  return SyncStartResult::kStarted;
+}
+
+Stream::SyncState Stream::Implementation::SubtitleSync() const {
+  std::lock_guard lock{sync_mutex_};
+  return sync_state_;
 }
 
 void Stream::Implementation::SetSubtitleDelay(std::int64_t delay_ms) {
@@ -1495,6 +1632,13 @@ std::optional<std::int64_t> Stream::Implementation::SubtitleTime() {
 void Stream::Implementation::SetSubtitleTime(std::int64_t time_ms) {
   std::lock_guard lock{mutex_};
 
+  // A manual seek cancels the session: last action wins.
+  CancelSyncLocked();
+  ApplySubtitleTimeLocked(time_ms);
+}
+
+// Moves the SRT position; call with mutex_ held.
+void Stream::Implementation::ApplySubtitleTimeLocked(std::int64_t time_ms) {
   if (subtitle_parser_ == nullptr) {
     return;
   }
@@ -1737,6 +1881,16 @@ void Stream::Implementation::StopCapturePipeline(
                      whisper_sink_,     whisper_queue_, capture_bus_};
   }
 
+  // The session listens to capture audio; capture going away ends it.
+  {
+    std::lock_guard sync_lock{sync_mutex_};
+    if (sync_session_) {
+      sync_state_.status = SyncStatus::kFailed;
+      sync_state_.reason = "capture stopped";
+      sync_session_.reset();
+    }
+  }
+
   capture_state_ = CaptureState::kStopped;
 }
 
@@ -1796,6 +1950,32 @@ void Stream::Implementation::Poll() {
 
     capture_thread_ =
         std::jthread{[this](std::stop_token stop) { RunScreensaver(stop); }};
+  }
+
+  {
+    std::lock_guard sync_lock{sync_mutex_};
+
+    // Apply a lock's position here: the whisper thread flagged it
+    // because it must not take mutex_.
+    if (sync_apply_pending_) {
+      sync_apply_pending_ = false;
+      if (sync_state_.time_ms) {
+        ApplySubtitleTimeLocked(*sync_state_.time_ms);
+      }
+    }
+
+    // Sessions starved of windows (whisper toggled off, capture lost)
+    // still meet their deadline.
+    if (sync_session_) {
+      const auto result =
+          sync_session_->Poll(static_cast<std::int64_t>(MasterRunningTime()));
+      if (result.state == SyncSession::State::kFailed) {
+        STREAM_LOG(LogLevel::kInfo, "Subtitle sync failed: {}", result.reason);
+        sync_state_.status = SyncStatus::kFailed;
+        sync_state_.reason = result.reason;
+        sync_session_.reset();
+      }
+    }
   }
 }
 
@@ -1909,6 +2089,14 @@ bool Stream::WhisperEnabled() const {
 
 std::optional<std::string> Stream::WhisperModel() const {
   return implementation_->WhisperModel();
+}
+
+Stream::SyncStartResult Stream::StartSubtitleSync() {
+  return implementation_->StartSubtitleSync();
+}
+
+Stream::SyncState Stream::SubtitleSync() const {
+  return implementation_->SubtitleSync();
 }
 
 bool Stream::RestartCapture(const std::string& device) {

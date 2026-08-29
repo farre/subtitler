@@ -150,6 +150,38 @@ await window.fetch("/api/subtitle-state?file=Show%20S01E01.srt", { method: "PUT"
 - `font_color` — cue color as `#rrggbb` (always opaque). The `#` must be
   percent-encoded (`%23`) in the query string.
 
+### PUT /api/subtitle-sync
+
+Starts (or restarts) a one-shot auto-sync session (#433): the appliance
+listens to the capture audio for up to ~45 seconds, matches the whisper
+transcript against the attached SRT, and on a stable match jumps the
+SRT clock to the matched position. Needs subtitles attached and whisper
+enabled (`PUT /api/whisper?enabled=true`).
+
+```js
+await window.fetch("/api/subtitle-sync", { method: "PUT" });
+```
+
+- `202 Accepted` — listening: `{"state":"listening"}`
+- `409 Conflict` — can't start, with the reason:
+  `{"state":"failed","reason":"no subtitles attached"}`,
+  `{"state":"failed","reason":"whisper is disabled"}`, or
+  `{"state":"failed","reason":"the subtitle file can't be parsed"}`
+
+### GET /api/subtitle-sync
+
+The session state:
+
+```json
+{ "state": "listening" }
+```
+
+`state` is `idle` (no session, or cancelled by a subtitle switch,
+manual seek, or whisper toggle), `listening`, `synced` (with
+`"time": <matched SRT position in ms>`), or `failed` (with `"reason"`).
+The film must actually be playing for a lock; a session that finds no
+stable match within the listening window fails.
+
 ### GET /api/fonts
 
 The font families the subtitle renderer can use, as a JSON array:

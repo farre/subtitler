@@ -20,6 +20,7 @@ using namespace subtitler;
 constexpr std::string_view kSubtitlesRoute = "/api/subtitles";
 constexpr std::string_view kSubtitlesPrefix = "/api/subtitles/";
 constexpr std::string_view kSubtitleStateRoute = "/api/subtitle-state";
+constexpr std::string_view kSubtitleSyncRoute = "/api/subtitle-sync";
 constexpr std::size_t kMaxSubtitleBytes = 8 * 1024 * 1024;
 
 void RespondSubtitleState(SoupServerMessage* message,
@@ -31,16 +32,15 @@ void RespondSubtitleState(SoupServerMessage* message,
       state.font_family.has_value()
           ? std::format("\"{}\"", JsonEscape(*state.font_family))
           : "null";
-  const std::string font_size = state.font_size.has_value()
-                                    ? std::to_string(*state.font_size)
-                                    : "null";
+  const std::string font_size =
+      state.font_size.has_value() ? std::to_string(*state.font_size) : "null";
   const std::string font_color =
       state.font_color.has_value()
           ? std::format("\"#{:06x}\"", *state.font_color & 0xFF'FF'FF)
           : "null";
-  RespondJson(message,
-              std::format(
-                  "{{\"file\":{},\"visible\":{},\"paused\":{},\"time\":{},"
+  RespondJson(
+      message,
+      std::format("{{\"file\":{},\"visible\":{},\"paused\":{},\"time\":{},"
                   "\"delay\":{},\"font_family\":{},\"font_size\":{},"
                   "\"font_color\":{}}}",
                   file, state.visible, state.paused, state.time_ms,
@@ -59,8 +59,8 @@ void HandleSubtitleUpload(SoupServerMessage* message, const char* path,
     return;
   }
 
-  const UniquePtr<GBytes, g_bytes_unref> body{soup_message_body_flatten(
-      soup_server_message_get_request_body(message))};
+  const UniquePtr<GBytes, g_bytes_unref> body{
+      soup_message_body_flatten(soup_server_message_get_request_body(message))};
 
   const gsize body_size = body != nullptr ? g_bytes_get_size(body.get()) : 0;
   if (body_size == 0) {
@@ -83,18 +83,16 @@ void HandleSubtitleUpload(SoupServerMessage* message, const char* path,
 
   switch (result.status) {
     case SubtitleUploadStatus::kStored:
-      RespondJson(message,
-                  std::format("{{\"stored_name\":\"{}\"}}",
-                              JsonEscape(result.stored_name)));
+      RespondJson(message, std::format("{{\"stored_name\":\"{}\"}}",
+                                       JsonEscape(result.stored_name)));
       soup_server_message_set_status(message, SOUP_STATUS_CREATED, nullptr);
       break;
     case SubtitleUploadStatus::kInvalidTitle:
-      soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST,
-                                     nullptr);
+      soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
       break;
     case SubtitleUploadStatus::kFailed:
-      soup_server_message_set_status(
-          message, SOUP_STATUS_INTERNAL_SERVER_ERROR, nullptr);
+      soup_server_message_set_status(message, SOUP_STATUS_INTERNAL_SERVER_ERROR,
+                                     nullptr);
       break;
   }
 }
@@ -118,8 +116,8 @@ void HandleSubtitleGet(SoupServerMessage* message, const char* path,
   RespondJson(message, std::format("{{\"body\":\"{}\"}}", JsonEscape(*body)));
 }
 
-void HandleSubtitles(SoupServer*, SoupServerMessage* message,
-                     const char* path, GHashTable*, gpointer user_data) {
+void HandleSubtitles(SoupServer*, SoupServerMessage* message, const char* path,
+                     GHashTable*, gpointer user_data) {
   auto& self = *static_cast<SubtitleRoutes*>(user_data);
   const std::string_view method{soup_server_message_get_method(message)};
   const std::string_view route{path};
@@ -184,8 +182,7 @@ void HandleSubtitleState(SoupServer*, SoupServerMessage* message,
 
   if (method != "PUT") {
     soup_message_headers_replace(
-        soup_server_message_get_response_headers(message), "Allow",
-        "GET, PUT");
+        soup_server_message_get_response_headers(message), "Allow", "GET, PUT");
     soup_server_message_set_status(message, SOUP_STATUS_METHOD_NOT_ALLOWED,
                                    nullptr);
     return;
@@ -238,8 +235,8 @@ void HandleSubtitleState(SoupServer*, SoupServerMessage* message,
       }
     } else if (name == "time" || name == "delay" || name == "font_size") {
       std::int64_t parsed;
-      const auto [end, error] = std::from_chars(
-          param.data(), param.data() + param.size(), parsed);
+      const auto [end, error] =
+          std::from_chars(param.data(), param.data() + param.size(), parsed);
       if (error != std::errc{} || end != param.data() + param.size()) {
         valid = false;
         break;
@@ -268,6 +265,82 @@ void HandleSubtitleState(SoupServer*, SoupServerMessage* message,
   RespondSubtitleState(message, self.state_get_());
 }
 
+std::string_view SyncStatusName(SubtitleSyncStatus status) {
+  switch (status) {
+    case SubtitleSyncStatus::kIdle:
+      return "idle";
+    case SubtitleSyncStatus::kListening:
+      return "listening";
+    case SubtitleSyncStatus::kSynced:
+      return "synced";
+    case SubtitleSyncStatus::kFailed:
+      return "failed";
+  }
+  return "idle";
+}
+
+void RespondSubtitleSync(SoupServerMessage* message,
+                         const SubtitleSyncState& state) {
+  std::string extra;
+  if (state.time_ms) {
+    extra += std::format(",\"time\":{}", *state.time_ms);
+  }
+  if (state.reason) {
+    extra += std::format(",\"reason\":\"{}\"", JsonEscape(*state.reason));
+  }
+  RespondJson(message, std::format("{{\"state\":\"{}\"{}}}",
+                                   SyncStatusName(state.status), extra));
+}
+
+// GET/PUT /api/subtitle-sync (#433): PUT starts (or restarts) the
+// one-shot listening session; GET answers where it got to.
+void HandleSubtitleSync(SoupServer*, SoupServerMessage* message,
+                        const char* path, GHashTable*, gpointer user_data) {
+  auto& self = *static_cast<SubtitleRoutes*>(user_data);
+  const std::string_view method{soup_server_message_get_method(message)};
+
+  if (std::string_view{path} != kSubtitleSyncRoute) {
+    soup_server_message_set_status(message, SOUP_STATUS_NOT_FOUND, nullptr);
+    return;
+  }
+
+  if (method == "GET") {
+    RespondSubtitleSync(message, self.sync_get_());
+    return;
+  }
+
+  if (method != "PUT") {
+    soup_message_headers_replace(
+        soup_server_message_get_response_headers(message), "Allow", "GET, PUT");
+    soup_server_message_set_status(message, SOUP_STATUS_METHOD_NOT_ALLOWED,
+                                   nullptr);
+    return;
+  }
+
+  switch (self.sync_start_()) {
+    case SubtitleSyncStartResult::kStarted:
+      RespondJson(message, R"({"state":"listening"})");
+      soup_server_message_set_status(message, SOUP_STATUS_ACCEPTED, nullptr);
+      break;
+    case SubtitleSyncStartResult::kNoSubtitles:
+      RespondJson(message,
+                  R"({"state":"failed","reason":"no subtitles attached"})");
+      soup_server_message_set_status(message, SOUP_STATUS_CONFLICT, nullptr);
+      break;
+    case SubtitleSyncStartResult::kNoWhisper:
+      RespondJson(message,
+                  R"({"state":"failed","reason":"whisper is disabled"})");
+      soup_server_message_set_status(message, SOUP_STATUS_CONFLICT, nullptr);
+      break;
+    case SubtitleSyncStartResult::kUnparseableSubtitles:
+      RespondJson(
+          message,
+          R"({"state":"failed","reason":"the subtitle file can't be parsed"})");
+      soup_server_message_set_status(message, SOUP_STATUS_CONFLICT, nullptr);
+      break;
+  }
+}
+
 }  // namespace
 
 namespace subtitler {
@@ -278,8 +351,12 @@ void SubtitleRoutes::Register(SoupServer* server) {
                             nullptr);
   }
   if (state_get_ && state_set_) {
-    soup_server_add_handler(server, "/api/subtitle-state",
-                            HandleSubtitleState, this, nullptr);
+    soup_server_add_handler(server, "/api/subtitle-state", HandleSubtitleState,
+                            this, nullptr);
+  }
+  if (sync_get_ && sync_start_) {
+    soup_server_add_handler(server, "/api/subtitle-sync", HandleSubtitleSync,
+                            this, nullptr);
   }
 }
 

@@ -64,6 +64,14 @@ class Subtitler extends Rest {
   uploadWhisperModel(name, body) {
     return this.put(`whisper/models/${name}`, {}, { body });
   }
+
+  subtitleSync() {
+    return this.get("subtitle-sync");
+  }
+
+  startSubtitleSync() {
+    return this.put("subtitle-sync");
+  }
 }
 
 export { Subtitler };

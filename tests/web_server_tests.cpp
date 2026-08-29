@@ -926,6 +926,90 @@ TEST_CASE("web server whisper endpoints") {
   std::filesystem::remove_all(state_dir);
 }
 
+TEST_CASE("web server subtitle sync endpoints") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  subtitler::SubtitleSyncState state;
+  subtitler::SubtitleSyncStartResult start_result =
+      subtitler::SubtitleSyncStartResult::kStarted;
+  int starts = 0;
+
+  subtitler::WebServerHooks hooks;
+  hooks.subtitle_sync_get = [&] { return state; };
+  hooks.subtitle_sync_start = [&] {
+    ++starts;
+    return start_result;
+  };
+
+  auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
+  REQUIRE(server != nullptr);
+
+  SUBCASE("PUT starts a session and GET answers the state") {
+    state.status = subtitler::SubtitleSyncStatus::kListening;
+
+    auto response = HttpRequest("PUT", port, "/api/subtitle-sync");
+    CHECK(response.status == SOUP_STATUS_ACCEPTED);
+    CHECK(response.body == R"({"state":"listening"})");
+    CHECK(starts == 1);
+
+    response = HttpGet(port, "/api/subtitle-sync");
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(response.body == R"({"state":"listening"})");
+
+    state.status = subtitler::SubtitleSyncStatus::kSynced;
+    state.time_ms = 452300;
+    response = HttpGet(port, "/api/subtitle-sync");
+    CHECK(response.body == R"({"state":"synced","time":452300})");
+
+    state.status = subtitler::SubtitleSyncStatus::kFailed;
+    state.time_ms = std::nullopt;
+    state.reason = "no stable match within the listening window";
+    response = HttpGet(port, "/api/subtitle-sync");
+    CHECK(
+        response.body ==
+        R"({"state":"failed","reason":"no stable match within the listening window"})");
+  }
+
+  SUBCASE("start failures answer 409 with the reason") {
+    start_result = subtitler::SubtitleSyncStartResult::kNoSubtitles;
+    auto response = HttpRequest("PUT", port, "/api/subtitle-sync");
+    CHECK(response.status == SOUP_STATUS_CONFLICT);
+    CHECK(response.body ==
+          R"({"state":"failed","reason":"no subtitles attached"})");
+
+    start_result = subtitler::SubtitleSyncStartResult::kNoWhisper;
+    response = HttpRequest("PUT", port, "/api/subtitle-sync");
+    CHECK(response.status == SOUP_STATUS_CONFLICT);
+    CHECK(response.body ==
+          R"({"state":"failed","reason":"whisper is disabled"})");
+
+    start_result = subtitler::SubtitleSyncStartResult::kUnparseableSubtitles;
+    response = HttpRequest("PUT", port, "/api/subtitle-sync");
+    CHECK(response.status == SOUP_STATUS_CONFLICT);
+    CHECK(response.body ==
+          R"({"state":"failed","reason":"the subtitle file can't be parsed"})");
+  }
+
+  SUBCASE("methods other than GET and PUT are a 405") {
+    CHECK(HttpRequest("POST", port, "/api/subtitle-sync").status ==
+          SOUP_STATUS_METHOD_NOT_ALLOWED);
+  }
+}
+
+TEST_CASE("web server subtitle sync endpoints without hooks") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+  auto server = subtitler::WebServer::Create(port, frames);
+  REQUIRE(server != nullptr);
+
+  CHECK(HttpGet(port, "/api/subtitle-sync").status == SOUP_STATUS_NOT_FOUND);
+  CHECK(HttpRequest("PUT", port, "/api/subtitle-sync").status ==
+        SOUP_STATUS_NOT_FOUND);
+}
+
 TEST_CASE("web server whisper endpoints without hooks") {
   const std::uint16_t port = FindFreePort();
 
