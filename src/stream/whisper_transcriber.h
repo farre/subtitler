@@ -8,6 +8,15 @@
 
 namespace subtitler {
 
+// Whether the whisper tap is compiled in (SUBTITLER_ENABLE_WHISPER,
+// default ON). Without it the transcriber is a stub that fails Create,
+// so the rest of the tree needs no ifdefs beyond this constant.
+#ifdef SUBTITLER_ENABLE_WHISPER
+inline constexpr bool kWhisperAvailable = true;
+#else
+inline constexpr bool kWhisperAvailable = false;
+#endif
+
 // Windowed speech-to-text over 16 kHz mono float samples — the caps of
 // the whisper tap's appsink (#19 spike, #266). Push accumulates samples;
 // every full window is transcribed and its text returned. Compiles to a

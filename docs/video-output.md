@@ -414,7 +414,7 @@ client count becomes zero
 ```
 
 The gate is a buffer-dropping pad probe on the preview queue
-(`InstallPreviewGate` in `src/stream/preview_gate.{h,cpp}`), not a
+(`InstallDropGate` in `src/stream/drop_gate.{h,cpp}`), not a
 `valve`: while dropping, a valve fails serialized queries
 (`GST_QUERY_LATENCY` included), which stalls latency computation for the
 whole pipeline, HDMI branch included. The probe drops only buffers, so

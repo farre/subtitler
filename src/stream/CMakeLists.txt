@@ -1,8 +1,8 @@
 add_library(
     stream
+    drop_gate.cpp
     fonts.cpp
     frame_buffer.cpp
-    preview_gate.cpp
     stream.cpp
     whisper_transcriber.cpp
 )

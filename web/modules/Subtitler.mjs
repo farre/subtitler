@@ -52,6 +52,18 @@ class Subtitler extends Rest {
   download(file) {
     return this.get(`subtitles/${file}`);
   }
+
+  whisper() {
+    return this.get("whisper");
+  }
+
+  setWhisper(params) {
+    return this.put("whisper", params);
+  }
+
+  uploadWhisperModel(name, body) {
+    return this.put(`whisper/models/${name}`, {}, { body });
+  }
 }
 
 export { Subtitler };

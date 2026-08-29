@@ -279,4 +279,50 @@ inline std::optional<std::filesystem::path> ActiveSubtitleFile(
   return path;
 }
 
+// The whisper model store (#19): <state_dir>/models, holding ggml
+// *.bin files selected and downloaded through the web API.
+inline std::filesystem::path WhisperModelsDirectory(
+    const std::filesystem::path& state_dir) {
+  return state_dir / "models";
+}
+
+// A usable model file name: non-empty, doesn't start with a dot,
+// contains no slashes, ends in .bin (e.g. ggml-tiny.en.bin).
+inline bool WhisperModelNameValid(std::string_view name) {
+  constexpr std::string_view kExtension = ".bin";
+
+  return name.size() > kExtension.size() && name.front() != '.' &&
+         name.find_first_of("/\\") == std::string_view::npos &&
+         name.substr(name.size() - kExtension.size()) == kExtension;
+}
+
+// The store path for a model name, existing or not; nullopt for
+// invalid names.
+inline std::optional<std::filesystem::path> WhisperModelPath(
+    const std::filesystem::path& state_dir, std::string_view name) {
+  if (!WhisperModelNameValid(name)) {
+    return std::nullopt;
+  }
+
+  return WhisperModelsDirectory(state_dir) / std::string{name};
+}
+
+// The stored model names, sorted. Scanned on demand.
+inline std::vector<std::string> ListWhisperModels(
+    const std::filesystem::path& state_dir) {
+  std::vector<std::string> names;
+
+  std::error_code error;
+  for (const auto& entry : std::filesystem::directory_iterator(
+           WhisperModelsDirectory(state_dir), error)) {
+    auto name = entry.path().filename().string();
+    if (entry.is_regular_file(error) && WhisperModelNameValid(name)) {
+      names.push_back(std::move(name));
+    }
+  }
+
+  std::ranges::sort(names);
+  return names;
+}
+
 }  // namespace subtitler

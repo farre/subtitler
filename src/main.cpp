@@ -292,6 +292,26 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
+  // The persisted whisper state applies when --whisper didn't override
+  // it; a configured model that's gone leaves the tap disabled (#220).
+  if (!whisper_model && config && state_dir) {
+    const auto& values = config->values();
+    if (values.whisper_enabled.value_or(false) && values.whisper_model) {
+      if (const auto path =
+              subtitler::WhisperModelPath(*state_dir, *values.whisper_model);
+          path && std::filesystem::is_regular_file(*path)) {
+        if (!stream->SetWhisperState(true, path->string())) {
+          MAIN_LOG(subtitler::LogLevel::kWarning,
+                   "Could not enable whisper with {}", path->string());
+        }
+      } else {
+        MAIN_LOG(subtitler::LogLevel::kWarning,
+                 "Configured whisper model not found: {}",
+                 *values.whisper_model);
+      }
+    }
+  }
+
   // The persisted style (#222/#223) lands after the SRT is attached.
   if (config) {
     if (subtitles) {
@@ -363,6 +383,51 @@ int main(int argc, char** argv) {
       };
 
       hooks.font_list = [] { return subtitler::AvailableFontFamilies(); };
+
+      // The whisper tap (#19): state changes apply live on the stream
+      // and persist to the config; the state dir anchors the model
+      // store the routes list and store into.
+      hooks.state_dir = *state_dir;
+
+      hooks.whisper_state_get = [&stream] {
+        subtitler::WhisperRouteState state{.enabled = stream->WhisperEnabled()};
+        if (const auto model = stream->WhisperModel()) {
+          state.model = std::filesystem::path{*model}.filename().string();
+        }
+        return state;
+      };
+
+      hooks.whisper_state_set =
+          [&stream, &state_dir, &config](
+              std::optional<bool> enabled,
+              std::optional<std::string_view> model) -> bool {
+        std::optional<std::string> path;
+        if (model) {
+          const auto resolved = subtitler::WhisperModelPath(*state_dir, *model);
+          if (!resolved || !std::filesystem::is_regular_file(*resolved)) {
+            return false;
+          }
+          path = resolved->string();
+        }
+
+        if (!stream->SetWhisperState(enabled.value_or(stream->WhisperEnabled()),
+                                     path)) {
+          return false;
+        }
+
+        if (config) {
+          config->SetWhisperEnabled(stream->WhisperEnabled());
+          if (model) {
+            config->SetWhisperModel(*model);
+          }
+          if (!config->Save()) {
+            MAIN_LOG(subtitler::LogLevel::kWarning,
+                     "Could not save the configuration");
+          }
+        }
+
+        return true;
+      };
 
       hooks.subtitle_state_get = [&stream, &active_title] {
         return subtitler::SubtitleState{

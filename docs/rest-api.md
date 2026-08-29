@@ -158,6 +158,63 @@ The font families the subtitle renderer can use, as a JSON array:
 ["Cantarell", "DejaVu Sans", "DejaVu Serif"]
 ```
 
+## Whisper
+
+The whisper tap (#19) transcribes the capture audio with whisper.cpp
+and logs the text (`SUBTITLER_LOG=stream:info`) — the groundwork for
+whisper-based features like auto-sync. Models are ggml files in the
+state dir's `models/` store; they are never downloaded automatically —
+the web interface fetches them from HuggingFace in the browser (CORS
+allows it) and stores them through this API. The state endpoints need
+their hooks; model listing and storage additionally need a state dir.
+
+### GET /api/whisper
+
+The live whisper state and the stored models:
+
+```json
+{
+  "enabled": false,
+  "model": "ggml-tiny.en.bin",
+  "models": ["ggml-tiny.en.bin"]
+}
+```
+
+`model` is the model in use (its store file name), or `null` when none
+was ever enabled. 404 when the hooks are unset.
+
+### PUT /api/whisper
+
+Changes the state via query parameters; answers the state like GET:
+
+- `enabled` — `true` starts transcription, `false` stops it (the tap's
+  gate closes and the model unloads). Enabling needs a model: the
+  current one, or the one named by `model`.
+- `model` — selects the ggml model: a file name from `models`. Applies
+  live, also while disabled (loaded on the next enable).
+
+400 on invalid values (unknown parameters, a malformed or unstored
+model name, enabling with no model); 405 for methods other than
+GET/PUT.
+
+### PUT /api/whisper/models/<name>
+
+Stores a model in the state dir's `models/`: the percent-decoded
+`<name>` must end in `.bin` with no slashes or leading dot; the body is
+the ggml file, written to `<name>` via a temp file + rename.
+
+```js
+await window.fetch("/api/whisper/models/ggml-tiny.en.bin", {
+  method: "PUT",
+  body: ggmlBytes,
+});
+```
+
+- `201 Created` — `{"stored_name":"ggml-tiny.en.bin"}`
+- `400 Bad Request` — invalid name or empty body
+- `413 Content Too Large` — body over 512 MiB (libsoup reads the whole
+  body before the handler runs, so the cap also bounds that transient)
+
 ## OpenSubtitles
 
 ### GET /api/opensubtitles

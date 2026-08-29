@@ -102,9 +102,11 @@ TEST_CASE("capture pipeline description") {
     CHECK(description.contains("name=whisper_sink"));
     // Load-bearing: the tap may never stall the passthrough, and the
     // backlog bounds the recognition lag (#19). Every tee branch needs
-    // its own queue.
+    // its own queue, and the gated branch's sink must not preroll —
+    // same rules as the preview branch.
     CHECK(description.contains("leaky=downstream"));
     CHECK(description.contains("drop=true"));
+    CHECK(description.contains("async=false"));
   }
 
   SUBCASE("whisper branch is optional and requires audio") {

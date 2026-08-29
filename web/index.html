@@ -64,6 +64,23 @@
         </div>
       </section>
 
+      <section id="whisper-section" hidden>
+        <h2>Whisper</h2>
+        <div class="controls">
+          <input type="checkbox" id="whisper-enabled" />
+          <label for="whisper-enabled">Transcribe audio</label>
+          <label for="whisper-model">Model</label>
+          <select id="whisper-model"></select>
+        </div>
+
+        <div class="controls">
+          <label for="whisper-download-model">Download</label>
+          <select id="whisper-download-model"></select>
+          <button type="button" id="whisper-download">Fetch</button>
+          <output id="whisper-status"></output>
+        </div>
+      </section>
+
       <section>
         <h2>OpenSubtitles</h2>
         <form id="login-form">
@@ -106,6 +123,26 @@
       const colorPresets = document.getElementById("color-presets");
       const convertFps = document.getElementById("convert-fps");
       const convert = document.getElementById("convert");
+      const whisperSection = document.getElementById("whisper-section");
+      const whisperEnabled = document.getElementById("whisper-enabled");
+      const whisperModel = document.getElementById("whisper-model");
+      const whisperDownloadModel = document.getElementById(
+        "whisper-download-model",
+      );
+      const whisperDownload = document.getElementById("whisper-download");
+      const whisperStatus = document.getElementById("whisper-status");
+
+      // The ggml models the appliance can run, fetched by the browser
+      // straight from HuggingFace (CORS is allowed on both the resolve
+      // redirect and the CDN) and stored through the REST API — the
+      // appliance never downloads on its own. English-only models.
+      const knownModels = [
+        { file: "ggml-tiny.en.bin", label: "tiny.en — 75 MB" },
+        { file: "ggml-base.en.bin", label: "base.en — 142 MB" },
+        { file: "ggml-small.en.bin", label: "small.en — 466 MB" },
+      ];
+      const knownModelUrl = (file) =>
+        `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${file}`;
 
       // The classic subtitle colors first; the picker covers the rest.
       const presetColors = ["#ffffff", "#ffff00", "#00ffff", "#00ff00"];
@@ -442,6 +479,73 @@
         );
       }
 
+      function applyWhisperState({ enabled, model, models }) {
+        whisperEnabled.checked = enabled;
+        // The select lists the store; a model set outside it (a
+        // --whisper path) shows as its own entry.
+        const names = [...models];
+        if (model !== null && !names.includes(model)) {
+          names.push(model);
+        }
+        whisperModel.replaceChildren(
+          ...names.map((name) => new Option(name, name, false, name === model)),
+        );
+        const missing = knownModels.filter(
+          ({ file }) => !models.includes(file),
+        );
+        whisperDownloadModel.replaceChildren(
+          ...missing.map(({ file, label }) => new Option(label, file)),
+        );
+        whisperDownload.disabled = missing.length === 0;
+      }
+
+      async function downloadWhisperModel() {
+        const file = whisperDownloadModel.value;
+        if (file === "") {
+          return;
+        }
+        whisperDownload.disabled = true;
+        try {
+          const response = await window.fetch(knownModelUrl(file));
+          if (!response.ok) {
+            throw new Error(`${response.status} ${response.statusText}`);
+          }
+          const total = Number(response.headers.get("content-length")) || 0;
+          const chunks = [];
+          let received = 0;
+          const reader = response.body.getReader();
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) {
+              break;
+            }
+            chunks.push(value);
+            received += value.length;
+            whisperStatus.value = total
+              ? `Downloading ${file}… ${Math.round((received / total) * 100)}%`
+              : `Downloading ${file}… ${(received / 1e6).toFixed(0)} MB`;
+          }
+          whisperStatus.value = `Storing ${file}…`;
+          await subtitler.uploadWhisperModel(file, new Blob(chunks));
+          whisperStatus.value = `Stored ${file}`;
+          // A freshly downloaded model is meant to be used: select it.
+          applyWhisperState(await subtitler.setWhisper({ model: file }));
+        } catch (error) {
+          whisperStatus.value = `Download failed: ${error.message}`;
+          await refreshWhisper();
+        } finally {
+          whisperDownload.disabled = whisperDownloadModel.options.length === 0;
+        }
+      }
+
+      async function refreshWhisper() {
+        try {
+          applyWhisperState(await subtitler.whisper());
+        } catch {
+          // The section stays on the last known state.
+        }
+      }
+
       async function create() {
         await refreshSubtitles();
         await refreshFonts();
@@ -451,6 +555,15 @@
           checkSubtitle(state.file);
         }
         updateConvertState();
+
+        // The whisper section degrades like OpenSubtitles: without the
+        // endpoint (no state dir, no model store) it stays hidden.
+        try {
+          applyWhisperState(await subtitler.whisper());
+          whisperSection.hidden = false;
+        } catch {
+          whisperSection.hidden = true;
+        }
 
         library.addEventListener("change", async (event) => {
           applyState(await subtitler.select(event.target.value));
@@ -481,6 +594,31 @@
         );
         convertFps.addEventListener("change", updateConvertState);
         convert.addEventListener("click", convertSelected);
+        whisperEnabled.addEventListener("change", async () => {
+          try {
+            const params = { enabled: String(whisperEnabled.checked) };
+            if (whisperModel.value !== "") {
+              params.model = whisperModel.value;
+            }
+            applyWhisperState(await subtitler.setWhisper(params));
+          } catch {
+            // Enabling needs a stored model; keep the checkbox honest.
+            whisperEnabled.checked = !whisperEnabled.checked;
+            whisperStatus.value = "Select a downloaded model first";
+          }
+        });
+        whisperModel.addEventListener("change", async () => {
+          try {
+            applyWhisperState(
+              await subtitler.setWhisper({ model: whisperModel.value }),
+            );
+            whisperStatus.value = "";
+          } catch {
+            whisperStatus.value = "Model unavailable";
+            await refreshWhisper();
+          }
+        });
+        whisperDownload.addEventListener("click", downloadWhisperModel);
         loginForm.addEventListener("submit", async (event) => {
           event.preventDefault();
           await authenticate();

@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "utils/logging.h"
+#include "utils/paths.h"
 #include "utils/unique_ptr.h"
 
 namespace subtitler {
@@ -173,6 +174,14 @@ std::unique_ptr<Config> Config::Load(const std::filesystem::path& path) {
       GetInteger64(key_file.get(), "subtitles", "font-size-pt");
   values.subtitle_font_color =
       GetColor(key_file.get(), "subtitles", "font-color");
+  values.whisper_enabled = GetBoolean(key_file.get(), "whisper", "enabled");
+  if (auto model = GetString(key_file.get(), "whisper", "model")) {
+    if (WhisperModelNameValid(*model)) {
+      values.whisper_model = std::move(model);
+    } else {
+      WarnDroppedKey("whisper", "model", *model);
+    }
+  }
 
   return std::unique_ptr<Config>{
       new Config{path, key_file.release(), std::move(values)}};
@@ -216,6 +225,18 @@ void Config::SetSubtitleFontColor(std::uint32_t color_argb) {
       key_file_.get(), "subtitles", "font-color",
       std::format("#{:06x}", color_argb & 0xFF'FF'FF).c_str());
   values_.subtitle_font_color = color_argb;
+}
+
+void Config::SetWhisperEnabled(bool enabled) {
+  g_key_file_set_boolean(key_file_.get(), "whisper", "enabled",
+                         static_cast<gboolean>(enabled));
+  values_.whisper_enabled = enabled;
+}
+
+void Config::SetWhisperModel(std::string_view model) {
+  g_key_file_set_string(key_file_.get(), "whisper", "model",
+                        std::string{model}.c_str());
+  values_.whisper_model = std::string{model};
 }
 
 bool Config::Save() const {

@@ -2,11 +2,14 @@
 #include <gst/gst.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "stream/deleters.h"
+#include "stream/drop_gate.h"
 #include "stream/stream.h"
 
 TEST_CASE("stream throughput with audio enabled") {
@@ -130,4 +133,94 @@ TEST_CASE("whisper tap flows converted audio") {
 
   INFO("flowed ", bytes, " of ", 2 * 64000, " expected bytes");
   CHECK(bytes >= 2 * 64000);
+}
+
+TEST_CASE("whisper gate drops the branch while closed") {
+  gst_init(nullptr, nullptr);
+
+  const subtitler::GstPointer<GstElementFactory> source_factory{
+      gst_element_factory_find("audiotestsrc")};
+  if (source_factory == nullptr) {
+    MESSAGE("skipping: no audiotestsrc");
+    return;
+  }
+
+  auto description =
+      subtitler::AudioCapturePipelineDescription("hw:CARD=Video,DEV=0", true) +
+      " " + subtitler::WhisperCapturePipelineDescription();
+  const std::string alsasrc =
+      "alsasrc device=\"hw:CARD=Video,DEV=0\" do-timestamp=true";
+  const auto at = description.find(alsasrc);
+  REQUIRE(at != std::string::npos);
+  description.replace(at, alsasrc.size(),
+                      "audiotestsrc is-live=true do-timestamp=true");
+
+  subtitler::GstPointer<GError> error;
+  const subtitler::GstPointer<GstElement> pipeline{
+      gst_parse_launch(description.c_str(), std::out_ptr(error))};
+  INFO("gst_parse_launch error: ",
+       error != nullptr ? std::string{error->message} : "none");
+  REQUIRE(error == nullptr);
+
+  const subtitler::GstPointer<GstElement> whisper_sink{
+      gst_bin_get_by_name(GST_BIN(pipeline.get()), "whisper_sink")};
+  const subtitler::GstPointer<GstElement> whisper_queue{
+      gst_bin_get_by_name(GST_BIN(pipeline.get()), "whisper_queue")};
+  const subtitler::GstPointer<GstElement> passthrough_sink{
+      gst_bin_get_by_name(GST_BIN(pipeline.get()), "capture_audio_sink")};
+  REQUIRE(whisper_sink != nullptr);
+  REQUIRE(whisper_queue != nullptr);
+  REQUIRE(passthrough_sink != nullptr);
+
+  // The production gate: closed until the tap is enabled.
+  subtitler::DropGate gate{1};
+  subtitler::InstallDropGate(whisper_queue.get(), gate);
+
+  subtitler::ClockPtr clock{gst_system_clock_obtain()};
+  gst_pipeline_use_clock(GST_PIPELINE(pipeline.get()), clock.get());
+  gst_element_set_start_time(pipeline.get(), GST_CLOCK_TIME_NONE);
+  gst_element_set_base_time(pipeline.get(), gst_clock_get_time(clock.get()));
+
+  REQUIRE(gst_element_set_state(pipeline.get(), GST_STATE_PLAYING) !=
+          GST_STATE_CHANGE_FAILURE);
+
+  auto* whisper_app_sink = GST_APP_SINK(whisper_sink.get());
+  auto* passthrough_app_sink = GST_APP_SINK(passthrough_sink.get());
+
+  // Pulls both sinks for the duration; answers (whisper, passthrough)
+  // sample counts.
+  const auto pull_for = [&](std::chrono::milliseconds duration) {
+    std::pair<std::uint64_t, std::uint64_t> counts{0, 0};
+    const auto deadline = std::chrono::steady_clock::now() + duration;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (subtitler::GstPointer<GstSample> sample{gst_app_sink_try_pull_sample(
+              whisper_app_sink, 50 * GST_MSECOND)}) {
+        ++counts.first;
+      }
+      if (subtitler::GstPointer<GstSample> sample{gst_app_sink_try_pull_sample(
+              passthrough_app_sink, 50 * GST_MSECOND)}) {
+        ++counts.second;
+      }
+    }
+    return counts;
+  };
+
+  // Closed: the passthrough flows, the tap stays silent.
+  const auto closed = pull_for(std::chrono::milliseconds{1000});
+  CHECK(closed.first == 0);
+  CHECK(closed.second > 0);
+
+  // Open: the tap flows too.
+  gate.active.store(true);
+  const auto opened = pull_for(std::chrono::milliseconds{2000});
+  CHECK(opened.first > 0);
+  CHECK(opened.second > 0);
+
+  // Closed again: the tap goes silent, the passthrough never notices.
+  gate.active.store(false);
+  const auto reclosed = pull_for(std::chrono::milliseconds{1000});
+  CHECK(reclosed.first == 0);
+  CHECK(reclosed.second > 0);
+
+  gst_element_set_state(pipeline.get(), GST_STATE_NULL);
 }

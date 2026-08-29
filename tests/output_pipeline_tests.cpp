@@ -12,7 +12,7 @@
 #include <thread>
 
 #include "stream/deleters.h"
-#include "stream/preview_gate.h"
+#include "stream/drop_gate.h"
 #include "stream/stream.h"
 
 namespace {
@@ -292,8 +292,8 @@ TEST_CASE("output pipeline preview branch") {
 
   // The production gate (#379): drops preview branch buffers while
   // inactive and keeps every 6th frame while active.
-  subtitler::PreviewGate gate{6};
-  subtitler::InstallPreviewGate(preview_queue.get(), gate);
+  subtitler::DropGate gate{6};
+  subtitler::InstallDropGate(preview_queue.get(), gate);
 
   const auto app_src = GstView<GstAppSrc>{GST_APP_SRC(source.get())};
   const auto app_sink = GstView<GstAppSink>{GST_APP_SINK(preview_sink.get())};

@@ -54,9 +54,8 @@ class Stream {
   // negative advances it (realized by delaying video; latency grows by
   // |offset|). When subtitles is set, cues from the SRT at that path are
   // composited onto the video, anchored at the running time the output
-  // starts (#438). When whisper_model names a ggml model file (and audio
-  // is enabled), the audio capture tees off a whisper tap that logs
-  // transcriptions (#19 spike).
+  // starts (#438). whisper_model enables the whisper tap (#19) with the
+  // ggml model at that path, like SetWhisperState(true, model).
   static std::unique_ptr<Stream> Create(
       const std::string& device, OutputMode output_mode,
       std::optional<int> connector_id, bool audio,
@@ -129,6 +128,19 @@ class Stream {
   // Opens (true) or closes (false) the preview branch's gate. Closed is
   // the default, so no JPEG encoding happens without web clients.
   void SetPreviewActive(bool active);
+
+  // The whisper tap's live controls (#19). Enabling loads the ggml
+  // model at model_path (or reuses the current model when model_path
+  // is nullopt) and opens the tap's gate; disabling closes the gate and
+  // unloads the model. False when the model can't be loaded or the
+  // audio branch is missing — the state is then unchanged. Enabling
+  // with a new model path switches models live.
+  bool SetWhisperState(bool enabled,
+                       const std::optional<std::string>& model_path);
+  // Whether the tap is transcribing, and the model path in use (nullopt
+  // when whisper was never enabled).
+  bool WhisperEnabled() const;
+  std::optional<std::string> WhisperModel() const;
 
   bool Failed() const;
   std::uint64_t DroppedFrames() const;

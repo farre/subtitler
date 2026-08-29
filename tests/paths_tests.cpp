@@ -317,8 +317,8 @@ TEST_CASE("subtitle library listing and lookup") {
   }
 
   SUBCASE("loading reads sharded and legacy flat entries") {
-    REQUIRE(subtitler::StoreSubtitle(root, "Movie.srt", "1\ncue\n")
-                .has_value());
+    REQUIRE(
+        subtitler::StoreSubtitle(root, "Movie.srt", "1\ncue\n").has_value());
     std::ofstream{root / "subtitles" / "legacy.srt"} << "2\ncue\n";
 
     CHECK(subtitler::LoadLibrarySubtitle(root, "Movie.srt") == "1\ncue\n");
@@ -400,4 +400,42 @@ TEST_CASE("web root directory resolution") {
   }
 
   std::filesystem::remove_all(root);
+}
+
+TEST_CASE("whisper model store") {
+  const auto root = std::filesystem::temp_directory_path() /
+                    "subtitler-paths-test-whisper-models";
+
+  SUBCASE("model name validation") {
+    CHECK(subtitler::WhisperModelNameValid("ggml-tiny.en.bin"));
+    CHECK(subtitler::WhisperModelNameValid("model.bin"));
+    CHECK_FALSE(subtitler::WhisperModelNameValid(""));
+    CHECK_FALSE(subtitler::WhisperModelNameValid(".bin"));
+    CHECK_FALSE(subtitler::WhisperModelNameValid(".hidden.bin"));
+    CHECK_FALSE(subtitler::WhisperModelNameValid("a/b.bin"));
+    CHECK_FALSE(subtitler::WhisperModelNameValid("a\\b.bin"));
+    CHECK_FALSE(subtitler::WhisperModelNameValid("model"));
+    CHECK_FALSE(subtitler::WhisperModelNameValid("model.binx"));
+  }
+
+  SUBCASE("model path resolution") {
+    CHECK(subtitler::WhisperModelPath(root, "ggml-tiny.en.bin") ==
+          root / "models" / "ggml-tiny.en.bin");
+    CHECK_FALSE(subtitler::WhisperModelPath(root, "../evil.bin").has_value());
+  }
+
+  SUBCASE("lists the stored models") {
+    std::filesystem::create_directories(root / "models" / "odd.bin");
+    {
+      std::ofstream{root / "models" / "ggml-b.bin"};
+      std::ofstream{root / "models" / "ggml-a.bin"};
+      std::ofstream{root / "models" / "notes.txt"};
+      std::ofstream{root / "models" / ".hidden.bin"};
+    }
+
+    CHECK(subtitler::ListWhisperModels(root) ==
+          std::vector<std::string>{"ggml-a.bin", "ggml-b.bin"});
+
+    std::filesystem::remove_all(root);
+  }
 }

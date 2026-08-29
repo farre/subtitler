@@ -42,6 +42,10 @@ class Config {
     std::optional<std::int64_t> subtitle_font_size_pt;
     // font-color is written as #rrggbb; the value is big-endian ARGB.
     std::optional<std::uint32_t> subtitle_font_color;
+    // [whisper]
+    std::optional<bool> whisper_enabled;
+    // A model file name inside <state-dir>/models (#19).
+    std::optional<std::string> whisper_model;
   };
 
   // Loads path. A missing file yields an empty document (Save creates
@@ -61,6 +65,10 @@ class Config {
   void SetSubtitleFontFamily(std::string_view family);
   void SetSubtitleFontSizePt(std::int64_t size_pt);
   void SetSubtitleFontColor(std::uint32_t color_argb);
+
+  // Write-back for the web-API whisper state (#19).
+  void SetWhisperEnabled(bool enabled);
+  void SetWhisperModel(std::string_view model);
 
   // Serializes the document to the loaded path atomically (temp file +
   // rename), creating parent directories. false on any I/O failure.

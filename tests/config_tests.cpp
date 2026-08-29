@@ -64,6 +64,10 @@ delay-ms = 250
 font-family = DejaVu Sans
 font-size-pt = 28
 font-color = #12aB34
+
+[whisper]
+enabled = true
+model = ggml-tiny.en.bin
 )";
 
 }  // namespace
@@ -103,6 +107,8 @@ TEST_CASE("full config parses") {
   CHECK(values.subtitle_font_family == "DejaVu Sans");
   CHECK(values.subtitle_font_size_pt == 28);
   CHECK(values.subtitle_font_color == 0xFF12AB34u);
+  CHECK(values.whisper_enabled == true);
+  CHECK(values.whisper_model == "ggml-tiny.en.bin");
 }
 
 TEST_CASE("invalid values are dropped, valid ones kept") {
@@ -119,6 +125,10 @@ enabled = maybe
 font-color = 12ab34
 font-color2 = #12ab34
 font-size-pt = huge
+
+[whisper]
+enabled = maybe
+model = ../evil.bin
 )"));
 
   REQUIRE(config != nullptr);
@@ -128,6 +138,8 @@ font-size-pt = huge
   CHECK(values.web == std::nullopt);
   CHECK(values.subtitle_font_color == std::nullopt);
   CHECK(values.subtitle_font_size_pt == std::nullopt);
+  CHECK(values.whisper_enabled == std::nullopt);
+  CHECK(values.whisper_model == std::nullopt);
 }
 
 TEST_CASE("empty values count as unset") {
@@ -203,6 +215,23 @@ delay-ms = 10
   CHECK(values.subtitle_font_family == "DejaVu Sans");
   CHECK(values.subtitle_font_size_pt == 30);
   CHECK(values.subtitle_font_color == 0xFF112233u);
+}
+
+TEST_CASE("whisper write-back round-trips") {
+  const TempDir dir;
+  const auto path = dir.File("[whisper]\nenabled = false\n");
+
+  const auto config = subtitler::Config::Load(path);
+  REQUIRE(config != nullptr);
+
+  config->SetWhisperEnabled(true);
+  config->SetWhisperModel("ggml-base.en.bin");
+  REQUIRE(config->Save());
+
+  const auto reloaded = subtitler::Config::Load(path);
+  REQUIRE(reloaded != nullptr);
+  CHECK(reloaded->values().whisper_enabled == true);
+  CHECK(reloaded->values().whisper_model == "ggml-base.en.bin");
 }
 
 TEST_CASE("clearing the subtitle file removes the key") {

@@ -19,8 +19,8 @@
 #include <vector>
 
 #include "stream/deleters.h"
+#include "stream/drop_gate.h"
 #include "stream/frame_buffer.h"
-#include "stream/preview_gate.h"
 #include "stream/whisper_transcriber.h"
 #include "utils/logging.h"
 #include "utils/reset_guard.h"
@@ -387,12 +387,15 @@ std::string AudioCapturePipelineDescription(std::string_view device,
 }
 
 std::string WhisperCapturePipelineDescription() {
-  // The whisper tap (#19 spike). The leaky queue decouples the branch
-  // from the tee (every tee branch needs its own queue — see the
-  // passthrough comment) and drops backlog older than a couple of
-  // seconds; the dropping appsink is the backstop. Between them the
-  // recognition lag stays bounded while a window is being transcribed,
-  // and inference can never stall the passthrough.
+  // The whisper tap (#19). The leaky queue decouples the branch from
+  // the tee (every tee branch needs its own queue — see the passthrough
+  // comment) and drops backlog older than a couple of seconds; the
+  // dropping appsink is the backstop. Between them the recognition lag
+  // stays bounded while a window is being transcribed, and inference
+  // can never stall the passthrough. async=false is load-bearing: the
+  // branch starts gated (DropGate drops every buffer), and a starving
+  // sink's preroll would otherwise hold the whole pipeline in PAUSED,
+  // passthrough included — the same rule as the preview branch.
   return std::format(
       "whisper_tee. "
       "! queue "
@@ -410,6 +413,7 @@ std::string WhisperCapturePipelineDescription() {
       "! appsink "
       "name=whisper_sink "
       "sync=false "
+      "async=false "
       "max-buffers=300 "
       "drop=true",
       kWhisperRate);
@@ -635,6 +639,11 @@ struct Stream::Implementation {
 
   void SetPreviewActive(bool active);
 
+  bool SetWhisperState(bool enabled,
+                       const std::optional<std::string>& model_path);
+  bool WhisperEnabled() const { return whisper_enabled_.load(); }
+  std::optional<std::string> WhisperModel() const;
+
   bool SetSubtitleFile(const std::optional<std::string>& path);
   void SetSubtitleDelay(std::int64_t delay_ms);
   void SetSubtitlesVisible(bool visible);
@@ -743,15 +752,24 @@ struct Stream::Implementation {
   // held.
   void ReparseSubtitles();
 
-  // The whisper tap (#19 spike): set at Initialize; the transcriber is
-  // fed only from whisper_thread_ and needs no locking.
-  bool whisper_enabled_ = false;
-  std::unique_ptr<WhisperTranscriber> whisper_transcriber_;
+  // The whisper tap (#19). The branch is in the capture pipeline
+  // whenever audio is enabled and whisper is compiled in, gated by
+  // whisper_gate_: enabling flips the gate and loads the model,
+  // disabling closes the gate and unloads it — the passthrough is never
+  // rebuilt. The transcriber is a shared_ptr because the web thread
+  // swaps it under whisper_mutex_ while whisper_thread_ keeps a copy
+  // for its current window; the gate is flipped after the swap so no
+  // buffer meets a null transcriber.
+  std::atomic_bool whisper_enabled_ = false;
+  std::atomic<std::shared_ptr<WhisperTranscriber>> whisper_transcriber_;
+  mutable std::mutex whisper_mutex_;
+  std::string whisper_model_path_;
+  DropGate whisper_gate_{1};
 
   // Set at Initialize: whether the output pipeline has a preview branch.
   bool preview_enabled_ = false;
   // Shared with the preview gate's pad probe on the streaming thread.
-  PreviewGate preview_gate_{kFramesPerSecond / kPreviewFramesPerSecond};
+  DropGate preview_gate_{kFramesPerSecond / kPreviewFramesPerSecond};
   PreviewFrameBuffer preview_frames_;
 
   CaptureState capture_state_ = CaptureState::kStopped;
@@ -760,6 +778,7 @@ struct Stream::Implementation {
   ElementPtr capture_sink_;
   ElementPtr capture_audio_sink_;
   ElementPtr whisper_sink_;
+  ElementPtr whisper_queue_;
   BusPtr capture_bus_;
 
   ElementPtr output_pipeline_;
@@ -808,12 +827,17 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
 
   StopCapturePipeline(lock);
 
-  ResetGuard reset{capture_pipeline_, capture_sink_, capture_audio_sink_,
-                   whisper_sink_, capture_bus_};
+  ResetGuard reset{capture_pipeline_, capture_sink_,  capture_audio_sink_,
+                   whisper_sink_,     whisper_queue_, capture_bus_};
+
+  // The whisper tap branch is present whenever it can be enabled at
+  // runtime; its gate starts closed, so a present-but-disabled tap
+  // costs a tee and a leaky queue, nothing more.
+  const bool whisper_branch = audio_enabled_ && kWhisperAvailable;
 
   capture_pipeline_ = ParsePipeline(
       "capture",
-      CapturePipelineDescription(device, audio_enabled_, whisper_enabled_));
+      CapturePipelineDescription(device, audio_enabled_, whisper_branch));
 
   if (!capture_pipeline_) {
     std::println(stderr, "Couldn't create capture pipeline");
@@ -838,14 +862,18 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
     }
   }
 
-  if (whisper_enabled_) {
+  if (whisper_branch) {
     whisper_sink_ = ElementPtr{
         gst_bin_get_by_name(GST_BIN(capture_pipeline_.get()), "whisper_sink")};
+    whisper_queue_ = ElementPtr{
+        gst_bin_get_by_name(GST_BIN(capture_pipeline_.get()), "whisper_queue")};
 
-    if (!whisper_sink_) {
-      std::println(stderr, "Couldn't find whisper appsink");
+    if (!whisper_sink_ || !whisper_queue_) {
+      std::println(stderr, "Couldn't find the whisper tap's elements");
       return false;
     }
+
+    InstallDropGate(whisper_queue_.get(), whisper_gate_);
   }
 
   capture_bus_ = BusPtr{gst_element_get_bus(capture_pipeline_.get())};
@@ -873,7 +901,7 @@ bool Stream::Implementation::StartCapture(const std::string& device) {
         std::jthread{[this](std::stop_token stop) { RunAudioCapture(stop); }};
   }
 
-  if (whisper_enabled_) {
+  if (whisper_branch) {
     whisper_thread_ =
         std::jthread{[this](std::stop_token stop) { RunWhisper(stop); }};
   }
@@ -999,6 +1027,13 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
       continue;
     }
 
+    // Buffers can arrive while the gate drains the backlog queued
+    // before a disable; drop them with no transcriber.
+    const auto transcriber = whisper_transcriber_.load();
+    if (transcriber == nullptr) {
+      continue;
+    }
+
     // gst_sample_get_buffer is transfer-none.
     const GstView<GstBuffer> buffer = gst_sample_get_buffer(sample.get());
 
@@ -1012,7 +1047,7 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
     const std::span<const float> samples{
         reinterpret_cast<const float*>(info.data), info.size / sizeof(float)};
 
-    auto text = whisper_transcriber_->Push(samples);
+    auto text = transcriber->Push(samples);
 
     gst_buffer_unmap(buffer, &info);
 
@@ -1020,6 +1055,61 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
       STREAM_LOG(LogLevel::kInfo, "Whisper heard: {}", *text);
     }
   }
+}
+
+bool Stream::Implementation::SetWhisperState(
+    bool enabled, const std::optional<std::string>& model_path) {
+  std::lock_guard lock{whisper_mutex_};
+
+  if (!enabled) {
+    // Gate first: nothing new reaches the transcriber, then the model
+    // can go (the whisper thread's copy keeps its window alive).
+    whisper_enabled_.store(false);
+    whisper_gate_.active.store(false, std::memory_order_relaxed);
+    whisper_transcriber_.store({});
+    // Selecting the next model works while disabled; it is loaded on
+    // the next enable.
+    if (model_path) {
+      whisper_model_path_ = *model_path;
+    }
+    return true;
+  }
+
+  if (!audio_enabled_) {
+    return false;
+  }
+
+  const std::string path = model_path.value_or(whisper_model_path_);
+  if (path.empty()) {
+    return false;
+  }
+
+  if (path == whisper_model_path_ && whisper_transcriber_.load() != nullptr) {
+    // Already running this model; just re-open the gate.
+    whisper_enabled_.store(true);
+    whisper_gate_.active.store(true, std::memory_order_relaxed);
+    return true;
+  }
+
+  auto transcriber = WhisperTranscriber::Create(path);
+  if (!transcriber) {
+    return false;
+  }
+
+  whisper_model_path_ = path;
+  // The transcriber before the gate, so no buffer meets a null one.
+  whisper_transcriber_.store(std::move(transcriber));
+  whisper_enabled_.store(true);
+  whisper_gate_.active.store(true, std::memory_order_relaxed);
+  return true;
+}
+
+std::optional<std::string> Stream::Implementation::WhisperModel() const {
+  std::lock_guard lock{whisper_mutex_};
+  if (whisper_model_path_.empty()) {
+    return std::nullopt;
+  }
+  return whisper_model_path_;
 }
 
 bool Stream::Implementation::StartOutput(OutputMode output_mode,
@@ -1117,7 +1207,7 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
 
     // The gate drops all preview branch buffers while there are no web
     // clients, so no JPEG encoding happens without watchers (#384).
-    InstallPreviewGate(preview_queue_.get(), preview_gate_);
+    InstallDropGate(preview_queue_.get(), preview_gate_);
   }
 
   if (subtitle_path_) {
@@ -1643,8 +1733,8 @@ void Stream::Implementation::StopCapturePipeline(
     frames_.Flush();
     audio_.Flush();
 
-    ResetGuard reset{capture_pipeline_, capture_sink_, capture_audio_sink_,
-                     whisper_sink_, capture_bus_};
+    ResetGuard reset{capture_pipeline_, capture_sink_,  capture_audio_sink_,
+                     whisper_sink_,     whisper_queue_, capture_bus_};
   }
 
   capture_state_ = CaptureState::kStopped;
@@ -1720,8 +1810,6 @@ bool Stream::Implementation::Initialize(
   audio_offset_ = audio_offset_ms * GST_MSECOND;
   preview_enabled_ = preview;
   subtitle_path_ = subtitles;
-  // main() rejects --whisper with --no-audio; the tap needs the branch.
-  whisper_enabled_ = audio_enabled_ && whisper_model.has_value();
 
   if (preview_enabled_) {
     if (auto placeholder = EncodePlaceholderJpeg()) {
@@ -1737,14 +1825,11 @@ bool Stream::Implementation::Initialize(
         audio_output_device ? *audio_output_device : DefaultAudioOutputDevice();
   }
 
-  if (whisper_enabled_) {
-    whisper_transcriber_ = WhisperTranscriber::Create(*whisper_model);
-
-    if (!whisper_transcriber_) {
-      std::println(stderr, "Couldn't load the whisper model: {}",
-                   *whisper_model);
-      return false;
-    }
+  // The flag is an explicit enable: a model that won't load is fatal,
+  // like a missing --subtitles file.
+  if (whisper_model && !SetWhisperState(true, *whisper_model)) {
+    std::println(stderr, "Couldn't load the whisper model: {}", *whisper_model);
+    return false;
   }
 
   const std::optional<std::string_view> branch_device =
@@ -1752,11 +1837,11 @@ bool Stream::Implementation::Initialize(
           ? std::make_optional<std::string_view>(audio_output_device_)
           : std::nullopt;
 
-  STREAM_LOG(
-      LogLevel::kDebug, "Capture pipeline:\n{}\n\nOutput pipeline:\n{}",
-      CapturePipelineDescription(device, audio_enabled_, whisper_enabled_),
-      OutputPipelineDescription(output_mode, connector_id, branch_device,
-                                preview_enabled_, subtitle_path_));
+  STREAM_LOG(LogLevel::kDebug, "Capture pipeline:\n{}\n\nOutput pipeline:\n{}",
+             CapturePipelineDescription(device, audio_enabled_,
+                                        audio_enabled_ && kWhisperAvailable),
+             OutputPipelineDescription(output_mode, connector_id, branch_device,
+                                       preview_enabled_, subtitle_path_));
 
   return StartOutput(output_mode, connector_id) && StartCapture(device);
 }
@@ -1811,6 +1896,19 @@ PreviewFrameBuffer& Stream::PreviewFrames() {
 
 void Stream::SetPreviewActive(bool active) {
   implementation_->SetPreviewActive(active);
+}
+
+bool Stream::SetWhisperState(bool enabled,
+                             const std::optional<std::string>& model_path) {
+  return implementation_->SetWhisperState(enabled, model_path);
+}
+
+bool Stream::WhisperEnabled() const {
+  return implementation_->WhisperEnabled();
+}
+
+std::optional<std::string> Stream::WhisperModel() const {
+  return implementation_->WhisperModel();
 }
 
 bool Stream::RestartCapture(const std::string& device) {

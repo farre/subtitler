@@ -9,6 +9,7 @@
 #include <format>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -593,8 +594,8 @@ TEST_CASE("web server subtitle get") {
 
   std::string captured_title;
   subtitler::WebServerHooks hooks;
-  hooks.subtitle_get = [&captured_title](std::string_view title)
-      -> std::optional<std::string> {
+  hooks.subtitle_get =
+      [&captured_title](std::string_view title) -> std::optional<std::string> {
     captured_title = title;
     if (title == "missing.srt") {
       return std::nullopt;
@@ -665,48 +666,46 @@ TEST_CASE("web server subtitle state") {
 
   subtitler::PreviewFrameBuffer frames;
 
-  subtitler::SubtitleState state{{"Movie.srt"}, true,  false,
-                                 1234,           -150,  {"Sans"},
-                                 {24},           {0xFF'FF'FF'FFu}};
+  subtitler::SubtitleState state{
+      {"Movie.srt"}, true, false, 1234, -150, {"Sans"}, {24}, {0xFF'FF'FF'FFu}};
   bool set_ok = true;
 
   subtitler::WebServerHooks hooks;
   hooks.subtitle_state_get = [&] { return state; };
-  hooks.subtitle_state_set =
-      [&](const subtitler::SubtitleStatePatch& patch) {
-        if (!set_ok) {
-          return false;
-        }
-        if (patch.file) {
-          if (patch.file->empty()) {
-            state.file = std::nullopt;
-          } else {
-            state.file = *patch.file;
-          }
-        }
-        if (patch.visible) {
-          state.visible = *patch.visible;
-        }
-        if (patch.paused) {
-          state.paused = *patch.paused;
-        }
-        if (patch.time_ms) {
-          state.time_ms = *patch.time_ms;
-        }
-        if (patch.delay_ms) {
-          state.delay_ms = *patch.delay_ms;
-        }
-        if (patch.font_family) {
-          state.font_family = *patch.font_family;
-        }
-        if (patch.font_size) {
-          state.font_size = *patch.font_size;
-        }
-        if (patch.font_color) {
-          state.font_color = *patch.font_color;
-        }
-        return true;
-      };
+  hooks.subtitle_state_set = [&](const subtitler::SubtitleStatePatch& patch) {
+    if (!set_ok) {
+      return false;
+    }
+    if (patch.file) {
+      if (patch.file->empty()) {
+        state.file = std::nullopt;
+      } else {
+        state.file = *patch.file;
+      }
+    }
+    if (patch.visible) {
+      state.visible = *patch.visible;
+    }
+    if (patch.paused) {
+      state.paused = *patch.paused;
+    }
+    if (patch.time_ms) {
+      state.time_ms = *patch.time_ms;
+    }
+    if (patch.delay_ms) {
+      state.delay_ms = *patch.delay_ms;
+    }
+    if (patch.font_family) {
+      state.font_family = *patch.font_family;
+    }
+    if (patch.font_size) {
+      state.font_size = *patch.font_size;
+    }
+    if (patch.font_color) {
+      state.font_color = *patch.font_color;
+    }
+    return true;
+  };
 
   auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
   REQUIRE(server != nullptr);
@@ -754,8 +753,9 @@ TEST_CASE("web server subtitle state") {
   }
 
   SUBCASE("PUT file switches and detaches") {
-    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?file=Other.srt")
-              .status == SOUP_STATUS_OK);
+    CHECK(
+        HttpRequest("PUT", port, "/api/subtitle-state?file=Other.srt").status ==
+        SOUP_STATUS_OK);
     CHECK(state.file == std::optional<std::string>{"Other.srt"});
 
     CHECK(HttpRequest("PUT", port, "/api/subtitle-state?file=").status ==
@@ -785,12 +785,13 @@ TEST_CASE("web server subtitle state") {
           SOUP_STATUS_BAD_REQUEST);
     CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_size=0").status ==
           SOUP_STATUS_BAD_REQUEST);
-    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_size=-3")
-              .status == SOUP_STATUS_BAD_REQUEST);
-    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_size=big")
-              .status == SOUP_STATUS_BAD_REQUEST);
-    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_family=")
-              .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_size=-3").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(
+        HttpRequest("PUT", port, "/api/subtitle-state?font_size=big").status ==
+        SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_family=").status ==
+          SOUP_STATUS_BAD_REQUEST);
     // font_color must be "#" plus six hex digits.
     CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_color=white")
               .status == SOUP_STATUS_BAD_REQUEST);
@@ -823,4 +824,119 @@ TEST_CASE("web server subtitle state") {
     CHECK(HttpGet(port, "/api/subtitle-state/extra").status ==
           SOUP_STATUS_NOT_FOUND);
   }
+}
+
+TEST_CASE("web server whisper endpoints") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  const auto state_dir =
+      std::filesystem::temp_directory_path() / "subtitler-whisper-test";
+  std::filesystem::remove_all(state_dir);
+  std::filesystem::create_directories(state_dir / "models");
+  {
+    std::ofstream{state_dir / "models" / "ggml-tiny.en.bin"} << "fake-ggml";
+  }
+
+  bool enabled = false;
+  std::optional<std::string> model;
+
+  subtitler::WebServerHooks hooks;
+  hooks.state_dir = state_dir;
+  hooks.whisper_state_get = [&] {
+    return subtitler::WhisperRouteState{.enabled = enabled, .model = model};
+  };
+  hooks.whisper_state_set = [&](std::optional<bool> new_enabled,
+                                std::optional<std::string_view> new_model) {
+    // Only stored models are selectable, like the real hook resolves.
+    if (new_model && *new_model != "ggml-tiny.en.bin") {
+      return false;
+    }
+    if (new_enabled) {
+      enabled = *new_enabled;
+    }
+    if (new_model) {
+      model = std::string{*new_model};
+    }
+    return !enabled || model.has_value();
+  };
+
+  auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
+  REQUIRE(server != nullptr);
+
+  SUBCASE("state round-trips through GET and PUT") {
+    auto response = HttpGet(port, "/api/whisper");
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(response.body ==
+          R"({"enabled":false,"model":null,"models":["ggml-tiny.en.bin"]})");
+
+    response = HttpRequest("PUT", port,
+                           "/api/whisper?enabled=true&model=ggml-tiny.en.bin");
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(
+        response.body ==
+        R"({"enabled":true,"model":"ggml-tiny.en.bin","models":["ggml-tiny.en.bin"]})");
+    CHECK(enabled);
+    CHECK(model == "ggml-tiny.en.bin");
+
+    response = HttpRequest("PUT", port, "/api/whisper?enabled=false");
+    CHECK(response.status == SOUP_STATUS_OK);
+    CHECK(response.body.contains(R"("enabled":false)"));
+    CHECK_FALSE(enabled);
+  }
+
+  SUBCASE("bad state input is a 400") {
+    CHECK(HttpRequest("PUT", port, "/api/whisper?enabled=maybe").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/whisper?model=ggml-missing.bin")
+              .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/whisper?model=../evil.bin").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/whisper?bogus=1").status ==
+          SOUP_STATUS_BAD_REQUEST);
+  }
+
+  SUBCASE("methods other than GET and PUT are a 405") {
+    CHECK(HttpRequest("POST", port, "/api/whisper").status ==
+          SOUP_STATUS_METHOD_NOT_ALLOWED);
+  }
+
+  SUBCASE("model store saves the body and answers 201") {
+    const auto response =
+        HttpRequest("PUT", port, "/api/whisper/models/ggml-base.en.bin",
+                    std::string_view{"fake-ggml-bytes"});
+    CHECK(response.status == SOUP_STATUS_CREATED);
+    CHECK(response.body == R"({"stored_name":"ggml-base.en.bin"})");
+
+    std::ifstream file{state_dir / "models" / "ggml-base.en.bin",
+                       std::ios::binary};
+    CHECK(std::string{std::istreambuf_iterator<char>{file},
+                      std::istreambuf_iterator<char>{}} == "fake-ggml-bytes");
+  }
+
+  SUBCASE("model store rejects bad input") {
+    CHECK(HttpRequest("PUT", port, "/api/whisper/models/not-a-model").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/whisper/models/ggml-empty.bin",
+                      std::string_view{})
+              .status == SOUP_STATUS_BAD_REQUEST);
+  }
+
+  std::filesystem::remove_all(state_dir);
+}
+
+TEST_CASE("web server whisper endpoints without hooks") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+  auto server = subtitler::WebServer::Create(port, frames);
+  REQUIRE(server != nullptr);
+
+  CHECK(HttpGet(port, "/api/whisper").status == SOUP_STATUS_NOT_FOUND);
+  CHECK(HttpRequest("PUT", port, "/api/whisper?enabled=true").status ==
+        SOUP_STATUS_NOT_FOUND);
+  CHECK(HttpRequest("PUT", port, "/api/whisper/models/ggml-tiny.en.bin",
+                    std::string_view{"fake"})
+            .status == SOUP_STATUS_NOT_FOUND);
 }
