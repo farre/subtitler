@@ -124,4 +124,5 @@ inline void LogMessage(std::string_view name, LogLevel level,
 #define CONFIG_LOG(level, ...) SUBTITLER_LOG("config", level, __VA_ARGS__)
 #define MAIN_LOG(level, ...) SUBTITLER_LOG("main", level, __VA_ARGS__)
 #define STREAM_LOG(level, ...) SUBTITLER_LOG("stream", level, __VA_ARGS__)
+#define SYNC_LOG(level, ...) SUBTITLER_LOG("sync", level, __VA_ARGS__)
 #define WEB_LOG(level, ...) SUBTITLER_LOG("web", level, __VA_ARGS__)

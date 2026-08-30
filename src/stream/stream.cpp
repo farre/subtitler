@@ -23,9 +23,9 @@
 #include "stream/deleters.h"
 #include "stream/drop_gate.h"
 #include "stream/frame_buffer.h"
-#include "stream/sync_matcher.h"
-#include "stream/sync_session.h"
 #include "stream/whisper_transcriber.h"
+#include "sync/sync_matcher.h"
+#include "sync/sync_session.h"
 #include "utils/logging.h"
 #include "utils/reset_guard.h"
 
@@ -1598,6 +1598,8 @@ Stream::SyncStartResult Stream::Implementation::StartSubtitleSync() {
     sync_apply_pending_ = false;
   }
 
+  STREAM_LOG(LogLevel::kInfo, "Subtitle sync listening for up to {} s",
+             kSyncListenWindowNs / 1'000'000'000);
   return SyncStartResult::kStarted;
 }
 

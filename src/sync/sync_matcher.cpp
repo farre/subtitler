@@ -1,4 +1,4 @@
-#include "stream/sync_matcher.h"
+#include "sync/sync_matcher.h"
 
 #include <algorithm>
 #include <cctype>
@@ -7,6 +7,8 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+
+#include "utils/logging.h"
 
 namespace subtitler {
 
@@ -65,7 +67,7 @@ constexpr std::size_t kMinVotes = 3;
 constexpr std::int64_t kMaxSpreadNs = 2'000'000'000;
 
 std::optional<std::int64_t> VoteWindow(
-    const WhisperWindow& window, const std::vector<SrtWord>& stream,
+    const TimestampedText& window, const std::vector<SrtWord>& stream,
     const std::unordered_map<std::string, std::vector<std::size_t>>& index) {
   const auto words = NormalizeWords(window.text);
   if (words.size() < 3) {
@@ -88,18 +90,25 @@ std::optional<std::int64_t> VoteWindow(
   const auto best = std::ranges::max_element(
       tally, [](const auto& a, const auto& b) { return a.second < b.second; });
   if (best == tally.end() || best->second < kMinHits) {
+    SYNC_LOG(LogLevel::kDebug,
+             "Subtitle sync window below threshold: best trigram offset "
+             "got {} hits",
+             best == tally.end() ? 0 : best->second);
     return std::nullopt;
   }
   for (const auto& [offset, count] : tally) {
     if (offset != best->first && best->second < kMargin * count) {
       // Ambiguous: the runner-up is too close to the winner.
+      SYNC_LOG(LogLevel::kDebug,
+               "Subtitle sync window ambiguous: {} hits vs runner-up {}",
+               best->second, count);
       return std::nullopt;
     }
   }
 
   // The window's last word maps to its offset in the SRT stream; its
   // time is interpolated across its cue. That instant is what the
-  // window's audio_end is the running time of, so θ = srt - running.
+  // window's timestamp is the running time of, so θ = srt - running.
   const std::ptrdiff_t last =
       best->first + static_cast<std::ptrdiff_t>(words.size()) - 1;
   if (last < 0 || static_cast<std::size_t>(last) >= stream.size()) {
@@ -108,14 +117,18 @@ std::optional<std::int64_t> VoteWindow(
   const SrtWord& word = stream[last];
   const auto word_ms = static_cast<std::int64_t>(
       word.start_ms + word.position * (word.end_ms - word.start_ms));
-  return word_ms * 1'000'000 - window.audio_end_ns;
+  const std::int64_t theta_ns = word_ms * 1'000'000 - window.timestamp_ns;
+  SYNC_LOG(LogLevel::kDebug,
+           "Subtitle sync window voted offset {} ms ({} hits)",
+           theta_ns / 1'000'000, best->second);
+  return theta_ns;
 }
 
 }  // namespace
 
 std::optional<std::int64_t> MatchTranscript(
     const std::vector<SrtCue>& cues,
-    const std::vector<WhisperWindow>& windows) {
+    const std::vector<TimestampedText>& windows) {
   const auto stream = FlattenCues(cues);
   if (stream.size() < 3) {
     return std::nullopt;
@@ -134,6 +147,8 @@ std::optional<std::int64_t> MatchTranscript(
       votes.push_back(*vote);
     }
   }
+  SYNC_LOG(LogLevel::kDebug, "Subtitle sync matching: {} of {} windows voted",
+           votes.size(), windows.size());
 
   if (votes.size() < kMinVotes) {
     return std::nullopt;
@@ -157,10 +172,18 @@ std::optional<std::int64_t> MatchTranscript(
   }
 
   if (best_size < kMinVotes) {
+    SYNC_LOG(LogLevel::kDebug,
+             "Subtitle sync matching: votes too scattered to lock ({} "
+             "votes, best run {})",
+             votes.size(), best_size);
     return std::nullopt;
   }
 
-  return votes[best_begin + best_size / 2];
+  const std::int64_t theta_ns = votes[best_begin + best_size / 2];
+  SYNC_LOG(LogLevel::kDebug,
+           "Subtitle sync matching locked: {} votes agree, offset {} ms",
+           best_size, theta_ns / 1'000'000);
+  return theta_ns;
 }
 
 }  // namespace subtitler

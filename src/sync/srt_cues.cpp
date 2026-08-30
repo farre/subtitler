@@ -1,4 +1,4 @@
-#include "stream/srt_cues.h"
+#include "sync/srt_cues.h"
 
 #include <charconv>
 #include <optional>

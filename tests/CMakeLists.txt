@@ -9,9 +9,6 @@ add_executable(
     frame_buffer_tests.cpp
     integration_tests.cpp
     output_pipeline_tests.cpp
-    srt_cues_tests.cpp
-    sync_matcher_tests.cpp
-    sync_session_tests.cpp
 )
 
 if(SUBTITLER_ENABLE_WHISPER)
@@ -41,6 +38,36 @@ target_include_directories(
 )
 
 doctest_discover_tests(stream_tests)
+
+add_executable(
+    sync_tests
+    srt_cues_tests.cpp
+    sync_matcher_tests.cpp
+    sync_session_tests.cpp
+)
+
+target_link_libraries(
+    sync_tests
+    PRIVATE
+    subtitler::sync
+    doctest::doctest
+)
+
+target_compile_options(
+    sync_tests
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+target_include_directories(
+    sync_tests
+    PRIVATE
+        "${PROJECT_SOURCE_DIR}/src"
+)
+
+doctest_discover_tests(sync_tests)
 
 add_executable(
     web_tests

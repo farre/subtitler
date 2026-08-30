@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <optional>
 
-#include "stream/sync_session.h"
+#include "sync/sync_session.h"
 
 namespace {
 

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "stream/sync_matcher.h"
+#include "sync/sync_matcher.h"
 
 namespace {
 
@@ -41,11 +41,11 @@ std::vector<subtitler::SrtCue> MakeCues(const std::vector<std::string>& words,
   return cues;
 }
 
-// The transcript of the given cue range as one whisper window whose
-// audio ends at the last cue's end, shifted by the clock offset θ.
-subtitler::WhisperWindow WindowAt(const std::vector<subtitler::SrtCue>& cues,
-                                  std::size_t first, std::size_t last,
-                                  std::int64_t theta_ns) {
+// The transcript of the given cue range as one text window whose audio
+// ends at the last cue's end, shifted by the clock offset θ.
+subtitler::TimestampedText WindowAt(const std::vector<subtitler::SrtCue>& cues,
+                                    std::size_t first, std::size_t last,
+                                    std::int64_t theta_ns) {
   std::string text;
   for (std::size_t i = first; i <= last; ++i) {
     if (!text.empty()) {
@@ -90,7 +90,7 @@ TEST_CASE("sync matcher") {
 
   SUBCASE("locks on clean windows") {
     constexpr std::int64_t theta = 123 * kSecond;
-    const std::vector<subtitler::WhisperWindow> windows = {
+    const std::vector<subtitler::TimestampedText> windows = {
         WindowAt(cues, 10, 12, theta),
         WindowAt(cues, 40, 42, theta),
         WindowAt(cues, 70, 72, theta),
@@ -104,7 +104,7 @@ TEST_CASE("sync matcher") {
 
   SUBCASE("locks through tiny.en-style word noise") {
     constexpr std::int64_t theta = 123 * kSecond;
-    std::vector<subtitler::WhisperWindow> windows;
+    std::vector<subtitler::TimestampedText> windows;
     for (const auto [first, last] :
          {std::pair{10UL, 12UL}, {40UL, 42UL}, {70UL, 72UL}}) {
       auto window = WindowAt(cues, first, last, theta);
@@ -118,7 +118,7 @@ TEST_CASE("sync matcher") {
   }
 
   SUBCASE("unrelated transcripts never lock") {
-    const std::vector<subtitler::WhisperWindow> windows = {
+    const std::vector<subtitler::TimestampedText> windows = {
         {"the quick brown fox jumps over", kSecond},
         {"a lazy dog keeps sleeping soundly", 2 * kSecond},
         {"pack my box with five dozen jugs", 3 * kSecond},
@@ -129,7 +129,7 @@ TEST_CASE("sync matcher") {
 
   SUBCASE("one outlier cannot break an agreeing cluster") {
     constexpr std::int64_t theta = 123 * kSecond;
-    const std::vector<subtitler::WhisperWindow> windows = {
+    const std::vector<subtitler::TimestampedText> windows = {
         WindowAt(cues, 10, 12, theta),
         WindowAt(cues, 40, 42, theta),
         // This window's audio end is off by 10 s: an outlier vote.
@@ -144,7 +144,7 @@ TEST_CASE("sync matcher") {
 
   SUBCASE("scattered votes never lock") {
     constexpr std::int64_t theta = 123 * kSecond;
-    const std::vector<subtitler::WhisperWindow> windows = {
+    const std::vector<subtitler::TimestampedText> windows = {
         WindowAt(cues, 10, 12, theta),
         WindowAt(cues, 40, 42, theta + 10 * kSecond),
         WindowAt(cues, 70, 72, theta + 20 * kSecond),
@@ -164,7 +164,7 @@ TEST_CASE("sync matcher") {
               std::format("{} {} i love you", words[i * 2], words[i * 2 + 1])});
     }
 
-    const std::vector<subtitler::WhisperWindow> phrase_only = {
+    const std::vector<subtitler::TimestampedText> phrase_only = {
         {"i love you i love you i love you", kSecond},
         {"i love you i love you", 2 * kSecond},
         {"i love you i love you i love you", 3 * kSecond},
@@ -174,7 +174,7 @@ TEST_CASE("sync matcher") {
 
     // But the surrounding unique words still locate the region.
     constexpr std::int64_t theta = 60 * kSecond;
-    const std::vector<subtitler::WhisperWindow> windows = {
+    const std::vector<subtitler::TimestampedText> windows = {
         WindowAt(repetitive, 10, 12, theta),
         WindowAt(repetitive, 40, 42, theta),
         WindowAt(repetitive, 70, 72, theta),
@@ -186,7 +186,7 @@ TEST_CASE("sync matcher") {
 
   SUBCASE("normalization makes case and punctuation irrelevant") {
     constexpr std::int64_t theta = 123 * kSecond;
-    std::vector<subtitler::WhisperWindow> windows;
+    std::vector<subtitler::TimestampedText> windows;
     for (const auto [first, last] :
          {std::pair{10UL, 12UL}, {40UL, 42UL}, {70UL, 72UL}}) {
       auto window = WindowAt(cues, first, last, theta);

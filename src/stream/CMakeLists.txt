@@ -3,10 +3,7 @@ add_library(
     drop_gate.cpp
     fonts.cpp
     frame_buffer.cpp
-    srt_cues.cpp
     stream.cpp
-    sync_matcher.cpp
-    sync_session.cpp
     whisper_transcriber.cpp
 )
 
@@ -21,6 +18,7 @@ target_link_libraries(
     PkgConfig::ALSA
     PkgConfig::GSTREAMER
     PkgConfig::PANGO
+    subtitler::sync
     subtitler::utils
     subtitler_warnings
 )

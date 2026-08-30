@@ -1,8 +1,9 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
 #include <string>
 
-#include "stream/srt_cues.h"
+#include "sync/srt_cues.h"
 
 TEST_CASE("SRT cue parsing") {
   SUBCASE("parses a plain document") {

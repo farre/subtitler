@@ -4,8 +4,8 @@
 #include <optional>
 #include <vector>
 
-#include "stream/srt_cues.h"
-#include "stream/sync_session.h"
+#include "sync/srt_cues.h"
+#include "sync/sync_session.h"
 
 namespace subtitler {
 
@@ -16,6 +16,7 @@ namespace subtitler {
 // lock. θ answers only once a cluster of windows agrees (median of the
 // tightest run, spread at most 2 s).
 std::optional<std::int64_t> MatchTranscript(
-    const std::vector<SrtCue>& cues, const std::vector<WhisperWindow>& windows);
+    const std::vector<SrtCue>& cues,
+    const std::vector<TimestampedText>& windows);
 
 }  // namespace subtitler

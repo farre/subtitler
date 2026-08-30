@@ -1,5 +1,6 @@
 add_subdirectory(config)
-add_subdirectory(stream)
 add_subdirectory(probe)
+add_subdirectory(stream)
+add_subdirectory(sync)
 add_subdirectory(utils)
 add_subdirectory(web)

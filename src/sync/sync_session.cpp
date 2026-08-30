@@ -1,4 +1,4 @@
-#include "stream/sync_session.h"
+#include "sync/sync_session.h"
 
 #include <utility>
 
@@ -18,14 +18,15 @@ SyncSession::SyncSession(std::vector<SrtCue> cues, SyncMatcher matcher,
       matcher_(std::move(matcher)),
       deadline_ns_{deadline_ns} {}
 
-SyncSession::Result SyncSession::Feed(WhisperWindow window,
+SyncSession::Result SyncSession::Feed(TimestampedText window,
                                       std::int64_t now_ns) {
   windows_.push_back(std::move(window));
 
   if (windows_.size() >= kMinWindows) {
     if (const auto theta = matcher_(cues_, windows_)) {
       return {.state = State::kSynced,
-              .time_ms = (now_ns + *theta) / 1'000'000};
+              .time_ms = (now_ns + *theta) / 1'000'000,
+              .reason = {}};
     }
   }
 
@@ -35,6 +36,7 @@ SyncSession::Result SyncSession::Feed(WhisperWindow window,
 SyncSession::Result SyncSession::Poll(std::int64_t now_ns) const {
   if (now_ns > deadline_ns_) {
     return {.state = State::kFailed,
+            .time_ms = std::nullopt,
             .reason = "no stable match within the listening window"};
   }
   return {};
