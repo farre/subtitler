@@ -142,6 +142,11 @@ live trim in milliseconds (positive delays cues). `font_family`,
 `font_size` (points), and `font_color` are the cue style, `null` when
 never set — the renderer default.
 
+At startup the attached subtitle comes from `--subtitles`, then the
+config's `[subtitles] file`, then the state dir's `active` marker, in
+that precedence order. A restored path that names a library entry
+reports `file` as its title; a path outside the library reports `null`.
+
 ### PUT /api/subtitle-state
 
 Changes any subset of the state via query parameters:

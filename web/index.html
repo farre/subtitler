@@ -250,14 +250,8 @@
         await subtitler.remove(file);
         await refreshSubtitles();
         // The delete may have detached the active subtitle; pull the
-        // state and re-check whatever is attached now.
-        const state = await subtitler.state();
-        applyState(state);
-        if (state.file !== null) {
-          checkSubtitle(state.file);
-        } else {
-          updateConvertState();
-        }
+        // state and re-select whatever is attached now.
+        applyState(await subtitler.state());
       }
 
       let knownFiles = [];
@@ -286,13 +280,13 @@
           !knownFiles.some((file) => imdbId(file) === id);
       }
 
-      function checkSubtitle(file) {
-        const radio = library.querySelector(
-          `input[value="${CSS.escape(file)}"]`,
-        );
-        if (radio) {
-          radio.checked = true;
-          updateConvertState();
+      // Radio selection lives in applyState: the checked radio always
+      // mirrors currentFile, never the other way around.
+      function selectRadio(file) {
+        for (const radio of library.querySelectorAll(
+          'input[name="subtitle"]',
+        )) {
+          radio.checked = file !== null && radio.value === file;
         }
       }
 
@@ -315,13 +309,14 @@
         // library.
         const tag = Number(attributes.fps) > 0 ? `.${attributes.fps}fps` : "";
         const version = `.os${attributes.subtitle_id}`;
-        const { stored_name } = await subtitler.upload(
+        await subtitler.upload(
           `${feature_details.movie_name}${version}${tag}.tt${id}.srt`,
           result,
         );
         await refreshSubtitles();
-        checkSubtitle(libraryTitle(stored_name));
-        applyState({ paused: false, time: 0 });
+        // The appliance switches to the upload live: position 0,
+        // unpaused. Apply the authoritative state.
+        applyState(await subtitler.state());
       }
 
       async function download() {
@@ -333,7 +328,6 @@
         const known = await refreshSubtitles();
         const existing = known.find((file) => imdbId(file) === id);
         if (existing) {
-          checkSubtitle(existing);
           applyState(await subtitler.select(existing));
           return;
         }
@@ -423,14 +417,11 @@
           /\.\d+(?:\.\d+)?fps\.tt(\d+)\.srt$/i,
           `.${target}fps.tt$1.srt`,
         );
-        const { stored_name } = await subtitler.upload(
-          converted_name,
-          converted,
-        );
+        await subtitler.upload(converted_name, converted);
         await refreshSubtitles();
-        checkSubtitle(libraryTitle(stored_name));
-        // The appliance switches to the upload live: position 0, unpaused.
-        applyState({ paused: false, time: 0 });
+        // The appliance switches to the upload live: position 0,
+        // unpaused. Apply the authoritative state.
+        applyState(await subtitler.state());
       }
 
       let paused = false;
@@ -477,6 +468,8 @@
       }) {
         if (file !== undefined) {
           currentFile = file;
+          selectRadio(file);
+          updateConvertState();
         }
         paused = isPaused;
         anchorPosition(position);
@@ -579,6 +572,7 @@
           return;
         }
         if (
+          state.file !== currentFile ||
           state.paused !== paused ||
           state.visible !== visible.checked ||
           state.font_family !== currentFontFamily ||
@@ -586,6 +580,15 @@
           state.font_color !== currentFontColor ||
           Math.abs(state.time - currentPosition()) > syncToleranceMs
         ) {
+          // Another client may have uploaded the attached title; the
+          // list must carry it before its radio can be selected.
+          if (state.file !== null && !knownFiles.includes(state.file)) {
+            try {
+              await refreshSubtitles();
+            } catch {
+              return;
+            }
+          }
           applyState(state);
         }
       }
@@ -626,12 +629,13 @@
         }
         try {
           await subtitler.startSubtitleSync();
-        } catch {
-          syncStatus.value = "Couldn't start auto-sync";
+        } catch (error) {
+          // A 409 carries the server's reason ({"state":"failed",
+          // "reason":...}); anything else is a transport failure.
+          syncStatus.value = error.body?.reason ?? "Couldn't start auto-sync";
           return;
         }
         syncStatus.value = "Listening…";
-        updateAutoSyncState();
         syncPoll = setInterval(async () => {
           let state;
           try {
@@ -655,6 +659,8 @@
             syncStatus.value = "";
           }
         }, 2000);
+        // Poll assigned first: a running session disables the button.
+        updateAutoSyncState();
       }
 
       async function downloadWhisperModel() {
@@ -709,10 +715,6 @@
         await refreshFonts();
         const state = await subtitler.state();
         applyState(state);
-        if (state.file !== null) {
-          checkSubtitle(state.file);
-        }
-        updateConvertState();
 
         // The whisper section degrades like OpenSubtitles: without the
         // endpoint (no state dir, no model store) it stays hidden. Auto

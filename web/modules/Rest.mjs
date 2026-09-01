@@ -12,9 +12,17 @@ class Rest {
     url.search = search;
     const response = await window.fetch(url, { method, ...options });
     if (!response.ok) {
-      throw new Error(
+      const error = new Error(
         `${method} ${url} failed: ${response.status} ${response.statusText}`,
       );
+      // Endpoints like PUT /api/subtitle-sync answer failures with a
+      // JSON reason; keep it for the caller.
+      try {
+        error.body = await response.json();
+      } catch {
+        // A non-JSON failure body carries nothing to attach.
+      }
+      throw error;
     }
     return response.status === 204 ? null : response.json();
   }

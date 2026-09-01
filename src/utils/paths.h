@@ -193,6 +193,29 @@ inline std::optional<std::filesystem::path> FindLibrarySubtitle(
   return std::nullopt;
 }
 
+// The library title for a full path naming a library entry: the
+// sharded subtitles/<bucket>/<title> or a legacy flat subtitles/<title>.
+// nullopt for paths outside the library or unusable titles. Lexical
+// only — checks neither existence nor that the entry is stored there.
+inline std::optional<std::string> LibrarySubtitleTitle(
+    const std::filesystem::path& state_dir,
+    const std::filesystem::path& path) {
+  const auto relative = path.lexically_relative(state_dir / "subtitles");
+  const auto title = relative.filename().string();
+  const auto canonical = LibrarySubtitlePath(title);
+  if (!canonical) {
+    return std::nullopt;
+  }
+
+  // The sharded entry or a legacy flat one; anything else (deeper
+  // nesting, a wrong bucket, traversal) is not a library title.
+  if (relative != *canonical && relative != std::filesystem::path{title}) {
+    return std::nullopt;
+  }
+
+  return title;
+}
+
 // The contents of a library entry (sharded or legacy flat); nullopt
 // for unusable titles, missing entries, or unreadable files.
 inline std::optional<std::string> LoadLibrarySubtitle(

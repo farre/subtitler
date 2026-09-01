@@ -269,6 +269,13 @@ int main(int argc, char** argv) {
     }
   }
 
+  // A configured or explicit path that names a library entry reports as
+  // that title, so the state endpoint and the web UI can select it;
+  // anything else (--subtitles outside the library) stays untitled.
+  if (subtitles && !active_title && state_dir) {
+    active_title = subtitler::LibrarySubtitleTitle(*state_dir, *subtitles);
+  }
+
   if (whisper_model) {
     // The tap lives on the capture side's audio branch (#19).
     if (!audio) {

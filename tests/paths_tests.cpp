@@ -234,6 +234,51 @@ TEST_CASE("subtitle library path sharding") {
   }
 }
 
+TEST_CASE("library title derivation from a stored path") {
+  const std::filesystem::path state{"/state"};
+
+  SUBCASE("sharded and legacy flat entries yield their titles") {
+    CHECK(subtitler::LibrarySubtitleTitle(
+              state, state / "subtitles" / "m" / "Movie.srt") == "Movie.srt");
+    CHECK(subtitler::LibrarySubtitleTitle(state,
+                                          state / "subtitles" / "Movie.srt") ==
+          "Movie.srt");
+    CHECK(subtitler::LibrarySubtitleTitle(
+              state, state / "subtitles" / "_" / "3 Idiots.srt") ==
+          "3 Idiots.srt");
+  }
+
+  SUBCASE("paths outside the library are rejected") {
+    CHECK(subtitler::LibrarySubtitleTitle(state, "/elsewhere/Movie.srt") ==
+          std::nullopt);
+    CHECK(subtitler::LibrarySubtitleTitle(state, state / "Movie.srt") ==
+          std::nullopt);
+    CHECK(subtitler::LibrarySubtitleTitle(state, "subtitles/m/Movie.srt") ==
+          std::nullopt);
+  }
+
+  SUBCASE("non-canonical nesting is rejected") {
+    CHECK(subtitler::LibrarySubtitleTitle(
+              state, state / "subtitles" / "x" / "Movie.srt") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitleTitle(
+              state, state / "subtitles" / "m" / "deep" / "Movie.srt") ==
+          std::nullopt);
+    CHECK(subtitler::LibrarySubtitleTitle(
+              state, state / "subtitles" / ".." / "subtitles" / "m" /
+                           "Movie.srt") == std::nullopt);
+  }
+
+  SUBCASE("unusable titles are rejected") {
+    CHECK(subtitler::LibrarySubtitleTitle(
+              state, state / "subtitles" / "m" / "Movie.txt") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitleTitle(
+              state, state / "subtitles" / "m" / ".hidden.srt") ==
+          std::nullopt);
+    CHECK(subtitler::LibrarySubtitleTitle(state, state / "subtitles") ==
+          std::nullopt);
+  }
+}
+
 TEST_CASE("subtitle storage") {
   const auto root =
       std::filesystem::temp_directory_path() / "subtitler-store-test";
