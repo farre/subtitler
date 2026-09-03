@@ -28,6 +28,17 @@
           <output id="sync-status"></output>
         </div>
 
+        <div id="cue-display" hidden>
+          <div class="cue">
+            <span class="cue-label">Now</span>
+            <output id="cue-now"></output>
+          </div>
+          <div class="cue">
+            <span class="cue-label">Next</span>
+            <output id="cue-next"></output>
+          </div>
+        </div>
+
         <form id="seek-form" class="controls">
           <label for="time">Position</label>
           <input type="time" id="time" step="1" max="05:00:00" />
@@ -109,7 +120,7 @@
     <script type="module">
       import { Subtitler } from "./modules/Subtitler.mjs";
       import { OpenSubtitles } from "./modules/OpenSubtitles.mjs";
-      import { convertTo } from "./modules/SRT.mjs";
+      import { convertTo, parseCues } from "./modules/SRT.mjs";
 
       const library = document.getElementById("subtitles");
       const pause = document.getElementById("pause");
@@ -136,6 +147,9 @@
       const whisperStatus = document.getElementById("whisper-status");
       const autoSync = document.getElementById("auto-sync");
       const syncStatus = document.getElementById("sync-status");
+      const cueDisplay = document.getElementById("cue-display");
+      const cueNow = document.getElementById("cue-now");
+      const cueNext = document.getElementById("cue-next");
 
       // The ggml models the appliance can run, fetched by the browser
       // straight from HuggingFace (CORS is allowed on both the resolve
@@ -448,6 +462,29 @@
       let currentFile = null;
       let syncAvailable = false;
       let syncPoll = null;
+      let activeCues = [];
+      let cuesFile = null;
+
+      // The now/next display parses the attached SRT once, tracked by
+      // title; a stale response from an earlier switch is dropped.
+      async function loadCues(file) {
+        cuesFile = file;
+        cueDisplay.hidden = file === null;
+        if (file === null) {
+          activeCues = [];
+          return;
+        }
+        try {
+          const { body } = await subtitler.download(file);
+          if (cuesFile === file) {
+            activeCues = parseCues(body);
+          }
+        } catch {
+          if (cuesFile === file) {
+            activeCues = [];
+          }
+        }
+      }
 
       function updateAutoSyncState() {
         autoSync.disabled =
@@ -470,6 +507,9 @@
           currentFile = file;
           selectRadio(file);
           updateConvertState();
+          if (file !== cuesFile) {
+            loadCues(file);
+          }
         }
         paused = isPaused;
         anchorPosition(position);
@@ -524,11 +564,38 @@
         return units.map((unit) => String(unit).padStart(2, "0")).join(":");
       }
 
+      // Cues are sorted by start: the last started cue is the showing
+      // candidate, the one after it the upcoming one.
+      function updateCueDisplay() {
+        const pos = currentPosition();
+        let low = 0;
+        let high = activeCues.length;
+        while (low < high) {
+          const mid = Math.floor((low + high) / 2);
+          if (activeCues[mid].start <= pos) {
+            low = mid + 1;
+          } else {
+            high = mid;
+          }
+        }
+        const showing =
+          low > 0 && pos < activeCues[low - 1].end ? activeCues[low - 1] : null;
+        const nowText = showing?.text ?? "";
+        const nextText = activeCues[low]?.text ?? "";
+        if (cueNow.textContent !== nowText) {
+          cueNow.textContent = nowText;
+        }
+        if (cueNext.textContent !== nextText) {
+          cueNext.textContent = nextText;
+        }
+      }
+
       function tick() {
         const text = formatTime(currentPosition());
         if (position.textContent !== text) {
           position.textContent = text;
         }
+        updateCueDisplay();
       }
 
       async function togglePause() {
