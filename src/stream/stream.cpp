@@ -1938,7 +1938,12 @@ void Stream::Implementation::Poll() {
 
   const bool capture_bus_ok =
       PollBus(capture_bus_.get(), capture_pipeline_.get(), "capture");
-  PollBus(output_bus_.get(), output_pipeline_.get(), "output");
+
+  // The output side has no fallback: a dead output renders nothing, so
+  // fail the process and let the service manager restart it (#447).
+  if (!PollBus(output_bus_.get(), output_pipeline_.get(), "output")) {
+    output_failed_.store(true);
+  }
 
   if (capture_state_ == CaptureState::kCapturing &&
       (!capture_bus_ok || !capture_active_.load())) {

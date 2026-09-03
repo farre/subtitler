@@ -660,9 +660,15 @@ int main(int argc, char** argv) {
     }
   }
 
-  while (!signal_received) {
+  // A stream failure (a dead output pipeline, #447) is fatal: exit so a
+  // service manager restart brings the appliance back.
+  while (!signal_received && !stream->Failed()) {
     stream->Poll();
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
+  }
+
+  if (stream->Failed()) {
+    std::println(stderr, "Exiting on stream failure");
   }
 
   stream->Stop();
