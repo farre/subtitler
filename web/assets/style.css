@@ -223,10 +223,33 @@ input[type="checkbox"] {
   gap: 0.5rem;
 }
 
-.cue-label {
+.cue[hidden] {
+  display: none;
+}
+
+.cue-time {
   flex: none;
-  min-width: 4ch;
   color: var(--muted);
+  font-family: monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.cue.next {
+  color: var(--muted);
+}
+
+button.cue {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  text-align: start;
+}
+
+button.cue:hover {
+  color: var(--text);
 }
 
 .cue output {

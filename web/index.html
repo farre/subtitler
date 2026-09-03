@@ -13,6 +13,16 @@
       <details>
         <summary>Preview</summary>
         <img src="/api/preview.mjpeg" alt="Video preview" loading="lazy" />
+        <div id="cue-display" hidden>
+          <div class="cue" id="cue-now-row">
+            <span class="cue-time" id="cue-now-time"></span>
+            <output id="cue-now"></output>
+          </div>
+          <button type="button" class="cue next" id="cue-next-row">
+            <span class="cue-time" id="cue-next-time"></span>
+            <output id="cue-next"></output>
+          </button>
+        </div>
       </details>
 
       <section>
@@ -26,17 +36,6 @@
           <output id="position">00:00:00</output>
           <button type="button" id="auto-sync" hidden>Auto Sync</button>
           <output id="sync-status"></output>
-        </div>
-
-        <div id="cue-display" hidden>
-          <div class="cue">
-            <span class="cue-label">Now</span>
-            <output id="cue-now"></output>
-          </div>
-          <div class="cue">
-            <span class="cue-label">Next</span>
-            <output id="cue-next"></output>
-          </div>
         </div>
 
         <form id="seek-form" class="controls">
@@ -148,7 +147,11 @@
       const autoSync = document.getElementById("auto-sync");
       const syncStatus = document.getElementById("sync-status");
       const cueDisplay = document.getElementById("cue-display");
+      const cueNowRow = document.getElementById("cue-now-row");
+      const cueNowTime = document.getElementById("cue-now-time");
       const cueNow = document.getElementById("cue-now");
+      const cueNextRow = document.getElementById("cue-next-row");
+      const cueNextTime = document.getElementById("cue-next-time");
       const cueNext = document.getElementById("cue-next");
 
       // The ggml models the appliance can run, fetched by the browser
@@ -464,6 +467,7 @@
       let syncPoll = null;
       let activeCues = [];
       let cuesFile = null;
+      let nextStart = null;
 
       // The now/next display parses the attached SRT once, tracked by
       // title; a stale response from an earlier switch is dropped.
@@ -565,7 +569,22 @@
       }
 
       // Cues are sorted by start: the last started cue is the showing
-      // candidate, the one after it the upcoming one.
+      // candidate, the one after it the upcoming one. Each row appears
+      // only while it has a cue to show.
+      function setCueRow(row, time, output, cue) {
+        row.hidden = cue === null;
+        if (cue === null) {
+          return;
+        }
+        const start = formatTime(cue.start);
+        if (time.textContent !== start) {
+          time.textContent = start;
+        }
+        if (output.textContent !== cue.text) {
+          output.textContent = cue.text;
+        }
+      }
+
       function updateCueDisplay() {
         const pos = currentPosition();
         let low = 0;
@@ -580,14 +599,10 @@
         }
         const showing =
           low > 0 && pos < activeCues[low - 1].end ? activeCues[low - 1] : null;
-        const nowText = showing?.text ?? "";
-        const nextText = activeCues[low]?.text ?? "";
-        if (cueNow.textContent !== nowText) {
-          cueNow.textContent = nowText;
-        }
-        if (cueNext.textContent !== nextText) {
-          cueNext.textContent = nextText;
-        }
+        const upcoming = activeCues[low] ?? null;
+        nextStart = upcoming?.start ?? null;
+        setCueRow(cueNowRow, cueNowTime, cueNow, showing);
+        setCueRow(cueNextRow, cueNextTime, cueNext, upcoming);
       }
 
       function tick() {
@@ -815,6 +830,12 @@
         });
         nudgeBack.addEventListener("click", () => nudgeTime(-1));
         nudgeForward.addEventListener("click", () => nudgeTime(1));
+        cueNextRow.addEventListener("click", async () => {
+          if (nextStart === null) {
+            return;
+          }
+          applyState(await subtitler.setTime(nextStart));
+        });
         font.addEventListener("change", async () => {
           applyState(await subtitler.setFontFamily(font.value));
         });
