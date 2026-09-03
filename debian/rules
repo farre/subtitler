@@ -26,7 +26,7 @@ override_dh_auto_configure:
 	    git clone --depth 1 --branch v1.9.3 \
 	        https://github.com/ggml-org/whisper.cpp.git "$(WHISPER_SRC)"; \
 	fi
-	dh_auto_configure
+	dh_auto_configure -- -DSUBTITLER_API_KEY='$(SUBTITLER_API_KEY)'
 
 # trixie's dwz can't parse the DWARF 5 .debug_addr section clang 19
 # emits ("Unknown debugging section .debug_addr"). The step only

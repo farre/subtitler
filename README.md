@@ -80,6 +80,20 @@ user with configuration in `/etc/subtitler/config.ini` and state in
 `/var/lib/subtitler`, restarting on failure; manage it with
 `systemctl status subtitler` and `journalctl -u subtitler`.
 
+The OpenSubtitles API key is provisioned at build time — deliberately
+not through the unauthenticated web API:
+
+```sh
+SUBTITLER_API_KEY=<key> cmake --build --preset default --target deb
+```
+
+The key is baked into the packaged `/etc/subtitler/config.ini` (the
+rest of the file follows `subtitler.example.ini`), so the .deb contains
+it: don't distribute the package. The file is a dpkg conffile, so
+upgrading with a different baked key prompts — keeping the installed
+file keeps the running configuration, key included. Rotating the key
+by hand is a one-line edit on the appliance.
+
 ### Manual install
 
 ```sh

@@ -80,6 +80,31 @@ install(
     DESTINATION "${CMAKE_INSTALL_DATADIR}/subtitler"
 )
 
+# The OpenSubtitles API key provisioned at build time: baked into the
+# default configuration so the unauthenticated web API never gets a
+# way to write it. In the deb this lands as /etc/subtitler/config.ini
+# (dh passes CMAKE_INSTALL_SYSCONFDIR=/etc), where the service reads
+# it; the .deb then contains the key.
+set(SUBTITLER_API_KEY "" CACHE STRING
+    "OpenSubtitles API key baked into the installed default configuration")
+if(SUBTITLER_API_KEY)
+    # The example ini is the single source for the default; inject the
+    # key at its documented place and fail loudly if that line moves.
+    file(READ "${PROJECT_SOURCE_DIR}/config/subtitler.example.ini" example_ini)
+    string(REPLACE "#api-key =" "api-key = ${SUBTITLER_API_KEY}"
+        default_ini "${example_ini}")
+    if(default_ini STREQUAL example_ini)
+        message(FATAL_ERROR
+            "Could not inject SUBTITLER_API_KEY: "
+            "config/subtitler.example.ini has no '#api-key =' line")
+    endif()
+    file(WRITE "${PROJECT_BINARY_DIR}/config.ini" "${default_ini}")
+    install(
+        FILES "${PROJECT_BINARY_DIR}/config.ini"
+        DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/subtitler"
+    )
+endif()
+
 # The systemd unit (#431). Not GNUInstallDirs' CMAKE_INSTALL_LIBDIR: on
 # Debian that carries the multiarch triplet, and units don't belong
 # under it. <prefix>/lib/systemd/system is in the unit search path for
