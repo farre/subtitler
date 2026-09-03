@@ -22,3 +22,9 @@ override_dh_auto_configure:
 	        https://github.com/ggml-org/whisper.cpp.git "$(WHISPER_SRC)"; \
 	fi
 	dh_auto_configure
+
+# trixie's dwz can't parse the DWARF 5 .debug_addr section clang 19
+# emits ("Unknown debugging section .debug_addr"). The step only
+# deduplicates debug info for the dbgsym package, which the appliance
+# doesn't use.
+override_dh_dwz:
