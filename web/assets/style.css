@@ -77,6 +77,10 @@ details img {
   display: flex;
 }
 
+.subtitle[hidden] {
+  display: none;
+}
+
 .subtitle input {
   position: absolute;
   opacity: 0;
@@ -157,6 +161,11 @@ select {
 #password {
   flex: 1;
   min-width: 8rem;
+}
+
+#filter {
+  width: 100%;
+  margin-bottom: 0.75rem;
 }
 
 #nudge {

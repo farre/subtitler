@@ -27,6 +27,12 @@
 
       <section>
         <h2>Subtitles</h2>
+        <input
+          type="text"
+          id="filter"
+          placeholder="Filter by title or IMDb id…"
+          aria-label="Filter subtitles"
+        />
         <div id="subtitles" class="subtitle-list"></div>
 
         <div class="controls">
@@ -122,6 +128,7 @@
       import { convertTo, parseCues } from "./modules/SRT.mjs";
 
       const library = document.getElementById("subtitles");
+      const filter = document.getElementById("filter");
       const pause = document.getElementById("pause");
       const visible = document.getElementById("visible");
       const position = document.getElementById("position");
@@ -279,8 +286,31 @@
         knownFiles.forEach((file, i) =>
           library.appendChild(subtitleRow(file, i)),
         );
+        applyFilter();
         updateTryNextState();
         return knownFiles;
+      }
+
+      // Fuzzy filter, VSCode-style: the query's characters must appear
+      // in order — "der wo" matches "Deer Woman…". Spaces don't count.
+      // The stored name carries the title and the tt<id> tag, so title
+      // text and IMDb id searches are the same check.
+      function fuzzyMatch(needle, haystack) {
+        let i = 0;
+        for (const ch of haystack) {
+          if (ch === needle[i]) {
+            i += 1;
+          }
+        }
+        return i === needle.length;
+      }
+
+      function applyFilter() {
+        const needle = filter.value.toLowerCase().replace(/\s+/g, "");
+        for (const row of library.children) {
+          const file = row.querySelector("input").value;
+          row.hidden = !fuzzyMatch(needle, file.toLowerCase());
+        }
       }
 
       function searchedImdbId() {
@@ -816,6 +846,7 @@
           autoSync.hidden = true;
         }
 
+        filter.addEventListener("input", applyFilter);
         library.addEventListener("change", async (event) => {
           applyState(await subtitler.select(event.target.value));
           updateConvertState();
