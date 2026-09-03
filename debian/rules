@@ -4,5 +4,21 @@
 export CC = clang
 export CXX = clang++
 
+include /usr/share/dpkg/architecture.mk
+
+# debhelper configures with FETCHCONTENT_FULLY_DISCONNECTED=ON (package
+# builds must not download), so the whisper.cpp checkout FetchContent
+# expects has to be seeded first. Keep the tag in sync with
+# cmake/Dependencies.cmake.
+WHISPER_SRC = $(CURDIR)/obj-$(DEB_HOST_MULTIARCH)/_deps/whisper-src
+
 %:
 	dh $@ --buildsystem=cmake+ninja
+
+override_dh_auto_configure:
+	mkdir -p $(dir $(WHISPER_SRC))
+	if [ ! -d "$(WHISPER_SRC)" ]; then \
+	    git clone --depth 1 --branch v1.9.3 \
+	        https://github.com/ggml-org/whisper.cpp.git "$(WHISPER_SRC)"; \
+	fi
+	dh_auto_configure

@@ -70,7 +70,8 @@ sudo apt install ../subtitler_0.1.0_arm64.deb
 The `deb` target wraps `dpkg-buildpackage -us -uc -b` (it exists only
 when dpkg-buildpackage is installed); the .deb lands next to the source
 directory. The package build runs the test suite and needs network
-access: the first configure clones whisper.cpp. The package installs
+access: debhelper forbids downloads during configure, so `debian/rules`
+clones whisper.cpp into the package build dir first. The package installs
 the binaries, the web assets, and the example configuration; creates
 the `subtitler` service user (systemd-sysusers, so the manual
 provisioning below is already done); and installs, enables, and starts
