@@ -4,6 +4,11 @@
 export CC = clang
 export CXX = clang++
 
+# Drop NEEDED entries for libraries the binaries don't reference
+# directly (pkg-config interface chains), silencing dpkg-shlibdeps'
+# useless-dependency warnings.
+export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
+
 include /usr/share/dpkg/architecture.mk
 
 # debhelper configures with FETCHCONTENT_FULLY_DISCONNECTED=ON (package
