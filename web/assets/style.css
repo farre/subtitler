@@ -210,7 +210,12 @@ input[type="checkbox"] {
 #cue-display {
   display: grid;
   gap: 0.25rem;
+  align-content: start;
   margin-top: 0.75rem;
+  /* no-lh fallback: 4 × 1.5rem line-height + one row gap */
+  height: 6.25rem;
+  height: calc(4lh + 0.25rem);
+  overflow: hidden;
 }
 
 #cue-display[hidden] {
