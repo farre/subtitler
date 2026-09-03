@@ -15,8 +15,10 @@ namespace subtitler {
 // <ConfigDirectory()>/config.ini, overridable with --config=<path>.
 // Every command-line option has a key (the command line wins); the
 // [subtitles] group additionally persists the style state changed
-// through the web API, written back atomically (#221). See
-// config/subtitler.example.ini for the documented key set.
+// through the web API, and an explicitly supplied video-device, --web,
+// --web-root, or --api-key is persisted too, all written back
+// atomically (#221). See config/subtitler.example.ini for the
+// documented key set.
 class Config {
  public:
   // The parsed key set; nullopt for keys the file doesn't set or sets
@@ -69,6 +71,13 @@ class Config {
   // Write-back for the web-API whisper state (#19).
   void SetWhisperEnabled(bool enabled);
   void SetWhisperModel(std::string_view model);
+
+  // Write-back for values explicitly supplied on the command line, so
+  // the next run needs no flags.
+  void SetDevice(std::string_view device);
+  void SetWebEnabled(bool enabled);
+  void SetWebRoot(std::string_view root);
+  void SetApiKey(std::string_view api_key);
 
   // Serializes the document to the loaded path atomically (temp file +
   // rename), creating parent directories. false on any I/O failure.

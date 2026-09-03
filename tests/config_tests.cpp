@@ -217,6 +217,28 @@ delay-ms = 10
   CHECK(values.subtitle_font_color == 0xFF112233u);
 }
 
+TEST_CASE("capture and web write-back round-trips") {
+  const TempDir dir;
+  const auto path = dir.File("[capture]\ndevice = /dev/video0\n");
+
+  const auto config = subtitler::Config::Load(path);
+  REQUIRE(config != nullptr);
+
+  config->SetDevice("/dev/video3");
+  config->SetWebEnabled(true);
+  config->SetWebRoot("/srv/www");
+  config->SetApiKey("s3cret");
+  REQUIRE(config->Save());
+
+  const auto reloaded = subtitler::Config::Load(path);
+  REQUIRE(reloaded != nullptr);
+  const auto& values = reloaded->values();
+  CHECK(values.device == "/dev/video3");
+  CHECK(values.web == true);
+  CHECK(values.web_root == "/srv/www");
+  CHECK(values.api_key == "s3cret");
+}
+
 TEST_CASE("whisper write-back round-trips") {
   const TempDir dir;
   const auto path = dir.File("[whisper]\nenabled = false\n");

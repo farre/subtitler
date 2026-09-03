@@ -239,6 +239,30 @@ void Config::SetWhisperModel(std::string_view model) {
   values_.whisper_model = std::string{model};
 }
 
+void Config::SetDevice(std::string_view device) {
+  g_key_file_set_string(key_file_.get(), "capture", "device",
+                        std::string{device}.c_str());
+  values_.device = std::string{device};
+}
+
+void Config::SetWebEnabled(bool enabled) {
+  g_key_file_set_boolean(key_file_.get(), "web", "enabled",
+                         static_cast<gboolean>(enabled));
+  values_.web = enabled;
+}
+
+void Config::SetWebRoot(std::string_view root) {
+  g_key_file_set_string(key_file_.get(), "web", "root",
+                        std::string{root}.c_str());
+  values_.web_root = std::string{root};
+}
+
+void Config::SetApiKey(std::string_view api_key) {
+  g_key_file_set_string(key_file_.get(), "web", "api-key",
+                        std::string{api_key}.c_str());
+  values_.api_key = std::string{api_key};
+}
+
 bool Config::Save() const {
   gsize length = 0;
   const UniquePtr<gchar, g_free> data{

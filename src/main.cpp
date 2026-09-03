@@ -98,6 +98,12 @@ int main(int argc, char** argv) {
   // The whisper tap's ggml model (#19 spike); experimental.
   std::optional<std::string> whisper_model;
   int positional = 0;
+  // Values explicitly supplied on the command line persist to the
+  // config after a successful parse.
+  bool persist_device = false;
+  bool persist_web = false;
+  bool persist_web_root = false;
+  bool persist_api_key = false;
 
   const auto usage = [&] {
     std::println(stderr,
@@ -198,6 +204,7 @@ int main(int argc, char** argv) {
       audio = false;
     } else if (arg == "--web") {
       web = true;
+      persist_web = true;
     } else if (arg.starts_with("--audio-output-device=")) {
       audio_output_device = std::string{
           arg.substr(std::string_view{"--audio-output-device="}.size())};
@@ -216,8 +223,10 @@ int main(int argc, char** argv) {
     } else if (arg.starts_with("--web-root=")) {
       web_root =
           std::string{arg.substr(std::string_view{"--web-root="}.size())};
+      persist_web_root = true;
     } else if (arg.starts_with(std::string_view("--api-key="))) {
       api_key = std::string{arg.substr(std::string_view{"--api-key="}.size())};
+      persist_api_key = true;
     } else if (arg.starts_with("--whisper=")) {
       whisper_model =
           std::string{arg.substr(std::string_view{"--whisper="}.size())};
@@ -227,6 +236,7 @@ int main(int argc, char** argv) {
       return EXIT_FAILURE;
     } else if (positional == 0) {
       device = arg;
+      persist_device = true;
       ++positional;
     } else if (positional == 1) {
       connector_id = ParseInteger(arg);
@@ -240,6 +250,28 @@ int main(int argc, char** argv) {
     } else {
       usage();
       return EXIT_FAILURE;
+    }
+  }
+
+  // Flags explicitly given on the command line persist: the next run
+  // picks them up from the file without repeating them.
+  if (config &&
+      (persist_device || persist_web || persist_web_root || persist_api_key)) {
+    if (persist_device) {
+      config->SetDevice(device);
+    }
+    if (persist_web) {
+      config->SetWebEnabled(web);
+    }
+    if (persist_web_root) {
+      config->SetWebRoot(web_root->string());
+    }
+    if (persist_api_key) {
+      config->SetApiKey(*api_key);
+    }
+    if (!config->Save()) {
+      MAIN_LOG(subtitler::LogLevel::kWarning,
+               "Could not save the configuration");
     }
   }
 
