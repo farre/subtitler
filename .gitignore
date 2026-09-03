@@ -70,3 +70,10 @@ Testing/
 
 # Node
 node_modules/
+
+# Debian packaging artifacts
+/debian/.debhelper/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/subtitler/
+/obj-*/

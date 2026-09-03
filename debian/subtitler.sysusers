@@ -1,0 +1,6 @@
+# The service user, with the device-access groups from the README's
+# "Provisioning the Pi" section.
+u subtitler - "Subtitler appliance" /nonexistent /usr/sbin/nologin
+m subtitler video
+m subtitler render
+m subtitler audio

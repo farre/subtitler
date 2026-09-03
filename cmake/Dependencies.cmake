@@ -65,6 +65,10 @@ if(SUBTITLER_ENABLE_WHISPER)
         GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp.git
         GIT_TAG v1.9.3
         GIT_SHALLOW TRUE
+        # v1.9.3's install rules are unconditional; keep its static
+        # libs, headers, and cmake/pkgconfig files out of the install
+        # (and the deb).
+        EXCLUDE_FROM_ALL
     )
 
     # CACHE FORCE: whisper.cpp's own cmake_minimum_required resets CMP0077

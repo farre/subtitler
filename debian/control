@@ -1,0 +1,47 @@
+Source: subtitler
+Section: video
+Priority: optional
+Maintainer: Andreas Farre <andreas@farre.se>
+Build-Depends:
+ debhelper-compat (= 13),
+ ca-certificates,
+ clang,
+ cmake (>= 3.30),
+ doctest-dev,
+ fonts-dejavu-core,
+ git,
+ gstreamer1.0-alsa,
+ gstreamer1.0-plugins-bad,
+ gstreamer1.0-plugins-base,
+ gstreamer1.0-plugins-good,
+ libasound2-dev,
+ libdrm-dev,
+ libglib2.0-dev,
+ libgstreamer-plugins-base1.0-dev,
+ libgstreamer1.0-dev,
+ libpango1.0-dev,
+ libsoup-3.0-dev,
+ ninja-build,
+ pkg-config,
+Standards-Version: 4.7.0
+Homepage: https://github.com/farre/subtitler
+
+Package: subtitler
+Architecture: any
+Depends:
+ fonts-dejavu-core,
+ gstreamer1.0-alsa,
+ gstreamer1.0-plugins-bad,
+ gstreamer1.0-plugins-base,
+ gstreamer1.0-plugins-good,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: HDMI capture passthrough appliance with subtitle overlay
+ Grabs 1080p60 video and audio from a V4L2/ALSA capture device (the
+ UltraSemi CV105) and outputs it through DRM/KMS and vc4-hdmi on a
+ Raspberry Pi 5, with an optional SRT subtitle overlay, an MJPEG web
+ preview, and a whisper.cpp transcription tap.
+ .
+ The package installs the subtitler.service systemd unit (enabled and
+ started on install), creates the subtitler service user, and serves
+ the appliance web interface on port 8080.

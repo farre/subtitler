@@ -1,0 +1,6 @@
+subtitler (0.1.0) unstable; urgency=medium
+
+  * Initial Debian package: the subtitler and subtitler-probe binaries,
+    the web assets, and the subtitler.service systemd unit.
+
+ -- Andreas Farre <andreas@farre.se>  Thu, 03 Sep 2026 20:00:00 +0200

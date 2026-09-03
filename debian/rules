@@ -1,0 +1,8 @@
+#!/usr/bin/make -f
+
+# Match the default preset: Clang (C++26) and Ninja.
+export CC = clang
+export CXX = clang++
+
+%:
+	dh $@ --buildsystem=cmake+ninja

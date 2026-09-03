@@ -1,0 +1,31 @@
+[Unit]
+Description=Subtitler HDMI capture passthrough appliance
+After=sound.target
+# The CV105 and the DRM device may enumerate late: never give up
+# restarting, the appliance should come back whenever hardware returns.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=subtitler
+# The app resolves config and state through XDG; point them at the
+# system locations, owned by the service user via the directives below
+# (/etc/subtitler/config.ini and /var/lib/subtitler).
+Environment=XDG_CONFIG_HOME=/etc
+Environment=XDG_STATE_HOME=/var/lib
+ConfigurationDirectory=subtitler
+StateDirectory=subtitler
+# --web persists to the configuration on first run.
+ExecStart=/usr/bin/subtitler --web
+Restart=on-failure
+RestartSec=2
+# Device access stays governed by the subtitler user's groups
+# (video/render/audio); the state and configuration directories remain
+# writable under ProtectSystem=strict.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

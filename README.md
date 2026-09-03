@@ -58,16 +58,42 @@ by default; disable with `-DBUILD_TESTING=OFF`.
 
 ## Installing
 
+### Debian package (the Pi)
+
+```sh
+sudo apt install dpkg-dev debhelper   # plus the packages from Building
+cmake --preset default
+cmake --build --preset default --target deb
+sudo apt install ../subtitler_0.1.0_arm64.deb
+```
+
+The `deb` target wraps `dpkg-buildpackage -us -uc -b` (it exists only
+when dpkg-buildpackage is installed); the .deb lands next to the source
+directory. The package build runs the test suite and needs network
+access: the first configure clones whisper.cpp. The package installs
+the binaries, the web assets, and the example configuration; creates
+the `subtitler` service user (systemd-sysusers, so the manual
+provisioning below is already done); and installs, enables, and starts
+`subtitler.service`. The service runs `subtitler --web` as the service
+user with configuration in `/etc/subtitler/config.ini` and state in
+`/var/lib/subtitler`, restarting on failure; manage it with
+`systemctl status subtitler` and `journalctl -u subtitler`.
+
+### Manual install
+
 ```sh
 cmake --install build
 ```
 
-Installs the `subtitler` binary to `${CMAKE_INSTALL_PREFIX}/bin`
-(`/usr/local` by default).
+Installs the binaries, the web assets, the example configuration, and
+the systemd unit under `${CMAKE_INSTALL_PREFIX}` (`/usr/local` by
+default).
 
 ## Provisioning the Pi
 
-Create the service user and grant it device access via groups:
+Skip this section when installing the deb — it creates the user. For a
+manual install, create the service user and grant it device access via
+groups:
 
 ```sh
 sudo adduser --system --no-create-home --shell /usr/sbin/nologin subtitler
@@ -96,6 +122,9 @@ With no arguments it prints a full report; `--json` emits machine-readable
 output.
 
 ## Running
+
+With the deb installed the appliance is already running as
+`subtitler.service`; this section is for running from the build tree.
 
 ```sh
 ./build/subtitler [video-device] [connector-id] [--config=<path>] [--output=software|pisp|window|null] [--no-audio] [--audio-output-device=<alsa-device>] [--audio-offset=<ms>] [--subtitles=<srt-file>] [--web] [--web-root=<dir>]
