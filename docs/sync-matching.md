@@ -105,9 +105,14 @@ window start; the whole window when no segments). `RunWhisper` stamps each
 window at `window_end − trailing_silence` for both the sync feed and the
 transcript callback, so the capture log carries matcher-ready timestamps.
 Implemented as trailing silence rather than an absolute offset so the
-stream needs no window-length bookkeeping. Real-capture verification on
-the Pi pending: recapture the fragments and confirm the vote clusters
-tighten (fragment 2's spread should drop well under 1.87 s).
+stream needs no window-length bookkeeping. Verified on the Pi with a
+post-change recapture of fragment 2's scene ("After improvements" in
+`fragments/CigaretteBurns.md`): locked with 3 of 4 windows voting and the
+vote spread tightened from 1 871 ms to **404 ms** — and that despite a
+mid-sentence deletion ("some rare" dropped from window 3), which the
+step-1 bucket merging absorbed. The rejected window was the proper-noun
+one ("Mr. Bounder" for "Mr. Bellinger"): live confirmation of the
+phonetics gap noted in step 5.
 
 ### 3. Window overlap (transcriber, **done**)
 
