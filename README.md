@@ -136,6 +136,26 @@ subtitler-probe [--json] [devices | capture <device> | audio | plugins | drm | p
 With no arguments it prints a full report; `--json` emits machine-readable
 output.
 
+## Sync matcher workbench
+
+`subtitler-test` exercises the production auto-sync matcher (`src/sync`)
+without running the appliance — no capture hardware or GStreamer needed.
+It is built by the default build (or explicitly with
+`cmake --build --preset default --target subtitler-test`) and is not
+installed:
+
+```sh
+./build/subtitler-test <srt-file> [--windows=<file>] [<fragment>...]
+```
+
+Each fragment is one whisper-style transcript window with timestamp 0, so
+a vote's theta reads directly as the fragment's end position in the SRT.
+`--windows` reads additional windows from a file (`-` for stdin), one per
+line as `<timestamp-ns>\t<text>` — the web UI's capture log verbatim — or
+bare `<text>`; empty lines and `#` comments are skipped. It prints
+per-window stats and the lock verdict; exit status is 0 on lock, 1
+without, and 2 on usage or file errors.
+
 ## Running
 
 With the deb installed the appliance is already running as
