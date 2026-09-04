@@ -500,4 +500,19 @@ TEST_CASE("whisper model store") {
 
     std::filesystem::remove_all(root);
   }
+
+  SUBCASE("removes a stored model") {
+    std::filesystem::create_directories(root / "models");
+    {
+      std::ofstream{root / "models" / "ggml-a.bin"};
+    }
+
+    CHECK(subtitler::RemoveWhisperModel(root, "ggml-a.bin"));
+    CHECK(subtitler::ListWhisperModels(root).empty());
+
+    CHECK_FALSE(subtitler::RemoveWhisperModel(root, "ggml-a.bin"));
+    CHECK_FALSE(subtitler::RemoveWhisperModel(root, "../evil.bin"));
+
+    std::filesystem::remove_all(root);
+  }
 }

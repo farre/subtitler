@@ -28,13 +28,14 @@ using WhisperStateSetHandler = std::function<bool(
     std::optional<bool> enabled, std::optional<std::string_view> model)>;
 
 // The /api/whisper endpoints (#19): GET/PUT /api/whisper reads and
-// changes the tap's state, and PUT /api/whisper/models/<name> stores a
+// changes the tap's state, PUT /api/whisper/models/<name> stores a
 // model into <state-dir>/models — models are never downloaded
 // automatically; the web interface fetches them itself (from
-// HuggingFace, which allows CORS) and stores them here. Model listing
-// and storage resolve through state_dir_ via paths.h. Unset state
-// hooks disable the state endpoint; an unset state_dir_ disables
-// everything model-related.
+// HuggingFace, which allows CORS) and stores them here — and DELETE
+// /api/whisper/models/<name> removes one (409 while the tap is running
+// it). Model listing, storage, and removal resolve through state_dir_
+// via paths.h. Unset state hooks disable the state endpoint; an unset
+// state_dir_ disables everything model-related.
 struct WhisperRoutes {
   // Adds the route handlers with this as user_data. Called on the io
   // thread.

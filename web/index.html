@@ -89,6 +89,14 @@
           <label for="whisper-enabled">Transcribe audio</label>
           <label for="whisper-model">Model</label>
           <select id="whisper-model"></select>
+          <button
+            type="button"
+            id="whisper-delete"
+            class="delete"
+            aria-label="Delete the selected model"
+          >
+            ✕
+          </button>
         </div>
 
         <div class="controls">
@@ -146,6 +154,7 @@
       const whisperSection = document.getElementById("whisper-section");
       const whisperEnabled = document.getElementById("whisper-enabled");
       const whisperModel = document.getElementById("whisper-model");
+      const whisperDelete = document.getElementById("whisper-delete");
       const whisperDownloadModel = document.getElementById(
         "whisper-download-model",
       );
@@ -814,6 +823,40 @@
         }
       }
 
+      async function deleteWhisperModel() {
+        const file = whisperModel.value;
+        if (file === "") {
+          return;
+        }
+        try {
+          await subtitler.removeWhisperModel(file);
+        } catch (error) {
+          // A 409 carries the reason ({"reason":...}); anything else is
+          // a transport failure.
+          whisperStatus.value =
+            error.body?.reason ?? "Couldn't delete the model";
+          await refreshWhisper();
+          return;
+        }
+        whisperStatus.value = `Deleted ${file}`;
+        let state;
+        try {
+          state = await subtitler.whisper();
+        } catch {
+          return;
+        }
+        // Deleting the selected model moves the selection to another
+        // stored one, so the gone file doesn't linger as the
+        // configured model.
+        if (state.model === file && state.models.length > 0) {
+          applyWhisperState(
+            await subtitler.setWhisper({ model: state.models[0] }),
+          );
+        } else {
+          applyWhisperState(state);
+        }
+      }
+
       async function refreshWhisper() {
         try {
           applyWhisperState(await subtitler.whisper());
@@ -906,6 +949,7 @@
             await refreshWhisper();
           }
         });
+        whisperDelete.addEventListener("click", deleteWhisperModel);
         whisperDownload.addEventListener("click", downloadWhisperModel);
         autoSync.addEventListener("click", startAutoSync);
         loginForm.addEventListener("submit", async (event) => {

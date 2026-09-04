@@ -980,6 +980,40 @@ TEST_CASE("web server whisper endpoints") {
               .status == SOUP_STATUS_BAD_REQUEST);
   }
 
+  SUBCASE("model delete removes the entry") {
+    CHECK(HttpRequest("DELETE", port, "/api/whisper/models/ggml-tiny.en.bin")
+              .status == SOUP_STATUS_NO_CONTENT);
+    CHECK_FALSE(
+        std::filesystem::exists(state_dir / "models" / "ggml-tiny.en.bin"));
+
+    const auto response = HttpGet(port, "/api/whisper");
+    CHECK(response.body == R"({"enabled":false,"model":null,"models":[]})");
+  }
+
+  SUBCASE("model delete rejects bad input") {
+    CHECK(HttpRequest("DELETE", port, "/api/whisper/models/ggml-missing.bin")
+              .status == SOUP_STATUS_NOT_FOUND);
+    CHECK(HttpRequest("DELETE", port, "/api/whisper/models/not-a-model")
+              .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(std::filesystem::exists(state_dir / "models" / "ggml-tiny.en.bin"));
+  }
+
+  SUBCASE("model delete refuses the model the tap is running") {
+    enabled = true;
+    model = "ggml-tiny.en.bin";
+
+    const auto response =
+        HttpRequest("DELETE", port, "/api/whisper/models/ggml-tiny.en.bin");
+    CHECK(response.status == SOUP_STATUS_CONFLICT);
+    CHECK(response.body == R"({"reason":"model in use"})");
+    CHECK(std::filesystem::exists(state_dir / "models" / "ggml-tiny.en.bin"));
+
+    // Selected but disabled doesn't block the delete.
+    enabled = false;
+    CHECK(HttpRequest("DELETE", port, "/api/whisper/models/ggml-tiny.en.bin")
+              .status == SOUP_STATUS_NO_CONTENT);
+  }
+
   std::filesystem::remove_all(state_dir);
 }
 
@@ -1079,5 +1113,7 @@ TEST_CASE("web server whisper endpoints without hooks") {
         SOUP_STATUS_NOT_FOUND);
   CHECK(HttpRequest("PUT", port, "/api/whisper/models/ggml-tiny.en.bin",
                     std::string_view{"fake"})
+            .status == SOUP_STATUS_NOT_FOUND);
+  CHECK(HttpRequest("DELETE", port, "/api/whisper/models/ggml-tiny.en.bin")
             .status == SOUP_STATUS_NOT_FOUND);
 }

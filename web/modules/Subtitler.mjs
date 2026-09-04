@@ -69,6 +69,10 @@ class Subtitler extends Rest {
     return this.put(`whisper/models/${name}`, {}, { body });
   }
 
+  removeWhisperModel(name) {
+    return this.delete(`whisper/models/${name}`);
+  }
+
   subtitleSync() {
     return this.get("subtitle-sync");
   }

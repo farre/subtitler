@@ -267,6 +267,23 @@ await window.fetch("/api/whisper/models/ggml-tiny.en.bin", {
 - `413 Content Too Large` — body over 512 MiB (libsoup reads the whole
   body before the handler runs, so the cap also bounds that transient)
 
+### DELETE /api/whisper/models/<name>
+
+Removes a model from the store:
+
+```js
+await window.fetch("/api/whisper/models/ggml-tiny.en.bin", {
+  method: "DELETE",
+});
+```
+
+- `204 No Content` — removed
+- `400 Bad Request` — invalid name
+- `404 Not Found` — no such model stored
+- `409 Conflict` — the tap is currently running this model:
+  `{"reason":"model in use"}` (a selected-but-disabled model can be
+  deleted; the store doesn't track the selection)
+
 ## OpenSubtitles
 
 ### GET /api/opensubtitles

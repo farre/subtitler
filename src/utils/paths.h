@@ -362,4 +362,17 @@ inline std::vector<std::string> ListWhisperModels(
   return names;
 }
 
+// Removes the model named name from the store; false when the name is
+// invalid, no such model is stored, or the removal fails.
+inline bool RemoveWhisperModel(const std::filesystem::path& state_dir,
+                               std::string_view name) {
+  const auto path = WhisperModelPath(state_dir, name);
+  if (!path) {
+    return false;
+  }
+
+  std::error_code error;
+  return std::filesystem::remove(*path, error) && !error;
+}
+
 }  // namespace subtitler

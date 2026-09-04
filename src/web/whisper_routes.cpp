@@ -119,6 +119,37 @@ void HandleModelStore(SoupServerMessage* message, const char* path,
   soup_server_message_set_status(message, SOUP_STATUS_CREATED, nullptr);
 }
 
+// DELETE /api/whisper/models/<name>: removes the model from the store.
+// The model the tap is currently running is in use and stays (409); a
+// selected-but-disabled one can go — the store doesn't track the
+// selection.
+void HandleModelRemove(SoupServerMessage* message, const char* path,
+                       const WhisperRoutes& self) {
+  const UniquePtr<gchar, g_free> decoded{
+      g_uri_unescape_string(path + kWhisperModelsPrefix.size(), nullptr)};
+  if (decoded == nullptr ||
+      !WhisperModelPath(*self.state_dir_, decoded.get())) {
+    soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
+    return;
+  }
+
+  if (self.state_get_) {
+    const auto state = self.state_get_();
+    if (state.enabled && state.model == decoded.get()) {
+      RespondJson(message, R"({"reason":"model in use"})");
+      soup_server_message_set_status(message, SOUP_STATUS_CONFLICT, nullptr);
+      return;
+    }
+  }
+
+  if (!RemoveWhisperModel(*self.state_dir_, decoded.get())) {
+    soup_server_message_set_status(message, SOUP_STATUS_NOT_FOUND, nullptr);
+    return;
+  }
+
+  soup_server_message_set_status(message, SOUP_STATUS_NO_CONTENT, nullptr);
+}
+
 void HandleWhisper(SoupServer*, SoupServerMessage* message, const char* path,
                    GHashTable* query, gpointer user_data) {
   auto& self = *static_cast<WhisperRoutes*>(user_data);
@@ -188,6 +219,13 @@ void HandleWhisper(SoupServer*, SoupServerMessage* message, const char* path,
       route.starts_with(kWhisperModelsPrefix) &&
       route.size() > kWhisperModelsPrefix.size()) {
     HandleModelStore(message, path, self);
+    return;
+  }
+
+  if (method == "DELETE" && self.state_dir_ &&
+      route.starts_with(kWhisperModelsPrefix) &&
+      route.size() > kWhisperModelsPrefix.size()) {
+    HandleModelRemove(message, path, self);
     return;
   }
 
