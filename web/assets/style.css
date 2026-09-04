@@ -233,8 +233,45 @@ input[type="checkbox"] {
   word-break: break-all;
 }
 
-#whisper-capture-log[hidden] {
+#whisper-capture-log-wrap {
+  position: relative;
+}
+
+#whisper-capture-log-wrap[hidden] {
   display: none;
+}
+
+.log-actions {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  display: flex;
+  gap: 0.25rem;
+}
+
+.log-actions button {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  color: var(--muted);
+}
+
+.log-actions button:hover {
+  color: var(--text);
+}
+
+.log-actions svg {
+  width: 0.8rem;
+  height: 0.8rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 #cue-display {

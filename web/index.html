@@ -108,7 +108,36 @@
           <input type="checkbox" id="whisper-capture" />
           <label for="whisper-capture">Capture log</label>
         </div>
-        <pre id="whisper-capture-log" hidden></pre>
+        <div id="whisper-capture-log-wrap" hidden>
+          <pre id="whisper-capture-log"></pre>
+          <div class="log-actions">
+            <button
+              type="button"
+              id="whisper-capture-copy"
+              aria-label="Copy the capture log"
+              title="Copy"
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+                <path
+                  d="M10.5 5.5v-2A1.5 1.5 0 0 0 9 2H4a1.5 1.5 0 0 0-1.5 1.5v5A1.5 1.5 0 0 0 4 10h1.5"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              id="whisper-capture-clear"
+              aria-label="Clear the capture log"
+              title="Clear"
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 8.6a1.4 1.4 0 0 0 1.4 1.3h3.8a1.4 1.4 0 0 0 1.4-1.3L12 4"
+                />
+              </svg>
+            </button>
+          </div>
+        </div>
       </section>
 
       <section>
@@ -166,7 +195,16 @@
       const whisperDownload = document.getElementById("whisper-download");
       const whisperStatus = document.getElementById("whisper-status");
       const whisperCapture = document.getElementById("whisper-capture");
+      const whisperCaptureLogWrap = document.getElementById(
+        "whisper-capture-log-wrap",
+      );
       const whisperCaptureLog = document.getElementById("whisper-capture-log");
+      const whisperCaptureCopy = document.getElementById(
+        "whisper-capture-copy",
+      );
+      const whisperCaptureClear = document.getElementById(
+        "whisper-capture-clear",
+      );
       const autoSync = document.getElementById("auto-sync");
       const syncStatus = document.getElementById("sync-status");
       const cueDisplay = document.getElementById("cue-display");
@@ -1005,16 +1043,50 @@
           if (!whisperCapture.checked) {
             captureSource?.close();
             captureSource = null;
-            whisperCaptureLog.hidden = true;
+            whisperCaptureLogWrap.hidden = true;
             return;
           }
-          whisperCaptureLog.hidden = false;
+          whisperCaptureLogWrap.hidden = false;
           captureSource = new EventSource("/api/whisper/transcript");
           captureSource.addEventListener("message", (event) => {
             const { timestamp_ns, text } = JSON.parse(event.data);
             whisperCaptureLog.textContent += `${timestamp_ns}\t${text}\n`;
             whisperCaptureLog.scrollTop = whisperCaptureLog.scrollHeight;
           });
+        });
+        const copyIcon = whisperCaptureCopy.innerHTML;
+        whisperCaptureCopy.addEventListener("click", async () => {
+          let copied = false;
+          if (navigator.clipboard) {
+            try {
+              await navigator.clipboard.writeText(
+                whisperCaptureLog.textContent,
+              );
+              copied = true;
+            } catch {
+              // Fall through to the selection path.
+            }
+          }
+          if (!copied) {
+            // Insecure contexts (http on the LAN) have no clipboard
+            // API: select the log so execCommand/Ctrl+C can take it.
+            const range = document.createRange();
+            range.selectNodeContents(whisperCaptureLog);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            copied = document.execCommand("copy");
+          }
+          if (!copied) {
+            return;
+          }
+          whisperCaptureCopy.textContent = "✓";
+          setTimeout(() => {
+            whisperCaptureCopy.innerHTML = copyIcon;
+          }, 1000);
+        });
+        whisperCaptureClear.addEventListener("click", () => {
+          whisperCaptureLog.textContent = "";
         });
         autoSync.addEventListener("click", startAutoSync);
         loginForm.addEventListener("submit", async (event) => {
