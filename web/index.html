@@ -1069,13 +1069,17 @@
           }
           if (!copied) {
             // Insecure contexts (http on the LAN) have no clipboard
-            // API: select the log so execCommand/Ctrl+C can take it.
-            const range = document.createRange();
-            range.selectNodeContents(whisperCaptureLog);
-            const selection = window.getSelection();
-            selection.removeAllRanges();
-            selection.addRange(range);
+            // API: execCommand copies the selection, so select a
+            // temporary offscreen textarea instead of the log itself —
+            // the log never shows a selection.
+            const scratch = document.createElement("textarea");
+            scratch.value = whisperCaptureLog.textContent;
+            scratch.style.position = "fixed";
+            scratch.style.top = "-1000px";
+            document.body.appendChild(scratch);
+            scratch.select();
             copied = document.execCommand("copy");
+            scratch.remove();
           }
           if (!copied) {
             return;
