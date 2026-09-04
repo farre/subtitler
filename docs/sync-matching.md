@@ -139,6 +139,19 @@ evaluate weighted local sequence alignment (Smith–Waterman over the word
 streams; a few hundred thousand DP cells per window — see
 `subtitler_matching_improvements.md`).
 
+On phonetics: word-level alignment already tolerates the observed errors,
+which arrive isolated ("found" for "bound", "Bowne" for "Bellinger") —
+substitutions cost a small penalty, they don't break the alignment. The
+real gap is proper nouns: rarity weighting makes them the highest-value
+anchors, and they're what whisper mangles most. If the corpus indicts it,
+add phonetic scoring *inside* the aligner as a scoring refinement, not a
+new matcher: exact word match scores the full rarity weight `w`, a
+phonetic-code match (Double Metaphone — built for English names, ~200
+lines, no dependency) scores a discounted `α·w` with `α < 1`, mismatch
+penalized as usual. Exact matches then always outvote phonetic ones, which
+matters because phonetic space is smaller than word space: undiscounted
+homophone collisions would work directly against "never lock wrong".
+
 ## Open questions
 
 - **Session policy for sparse scenes.** Even a perfect matcher can't lock
