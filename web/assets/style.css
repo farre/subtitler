@@ -136,6 +136,10 @@ form,
   margin-top: 0.75rem;
 }
 
+.controls[hidden] {
+  display: none;
+}
+
 .controls label,
 form label {
   color: var(--muted);

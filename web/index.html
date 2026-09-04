@@ -87,7 +87,7 @@
         <div class="controls">
           <input type="checkbox" id="whisper-enabled" />
           <label for="whisper-enabled">Transcribe audio</label>
-          <label for="whisper-model">Model</label>
+          <label for="whisper-model" id="whisper-model-label">Model</label>
           <select id="whisper-model"></select>
           <button
             type="button"
@@ -97,13 +97,13 @@
           >
             ✕
           </button>
+          <output id="whisper-status"></output>
         </div>
 
-        <div class="controls">
+        <div class="controls" id="whisper-fetch">
           <label for="whisper-download-model">Download</label>
           <select id="whisper-download-model"></select>
           <button type="button" id="whisper-download">Fetch</button>
-          <output id="whisper-status"></output>
         </div>
       </section>
 
@@ -154,7 +154,9 @@
       const whisperSection = document.getElementById("whisper-section");
       const whisperEnabled = document.getElementById("whisper-enabled");
       const whisperModel = document.getElementById("whisper-model");
+      const whisperModelLabel = document.getElementById("whisper-model-label");
       const whisperDelete = document.getElementById("whisper-delete");
+      const whisperFetch = document.getElementById("whisper-fetch");
       const whisperDownloadModel = document.getElementById(
         "whisper-download-model",
       );
@@ -732,13 +734,19 @@
         whisperModel.replaceChildren(
           ...names.map((name) => new Option(name, name, false, name === model)),
         );
+        // An empty select has nothing to choose or delete.
+        whisperModelLabel.hidden = names.length === 0;
+        whisperModel.hidden = names.length === 0;
+        whisperDelete.hidden = names.length === 0;
         const missing = knownModels.filter(
           ({ file }) => !models.includes(file),
         );
         whisperDownloadModel.replaceChildren(
           ...missing.map(({ file, label }) => new Option(label, file)),
         );
-        whisperDownload.disabled = missing.length === 0;
+        // Nothing left to download: the row returns when a delete
+        // opens a slot again.
+        whisperFetch.hidden = missing.length === 0;
         updateAutoSyncState();
       }
 
@@ -819,7 +827,7 @@
           whisperStatus.value = `Download failed: ${error.message}`;
           await refreshWhisper();
         } finally {
-          whisperDownload.disabled = whisperDownloadModel.options.length === 0;
+          whisperDownload.disabled = false;
         }
       }
 
