@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "web/font_routes.h"
 #include "web/subtitle_routes.h"
@@ -62,6 +63,11 @@ class WebServer {
                                            PreviewFrameBuffer& frames,
                                            WebServerHooks hooks = {});
   ~WebServer();
+
+  // Publishes one whisper transcript window to the clients connected
+  // to GET /api/whisper/transcript. Safe to call from any thread, but
+  // publishers must stop before the server is destroyed.
+  void PublishTranscript(std::string text, std::int64_t timestamp_ns);
 
  private:
   std::unique_ptr<Implementation> implementation_;

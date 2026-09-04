@@ -780,6 +780,11 @@ struct Stream::Implementation {
   std::atomic_bool whisper_enabled_ = false;
   std::atomic<std::shared_ptr<WhisperTranscriber>> whisper_transcriber_;
   mutable std::mutex whisper_mutex_;
+  // The transcript sink (web capture). An atomic shared_ptr like the
+  // transcriber above it: swapped from any thread, copied per window by
+  // the whisper thread, which takes no mutex.
+  std::atomic<std::shared_ptr<Stream::TranscriptCallback>>
+      transcript_callback_;
 
   // The one-shot sync session (#433). Guarded by sync_mutex_, which is
   // always taken after mutex_ (Poll applies a lock) or whisper_mutex_
@@ -1102,6 +1107,11 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
     const auto audio_end = GST_CLOCK_TIME_IS_VALID(window_end)
                                ? static_cast<std::int64_t>(window_end)
                                : static_cast<std::int64_t>(MasterRunningTime());
+
+    if (const auto callback = transcript_callback_.load();
+        callback && *callback && !text->empty()) {
+      (*callback)(*text, audio_end);
+    }
 
     std::lock_guard sync_lock{sync_mutex_};
     if (sync_session_) {
@@ -2096,6 +2106,12 @@ bool Stream::WhisperEnabled() const {
 
 std::optional<std::string> Stream::WhisperModel() const {
   return implementation_->WhisperModel();
+}
+
+void Stream::SetTranscriptCallback(TranscriptCallback callback) {
+  implementation_->transcript_callback_.store(
+      callback ? std::make_shared<TranscriptCallback>(std::move(callback))
+               : nullptr);
 }
 
 Stream::SyncStartResult Stream::StartSubtitleSync() {

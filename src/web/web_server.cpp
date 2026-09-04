@@ -12,6 +12,7 @@
 #include "web/opensubtitles_routes.h"
 #include "web/preview_routes.h"
 #include "web/static_files.h"
+#include "web/transcript_routes.h"
 
 struct subtitler::WebServer::Implementation {
   Implementation(std::uint16_t port, PreviewFrameBuffer& frames,
@@ -44,6 +45,7 @@ struct subtitler::WebServer::Implementation {
     }
 
     preview_.Start(context_);
+    transcript_.Start(context_);
   }
 
   ~Implementation() {
@@ -71,6 +73,7 @@ struct subtitler::WebServer::Implementation {
     font_routes_.Register(server_);
     whisper_routes_.Register(server_);
     opensubtitles_routes_.Register(server_);
+    transcript_.Register(server_);
     static_files_.Register(server_);
 
     GError* error = nullptr;
@@ -107,6 +110,7 @@ struct subtitler::WebServer::Implementation {
   FontRoutes font_routes_;
   WhisperRoutes whisper_routes_;
   OpenSubtitlesRoutes opensubtitles_routes_;
+  TranscriptRoutes transcript_;
   StaticFiles static_files_;
 
   // These three are created, used, and destroyed on the io thread; the
@@ -137,5 +141,10 @@ std::unique_ptr<WebServer> WebServer::Create(std::uint16_t port,
 }
 
 WebServer::~WebServer() = default;
+
+void WebServer::PublishTranscript(std::string text,
+                                  std::int64_t timestamp_ns) {
+  implementation_->transcript_.Publish(std::move(text), timestamp_ns);
+}
 
 }  // namespace subtitler

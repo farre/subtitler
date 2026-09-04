@@ -284,6 +284,22 @@ await window.fetch("/api/whisper/models/ggml-tiny.en.bin", {
   `{"reason":"model in use"}` (a selected-but-disabled model can be
   deleted; the store doesn't track the selection)
 
+### GET /api/whisper/transcript
+
+A server-sent-events stream with one event per transcribed whisper
+window — the transcript as it happens, for matcher development:
+
+```
+data: {"timestamp_ns":123456789000,"text":"the lazy brown fox"}
+```
+
+`timestamp_ns` is the running time the window's audio ended at (the
+shared capture/output timeline). The web interface's capture log
+appends each event as a `<timestamp-ns>\t<text>` line — the verbatim
+`--windows` input of `subtitler-test`. Max four clients; 503 beyond.
+Windows arrive only while the tap is enabled; the stream stays silent
+otherwise.
+
 ## OpenSubtitles
 
 ### GET /api/opensubtitles

@@ -200,3 +200,69 @@ TEST_CASE("sync matcher") {
     CHECK(subtitler::MatchTranscript(cues, windows).has_value());
   }
 }
+
+TEST_CASE("sync matcher window votes") {
+  const auto words = MakeWords(1200);
+  const auto cues = MakeCues(words, 6, 3000);
+
+  SUBCASE("a clean window votes with its full trigram count") {
+    constexpr std::int64_t theta = 123 * kSecond;
+    const auto match = subtitler::MatchWindow(cues, WindowAt(cues, 10, 12, theta));
+
+    CHECK(match.reject == subtitler::WindowReject::kNone);
+    REQUIRE(match.theta_ns.has_value());
+    CHECK(*match.theta_ns == theta);
+    CHECK(match.words == 18);
+    // Every trigram is unique, so all of them back the winner and
+    // there is no runner-up.
+    CHECK(match.best_hits == 16);
+    CHECK(match.runner_up_hits == 0);
+  }
+
+  SUBCASE("a window of fewer than three words cannot vote") {
+    const auto match = subtitler::MatchWindow(cues, {"w60 w61", kSecond});
+
+    CHECK(match.reject == subtitler::WindowReject::kTooShort);
+    CHECK_FALSE(match.theta_ns.has_value());
+    CHECK(match.words == 2);
+  }
+
+  SUBCASE("a window below the hit threshold does not vote") {
+    // Three unique trigrams: one short of the threshold.
+    const auto match =
+        subtitler::MatchWindow(cues, {"w60 w61 w62 w63 w64", kSecond});
+
+    CHECK(match.reject == subtitler::WindowReject::kBelowThreshold);
+    CHECK_FALSE(match.theta_ns.has_value());
+    CHECK(match.best_hits == 3);
+    CHECK(match.runner_up_hits == 0);
+
+    const auto unrelated = subtitler::MatchWindow(
+        cues, {"the quick brown fox jumps over", kSecond});
+    CHECK(unrelated.reject == subtitler::WindowReject::kBelowThreshold);
+    CHECK(unrelated.best_hits == 0);
+  }
+
+  SUBCASE("a window matching two regions equally is ambiguous") {
+    // Cue 50 repeats cue 10 verbatim: every window trigram votes for
+    // both regions, so neither can win by the margin.
+    auto repeated = cues;
+    repeated[50].text = repeated[10].text;
+
+    const auto match = subtitler::MatchWindow(
+        repeated, WindowAt(repeated, 10, 10, 60 * kSecond));
+
+    CHECK(match.reject == subtitler::WindowReject::kAmbiguous);
+    CHECK_FALSE(match.theta_ns.has_value());
+    CHECK(match.best_hits == 4);
+    CHECK(match.runner_up_hits == 4);
+  }
+}
+
+TEST_CASE("sync matcher normalization") {
+  CHECK(subtitler::NormalizeMatchWords("The Quick, BROWN fox!\nJumps... over") ==
+        std::vector<std::string>{"the", "quick", "brown", "fox", "jumps",
+                                 "over"});
+  CHECK(subtitler::NormalizeMatchWords("").empty());
+  CHECK(subtitler::NormalizeMatchWords("---").empty());
+}

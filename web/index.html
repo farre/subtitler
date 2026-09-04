@@ -103,6 +103,12 @@
           <select id="whisper-download-model"></select>
           <button type="button" id="whisper-download">Fetch</button>
         </div>
+
+        <div class="controls">
+          <input type="checkbox" id="whisper-capture" />
+          <label for="whisper-capture">Capture log</label>
+        </div>
+        <pre id="whisper-capture-log" hidden></pre>
       </section>
 
       <section>
@@ -159,6 +165,8 @@
       );
       const whisperDownload = document.getElementById("whisper-download");
       const whisperStatus = document.getElementById("whisper-status");
+      const whisperCapture = document.getElementById("whisper-capture");
+      const whisperCaptureLog = document.getElementById("whisper-capture-log");
       const autoSync = document.getElementById("auto-sync");
       const syncStatus = document.getElementById("sync-status");
       const cueDisplay = document.getElementById("cue-display");
@@ -988,6 +996,26 @@
         });
         whisperDelete.addEventListener("click", deleteWhisperModel);
         whisperDownload.addEventListener("click", downloadWhisperModel);
+        // Dev mode: stream transcribed windows into the log. The log's
+        // "<timestamp-ns>\t<text>" lines are subtitler-test's --windows
+        // file verbatim — copy them out to develop the matcher against
+        // real captures.
+        let captureSource = null;
+        whisperCapture.addEventListener("change", () => {
+          if (!whisperCapture.checked) {
+            captureSource?.close();
+            captureSource = null;
+            whisperCaptureLog.hidden = true;
+            return;
+          }
+          whisperCaptureLog.hidden = false;
+          captureSource = new EventSource("/api/whisper/transcript");
+          captureSource.addEventListener("message", (event) => {
+            const { timestamp_ns, text } = JSON.parse(event.data);
+            whisperCaptureLog.textContent += `${timestamp_ns}\t${text}\n`;
+            whisperCaptureLog.scrollTop = whisperCaptureLog.scrollHeight;
+          });
+        });
         autoSync.addEventListener("click", startAutoSync);
         loginForm.addEventListener("submit", async (event) => {
           event.preventDefault();

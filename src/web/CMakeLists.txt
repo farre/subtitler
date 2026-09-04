@@ -6,6 +6,7 @@ add_library(
     preview_routes.cpp
     static_files.cpp
     subtitle_routes.cpp
+    transcript_routes.cpp
     web_server.cpp
     whisper_routes.cpp
 )

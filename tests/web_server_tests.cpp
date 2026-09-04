@@ -1117,3 +1117,61 @@ TEST_CASE("web server whisper endpoints without hooks") {
   CHECK(HttpRequest("DELETE", port, "/api/whisper/models/ggml-tiny.en.bin")
             .status == SOUP_STATUS_NOT_FOUND);
 }
+
+TEST_CASE("web server transcript stream") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+  auto server = subtitler::WebServer::Create(port, frames);
+  REQUIRE(server != nullptr);
+
+  GObjectPtr<GCancellable> cancellable{g_cancellable_new()};
+  std::jthread watchdog{[&](std::stop_token stop) {
+    for (int i = 0; i < 200 && !stop.stop_requested(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    }
+    g_cancellable_cancel(cancellable.get());
+  }};
+
+  GObjectPtr<SoupSession> session{soup_session_new()};
+  GObjectPtr<SoupMessage> message{soup_message_new(
+      "GET", Url(port, "/api/whisper/transcript").c_str())};
+
+  GObjectPtr<GInputStream> stream{soup_session_send(
+      session.get(), message.get(), cancellable.get(), nullptr)};
+  REQUIRE(stream != nullptr);
+  CHECK(soup_message_get_status(message.get()) == SOUP_STATUS_OK);
+  CHECK(soup_message_headers_get_one(
+            soup_message_get_response_headers(message.get()),
+            "Content-Type") == std::string_view{"text/event-stream"});
+
+  server->PublishTranscript("hello world", 123456789);
+  server->PublishTranscript("quotes \" and \\ slashes", 123456790);
+
+  // Read until both events show up; the watchdog bounds the wait.
+  std::string received;
+  while (!received.contains("123456790")) {
+    BytesPtr chunk{g_input_stream_read_bytes(stream.get(), 16384,
+                                             cancellable.get(), nullptr)};
+
+    if (chunk == nullptr) {
+      break;
+    }
+
+    received.append(
+        static_cast<const char*>(g_bytes_get_data(chunk.get(), nullptr)),
+        g_bytes_get_size(chunk.get()));
+  }
+
+  watchdog.request_stop();
+
+  INFO("received:\n", received);
+  CHECK(received.contains(
+      "data: {\"timestamp_ns\":123456789,\"text\":\"hello world\"}\n\n"));
+  CHECK(received.contains(
+      "data: {\"timestamp_ns\":123456790,\"text\":\"quotes \\\" and "
+      "\\\\ slashes\"}\n\n"));
+
+  g_input_stream_close(stream.get(), nullptr, nullptr);
+  soup_session_abort(session.get());
+}

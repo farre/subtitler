@@ -648,6 +648,16 @@ int main(int argc, char** argv) {
       return EXIT_FAILURE;
     }
 
+    // The transcript capture stream: whisper windows are pushed to
+    // connected web clients. stream->Stop() joins the whisper thread
+    // before web_server is destroyed, so the callback can never
+    // outlive the server.
+    stream->SetTranscriptCallback(
+        [server = web_server.get()](const std::string& text,
+                                    std::int64_t timestamp_ns) {
+          server->PublishTranscript(text, timestamp_ns);
+        });
+
     if (web_root) {
       MAIN_LOG(subtitler::LogLevel::kInfo,
                "Web interface available on port {}, serving {}", kWebPort,

@@ -220,6 +220,23 @@ input[type="checkbox"] {
   font-variant-numeric: tabular-nums;
 }
 
+#whisper-capture-log {
+  max-height: 12rem;
+  overflow-y: auto;
+  margin: 0.75rem 0 0;
+  padding: 0.5rem 0.75rem;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+#whisper-capture-log[hidden] {
+  display: none;
+}
+
 #cue-display {
   display: grid;
   gap: 0.25rem;

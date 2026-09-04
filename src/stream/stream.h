@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -141,6 +142,14 @@ class Stream {
   // when whisper was never enabled).
   bool WhisperEnabled() const;
   std::optional<std::string> WhisperModel() const;
+
+  // A whisper transcript sink (#433 tooling): called on the whisper
+  // thread with each non-empty transcribed window — the text and the
+  // running time (shared timeline, ns) its audio ended at. Cleared with
+  // nullptr. Used by the web transcript capture; keep it cheap.
+  using TranscriptCallback =
+      std::function<void(const std::string&, std::int64_t)>;
+  void SetTranscriptCallback(TranscriptCallback callback);
 
   // One-shot subtitle auto-sync (#433): listens to the capture audio,
   // matches the transcript against the attached SRT, and jumps the SRT
