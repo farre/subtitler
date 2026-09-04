@@ -90,6 +90,26 @@ TEST_CASE("whisper transcriber") {
     CHECK(transcription->text.size() < 16);
   }
 
+  SUBCASE("retains 500 ms of overlap between windows") {
+    const std::vector<float> second(16000, 0.0F);
+    const std::vector<float> tenth(1600, 0.0F);
+
+    for (int i = 0; i < 4; ++i) {
+      CHECK_FALSE(transcriber->Push(second).has_value());
+    }
+    REQUIRE(transcriber->Push(second).has_value());
+
+    // The retained 500 ms means the next window completes after 4.5 s
+    // of new audio, not 5 s.
+    for (int i = 0; i < 4; ++i) {
+      CHECK_FALSE(transcriber->Push(second).has_value());
+    }
+    for (int i = 0; i < 4; ++i) {
+      CHECK_FALSE(transcriber->Push(tenth).has_value());
+    }
+    CHECK(transcriber->Push(tenth).has_value());
+  }
+
   SUBCASE("transcribes speech fed in live-sized chunks") {
     const char* wav = std::getenv("SUBTITLER_TEST_WHISPER_WAV");
     if (wav == nullptr) {

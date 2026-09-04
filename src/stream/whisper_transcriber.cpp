@@ -26,6 +26,11 @@ constexpr int kSampleRate = 16000;
 // the Pi 5 (the spike's timing logs test exactly that).
 constexpr std::size_t kWindowSeconds = 5;
 constexpr std::size_t kWindowSamples = kSampleRate * kWindowSeconds;
+// Each window keeps this much of its tail for the next one, so a word
+// clipped at a boundary is heard whole by the following window (the
+// whisper.cpp stream example does the same). Windows slide every
+// kWindowSeconds - overlap: ~11% more inference for 500 ms.
+constexpr std::size_t kOverlapSamples = kSampleRate / 2;
 // Leaves cores for the passthrough on the 4-core Pi 5.
 constexpr int kThreads = 2;
 
@@ -130,9 +135,11 @@ std::optional<Transcription> WhisperTranscriber::Push(
     return std::nullopt;
   }
 
-  // Keep any backlog as the start of the next window; the tap's dropping
-  // appsink bounds how far behind live audio this can fall.
-  window.erase(window.begin(), window.begin() + kWindowSamples);
+  // Keep the overlap tail plus any backlog as the start of the next
+  // window; the tap's dropping appsink bounds how far behind live
+  // audio this can fall.
+  window.erase(window.begin(),
+               window.begin() + kWindowSamples - kOverlapSamples);
 
   std::string text;
   const int segments = whisper_full_n_segments(implementation_->context.get());

@@ -6,7 +6,9 @@ against the examples in `fragments/`.
 
 ## Current design (#18/#21/#290/#433)
 
-- The whisper tap transcribes **disjoint 5 s windows**; each window's
+- The whisper tap transcribes **5 s windows retaining 500 ms of overlap**
+  (sliding every 4.5 s, so a word clipped at a boundary is heard whole by
+  the next window); each window's
   `TimestampedText` is stamped with the window's **speech end** — the last
   buffer's PTS+duration minus the window's trailing silence, read from the
   last whisper segment (`RunWhisper` in `src/stream/stream.cpp`).
@@ -107,12 +109,18 @@ stream needs no window-length bookkeeping. Real-capture verification on
 the Pi pending: recapture the fragments and confirm the vote clusters
 tighten (fragment 2's spread should drop well under 1.87 s).
 
-### 3. Window overlap (transcriber)
+### 3. Window overlap (transcriber, **done**)
 
-Retain 250–500 ms of the previous window instead of erasing everything after
-inference (~10% more inference for 500 ms; whisper.cpp's stream example does
-the same). Interacts with step 2's window-start bookkeeping, so it comes
-after. Reset retained audio when a new sync session starts.
+Retain 500 ms of each window for the next instead of erasing everything
+after inference (`kOverlapSamples = kSampleRate / 2`; ~11% more inference,
+the whisper.cpp stream example does the same). Windows slide every 4.5 s;
+a phrase is shared by at most two adjacent windows, so a lock can't be
+carried by one speech event triple-counted. The step-2 speech-end math is
+unaffected: `window_end` is still the window's audio end and `t1` is
+relative to the window start including the retained tail. No
+session-start reset was plumbed: the tap runs continuously, so the
+retained tail is always fresh audio — session boundaries are invisible to
+the audio stream, and a tap toggle swaps in a fresh transcriber anyway.
 
 ### 4. Session-end diagnostics
 
