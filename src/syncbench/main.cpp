@@ -3,7 +3,9 @@
 // (src/sync), so matcher improvements developed here carry over to the
 // appliance unchanged. Depends on subtitler::sync only.
 
+#include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -31,6 +33,10 @@ constexpr std::string_view kUsage =
     "position in the SRT. --windows reads additional windows from a file\n"
     "(\"-\" for stdin), one per line: \"<timestamp-ns>\\t<text>\", or bare\n"
     "\"<text>\" (timestamp 0); empty lines and '#' comments are skipped.\n"
+    "--benchmark[=<n>] (default 100) then repeats MatchTranscript over the\n"
+    "given windows n times and reports min/median/max per call — the live\n"
+    "budget check, since SyncSession::Feed runs the matcher once per\n"
+    "whisper window.\n"
     "\n"
     "Exit status: 0 when the windows lock, 1 when they don't, 2 on usage\n"
     "or file errors.";
@@ -59,8 +65,7 @@ subtitler::TimestampedText ParseWindowLine(std::string_view line) {
     std::int64_t timestamp_ns = 0;
     const auto prefix = line.substr(0, tab);
     const auto* end = prefix.data() + prefix.size();
-    if (const auto parsed =
-            std::from_chars(prefix.data(), end, timestamp_ns);
+    if (const auto parsed = std::from_chars(prefix.data(), end, timestamp_ns);
         parsed.ec == std::errc{} && parsed.ptr == end) {
       return {std::string{line.substr(tab + 1)}, timestamp_ns};
     }
@@ -72,8 +77,8 @@ std::string FormatMs(std::int64_t ms) {
   const bool negative = ms < 0;
   const auto total = static_cast<std::uint64_t>(negative ? -ms : ms);
   return std::format("{}{:02}:{:02}:{:02}.{:03}", negative ? "-" : "",
-                     total / 3'600'000, total / 60'000 % 60,
-                     total / 1'000 % 60, total % 1'000);
+                     total / 3'600'000, total / 60'000 % 60, total / 1'000 % 60,
+                     total % 1'000);
 }
 
 std::string_view RejectReason(subtitler::WindowReject reject) {
@@ -113,8 +118,10 @@ int main(int argc, char** argv) {
   }
 
   std::vector<subtitler::TimestampedText> windows;
+  std::size_t benchmark = 0;
   for (std::size_t i = 1; i < args.size(); ++i) {
     constexpr std::string_view windows_flag = "--windows=";
+    constexpr std::string_view benchmark_flag = "--benchmark";
     if (args[i].starts_with(windows_flag)) {
       const auto path = args[i].substr(windows_flag.size());
       const auto contents = path == "-" ? ReadStream(std::cin) : ReadFile(path);
@@ -128,6 +135,16 @@ int main(int argc, char** argv) {
           continue;
         }
         windows.push_back(ParseWindowLine(line));
+      }
+    } else if (args[i] == benchmark_flag) {
+      benchmark = 100;
+    } else if (args[i].starts_with(std::string{benchmark_flag} + "=")) {
+      const auto value = args[i].substr(benchmark_flag.size() + 1);
+      const auto* end = value.data() + value.size();
+      if (const auto parsed = std::from_chars(value.data(), end, benchmark);
+          parsed.ec != std::errc{} || parsed.ptr != end || benchmark == 0) {
+        std::println(stderr, "Bad --benchmark count: {}\n{}", args[i], kUsage);
+        return 2;
       }
     } else if (args[i].starts_with("--")) {
       std::println(stderr, "Unknown option: {}\n{}", args[i], kUsage);
@@ -170,8 +187,11 @@ int main(int argc, char** argv) {
     std::println("");
 
     const auto match = subtitler::MatchWindow(cues, window);
-    std::print("  best offset: {} hits (runner-up {})", match.best_hits,
-               match.runner_up_hits);
+    std::print(
+        "  best region: {} hits, score {:.2f} (runner-up {} hits, "
+        "score {:.2f})",
+        match.best_hits, match.best_score, match.runner_up_hits,
+        match.runner_up_score);
     if (!match.theta_ns) {
       std::println(" — {}", RejectReason(match.reject));
       continue;
@@ -189,12 +209,32 @@ int main(int argc, char** argv) {
   }
 
   std::println("");
-  if (const auto theta = subtitler::MatchTranscript(cues, windows)) {
+  const auto theta = subtitler::MatchTranscript(cues, windows);
+  if (theta) {
     std::println("match: locked, θ = {} ms ({} of {} windows voted)",
                  *theta / 1'000'000, voted, windows.size());
-    return 0;
+  } else {
+    std::println("match: no lock ({} of {} windows voted)", voted,
+                 windows.size());
   }
-  std::println("match: no lock ({} of {} windows voted)", voted,
-               windows.size());
-  return 1;
+
+  if (benchmark > 0) {
+    std::vector<double> times;
+    times.reserve(benchmark);
+    for (std::size_t i = 0; i < benchmark; ++i) {
+      const auto started = std::chrono::steady_clock::now();
+      subtitler::MatchTranscript(cues, windows);
+      times.push_back(std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - started)
+                          .count());
+    }
+    std::ranges::sort(times);
+    std::println(
+        "\nbenchmark: {} MatchTranscript calls over {} windows\n"
+        "  min {:.3f} ms, median {:.3f} ms, max {:.3f} ms",
+        benchmark, windows.size(), times.front(), times[times.size() / 2],
+        times.back());
+  }
+
+  return theta ? 0 : 1;
 }

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <string_view>
@@ -55,10 +56,13 @@ SrtIndex IndexCues(const std::vector<SrtCue>& cues) {
   return index;
 }
 
-// A window's vote for the clock offset θ (ns): the winning word offset
-// must collect kMinHits trigrams with a kMargin over the runner-up, so
-// repeated phrases and error noise can't win.
-constexpr int kMinHits = 4;
+// A window's vote for the clock offset θ (ns): the winning word-offset
+// region must collect kMinScore rarity-weighted trigram hits with a
+// kMargin over the runner-up, so repeated common phrases and error
+// noise can't win. Each trigram weighs 1/occurrences — a phrase unique
+// to the movie scores 1.0, a stock phrase occurring ten times 0.1 —
+// and kMinScore asks for the equivalent of two unique anchors.
+constexpr double kMinScore = 2.0;
 constexpr int kMargin = 2;
 // The lock: at least this many windows must vote, and the tightest
 // agreeing run may spread at most this far.
@@ -67,13 +71,15 @@ constexpr std::int64_t kMaxSpreadNs = 2'000'000'000;
 
 WindowMatch VoteWindow(const TimestampedText& window, const SrtIndex& index) {
   const auto words = NormalizeMatchWords(window.text);
-  WindowMatch match{.words = words.size()};
+  WindowMatch match;
+  match.words = words.size();
   if (words.size() < 3) {
     match.reject = WindowReject::kTooShort;
     return match;
   }
 
-  std::map<std::ptrdiff_t, int> tally;
+  std::map<std::ptrdiff_t, int> hits;
+  std::map<std::ptrdiff_t, double> score;
   for (std::size_t i = 0; i + 2 < words.size(); ++i) {
     const std::string trigram =
         words[i] + ' ' + words[i + 1] + ' ' + words[i + 2];
@@ -81,43 +87,97 @@ WindowMatch VoteWindow(const TimestampedText& window, const SrtIndex& index) {
     if (found == index.trigrams.end()) {
       continue;
     }
+    const double weight = 1.0 / static_cast<double>(found->second.size());
     for (const std::size_t at : found->second) {
-      ++tally[static_cast<std::ptrdiff_t>(at) - static_cast<std::ptrdiff_t>(i)];
+      const auto offset =
+          static_cast<std::ptrdiff_t>(at) - static_cast<std::ptrdiff_t>(i);
+      ++hits[offset];
+      score[offset] += weight;
     }
   }
 
-  const auto best = std::ranges::max_element(
-      tally, [](const auto& a, const auto& b) { return a.second < b.second; });
-  if (best == tally.end() || best->second < kMinHits) {
-    match.best_hits = best == tally.end() ? 0 : best->second;
+  // Merge the buckets within one word of an offset: a single inserted
+  // or omitted word shifts every later trigram by one, splitting a
+  // window's evidence between two offsets that describe the same
+  // region.
+  const auto region_hits = [&](std::ptrdiff_t at) {
+    int total = 0;
+    for (const auto offset : {at - 1, at, at + 1}) {
+      if (const auto it = hits.find(offset); it != hits.end()) {
+        total += it->second;
+      }
+    }
+    return total;
+  };
+  const auto region_score = [&](std::ptrdiff_t at) {
+    double total = 0;
+    for (const auto offset : {at - 1, at, at + 1}) {
+      if (const auto it = score.find(offset); it != score.end()) {
+        total += it->second;
+      }
+    }
+    return total;
+  };
+
+  // The winner: the highest-scoring region, ties to the lowest offset.
+  std::ptrdiff_t best_at = 0;
+  double best_score = 0;
+  for (const auto& [offset, _] : score) {
+    if (const double total = region_score(offset); total > best_score) {
+      best_at = offset;
+      best_score = total;
+    }
+  }
+  match.best_hits = region_hits(best_at);
+  match.best_score = best_score;
+  if (best_score < kMinScore) {
     SYNC_LOG(LogLevel::kDebug,
-             "Subtitle sync window below threshold: best trigram offset "
-             "got {} hits",
-             match.best_hits);
+             "Subtitle sync window below threshold: best region scored "
+             "{:.2f} ({} hits)",
+             match.best_score, match.best_hits);
     match.reject = WindowReject::kBelowThreshold;
     return match;
   }
-  match.best_hits = best->second;
-  for (const auto& [offset, count] : tally) {
-    if (offset == best->first) {
+
+  // The runner-up: the best region that shares no buckets with the
+  // winner.
+  for (const auto& [offset, _] : score) {
+    if (std::abs(offset - best_at) <= 2) {
       continue;
     }
-    match.runner_up_hits = std::max(match.runner_up_hits, count);
+    if (const double total = region_score(offset);
+        total > match.runner_up_score) {
+      match.runner_up_score = total;
+      match.runner_up_hits = region_hits(offset);
+    }
   }
-  if (match.best_hits < kMargin * match.runner_up_hits) {
+  if (match.best_score < kMargin * match.runner_up_score) {
     // Ambiguous: the runner-up is too close to the winner.
     SYNC_LOG(LogLevel::kDebug,
-             "Subtitle sync window ambiguous: {} hits vs runner-up {}",
-             match.best_hits, match.runner_up_hits);
+             "Subtitle sync window ambiguous: {:.2f} vs runner-up {:.2f}",
+             match.best_score, match.runner_up_score);
     match.reject = WindowReject::kAmbiguous;
     return match;
+  }
+
+  // The region's representative for θ: its strongest raw bucket (ties
+  // to the lowest offset; a wrong pick costs one word, which the
+  // cluster tolerance absorbs).
+  std::ptrdiff_t vote_at = best_at;
+  int vote_hits = 0;
+  for (const auto offset : {best_at - 1, best_at, best_at + 1}) {
+    if (const auto it = hits.find(offset);
+        it != hits.end() && it->second > vote_hits) {
+      vote_at = offset;
+      vote_hits = it->second;
+    }
   }
 
   // The window's last word maps to its offset in the SRT stream; its
   // time is interpolated across its cue. That instant is what the
   // window's timestamp is the running time of, so θ = srt - running.
   const std::ptrdiff_t last =
-      best->first + static_cast<std::ptrdiff_t>(words.size()) - 1;
+      vote_at + static_cast<std::ptrdiff_t>(words.size()) - 1;
   if (last < 0 || static_cast<std::size_t>(last) >= index.stream.size()) {
     match.reject = WindowReject::kOutOfRange;
     return match;
@@ -127,8 +187,8 @@ WindowMatch VoteWindow(const TimestampedText& window, const SrtIndex& index) {
       word.start_ms + word.position * (word.end_ms - word.start_ms));
   match.theta_ns = word_ms * 1'000'000 - window.timestamp_ns;
   SYNC_LOG(LogLevel::kDebug,
-           "Subtitle sync window voted offset {} ms ({} hits)",
-           *match.theta_ns / 1'000'000, match.best_hits);
+           "Subtitle sync window voted offset {} ms ({} hits, score {:.2f})",
+           *match.theta_ns / 1'000'000, match.best_hits, match.best_score);
   return match;
 }
 

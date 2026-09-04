@@ -18,6 +18,7 @@
       "npm install": "allow",
       "npm ci": "allow",
       "ctest*": "allow",
+      "build/subtitler-test*": "allow",
       "ls*": "allow",
       "rg*": "allow",
       "head*": "allow",

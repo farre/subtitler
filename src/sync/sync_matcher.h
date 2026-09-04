@@ -20,8 +20,8 @@ std::vector<std::string> NormalizeMatchWords(std::string_view text);
 enum class WindowReject : std::uint8_t {
   kNone,            // it voted
   kTooShort,        // fewer than three normalized words
-  kBelowThreshold,  // the winning word offset collected too few hits
-  kAmbiguous,       // the runner-up offset was too close to the winner
+  kBelowThreshold,  // the winning region's weighted score was too low
+  kAmbiguous,       // the runner-up region was too close to the winner
   kOutOfRange,      // the winning offset mapped outside the SRT stream
 };
 
@@ -31,10 +31,16 @@ enum class WindowReject : std::uint8_t {
 struct WindowMatch {
   // Normalized word count of the window.
   std::size_t words = 0;
-  // Trigram hits collected by the winning word offset, and by the
-  // runner-up (0 when no other offset collected any).
+  // Trigram hits collected by the winning word-offset region (the raw
+  // buckets within one word of the winner merged), and by the
+  // runner-up region (0 when no other offset collected any).
   int best_hits = 0;
   int runner_up_hits = 0;
+  // The rarity-weighted scores behind the decision: each hit weighs
+  // 1/occurrences-in-the-SRT, so a trigram unique to the movie scores
+  // 1.0. The vote threshold and margin apply to these, not the counts.
+  double best_score = 0;
+  double runner_up_score = 0;
   WindowReject reject = WindowReject::kNone;
   // The window's voted clock offset θ (ns): srt_position =
   // running_time + θ. Set when reject is kNone.

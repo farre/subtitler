@@ -207,16 +207,19 @@ TEST_CASE("sync matcher window votes") {
 
   SUBCASE("a clean window votes with its full trigram count") {
     constexpr std::int64_t theta = 123 * kSecond;
-    const auto match = subtitler::MatchWindow(cues, WindowAt(cues, 10, 12, theta));
+    const auto match =
+        subtitler::MatchWindow(cues, WindowAt(cues, 10, 12, theta));
 
     CHECK(match.reject == subtitler::WindowReject::kNone);
     REQUIRE(match.theta_ns.has_value());
     CHECK(*match.theta_ns == theta);
     CHECK(match.words == 18);
-    // Every trigram is unique, so all of them back the winner and
-    // there is no runner-up.
+    // Every trigram is unique, so all of them back the winner (score
+    // 1.0 per hit) and there is no runner-up.
     CHECK(match.best_hits == 16);
+    CHECK(match.best_score == doctest::Approx(16.0));
     CHECK(match.runner_up_hits == 0);
+    CHECK(match.runner_up_score == doctest::Approx(0.0));
   }
 
   SUBCASE("a window of fewer than three words cannot vote") {
@@ -227,20 +230,61 @@ TEST_CASE("sync matcher window votes") {
     CHECK(match.words == 2);
   }
 
-  SUBCASE("a window below the hit threshold does not vote") {
-    // Three unique trigrams: one short of the threshold.
-    const auto match =
-        subtitler::MatchWindow(cues, {"w60 w61 w62 w63 w64", kSecond});
+  SUBCASE("a single rare anchor does not vote") {
+    // One unique trigram is suggestive but not enough on its own.
+    const auto match = subtitler::MatchWindow(cues, {"w60 w61 w62", kSecond});
 
     CHECK(match.reject == subtitler::WindowReject::kBelowThreshold);
     CHECK_FALSE(match.theta_ns.has_value());
-    CHECK(match.best_hits == 3);
+    CHECK(match.best_hits == 1);
+    CHECK(match.best_score == doctest::Approx(1.0));
     CHECK(match.runner_up_hits == 0);
 
     const auto unrelated = subtitler::MatchWindow(
         cues, {"the quick brown fox jumps over", kSecond});
     CHECK(unrelated.reject == subtitler::WindowReject::kBelowThreshold);
     CHECK(unrelated.best_hits == 0);
+    CHECK(unrelated.best_score == doctest::Approx(0.0));
+  }
+
+  SUBCASE("two rare anchors vote") {
+    // Two unique trigrams at one offset: the Cigarette Burns "son of
+    // a bitch" case — short but unmistakable.
+    constexpr std::int64_t theta = 123 * kSecond;
+    // w63 is the fourth of cue 10's six words.
+    const auto word_ms =
+        cues[10].start_ms + 3 * (cues[10].end_ms - cues[10].start_ms) / 5;
+    const auto match = subtitler::MatchWindow(
+        cues, {"w60 w61 w62 w63", word_ms * kMillisecond - theta});
+
+    CHECK(match.reject == subtitler::WindowReject::kNone);
+    REQUIRE(match.theta_ns.has_value());
+    CHECK(*match.theta_ns == theta);
+    CHECK(match.best_hits == 2);
+    CHECK(match.best_score == doctest::Approx(2.0));
+    CHECK(match.runner_up_hits == 0);
+  }
+
+  SUBCASE("common trigrams cannot carry a window") {
+    // A four-word phrase repeated in ten cues: every occurrence votes
+    // a different offset, and each hit weighs only 1/10.
+    std::vector<subtitler::SrtCue> repetitive;
+    for (int i = 0; i < 10; ++i) {
+      repetitive.push_back(
+          subtitler::SrtCue{.start_ms = i * 3000,
+                            .end_ms = i * 3000 + 2500,
+                            .text = std::format("u{} the same phrase "
+                                                "repeats v{}",
+                                                i, i)});
+    }
+
+    const auto match = subtitler::MatchWindow(
+        repetitive, {"the same phrase repeats", kSecond});
+
+    CHECK(match.reject == subtitler::WindowReject::kBelowThreshold);
+    CHECK_FALSE(match.theta_ns.has_value());
+    CHECK(match.best_hits == 2);
+    CHECK(match.best_score == doctest::Approx(0.2));
   }
 
   SUBCASE("a window matching two regions equally is ambiguous") {
@@ -255,14 +299,52 @@ TEST_CASE("sync matcher window votes") {
     CHECK(match.reject == subtitler::WindowReject::kAmbiguous);
     CHECK_FALSE(match.theta_ns.has_value());
     CHECK(match.best_hits == 4);
+    CHECK(match.best_score == doctest::Approx(2.0));
     CHECK(match.runner_up_hits == 4);
+    CHECK(match.runner_up_score == doctest::Approx(2.0));
+  }
+
+  SUBCASE("an inserted word does not split the vote") {
+    // "um" inserted mid-window: the trigrams before and after it land
+    // in neighbouring offset buckets, which merge into one vote.
+    constexpr std::int64_t theta = 123 * kSecond;
+    auto window = WindowAt(cues, 10, 11, theta);
+    window.text = "w60 w61 w62 w63 w64 w65 um w66 w67 w68 w69 w70 w71";
+
+    const auto match = subtitler::MatchWindow(cues, window);
+
+    CHECK(match.reject == subtitler::WindowReject::kNone);
+    REQUIRE(match.theta_ns.has_value());
+    // The two halves tie; whichever offset represents the region, θ
+    // lands within a word of the true offset.
+    const auto diff = *match.theta_ns > theta ? *match.theta_ns - theta
+                                              : theta - *match.theta_ns;
+    CHECK(diff <= 600 * kMillisecond);
+    CHECK(match.best_hits == 8);
+    CHECK(match.best_score == doctest::Approx(8.0));
+    CHECK(match.runner_up_hits == 0);
+  }
+
+  SUBCASE("an omitted word does not split the vote") {
+    constexpr std::int64_t theta = 123 * kSecond;
+    auto window = WindowAt(cues, 10, 11, theta);
+    window.text = "w60 w61 w62 w63 w64 w66 w67 w68 w69 w70 w71";
+
+    const auto match = subtitler::MatchWindow(cues, window);
+
+    CHECK(match.reject == subtitler::WindowReject::kNone);
+    REQUIRE(match.theta_ns.has_value());
+    CHECK(*match.theta_ns == theta);
+    CHECK(match.best_hits == 7);
+    CHECK(match.best_score == doctest::Approx(7.0));
   }
 }
 
 TEST_CASE("sync matcher normalization") {
-  CHECK(subtitler::NormalizeMatchWords("The Quick, BROWN fox!\nJumps... over") ==
-        std::vector<std::string>{"the", "quick", "brown", "fox", "jumps",
-                                 "over"});
+  CHECK(
+      subtitler::NormalizeMatchWords("The Quick, BROWN fox!\nJumps... over") ==
+      std::vector<std::string>{"the", "quick", "brown", "fox", "jumps",
+                               "over"});
   CHECK(subtitler::NormalizeMatchWords("").empty());
   CHECK(subtitler::NormalizeMatchWords("---").empty());
 }
