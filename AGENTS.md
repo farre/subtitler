@@ -30,7 +30,8 @@ browser-driven download via `GET`/`PUT /api/whisper` and
 in the config), and the one-shot auto-sync from #433 (`PUT
 /api/subtitle-sync` listens to the audio, matches the transcript
 against the attached SRT, and jumps the SRT clock to the matched
-position; the web UI has the "Auto Sync" button). Also implemented: the persistent
+position; the web UI's "Auto Sync" button enables the tap with the
+chosen model for the session and stops it when the session ends). Also implemented: the persistent
 configuration from #16 (INI via GLib GKeyFile, versioned format #232;
 every command-line option plus the web-API subtitle style state —
 file, visibility, delay, cue font family/size/color, #222–#224 —

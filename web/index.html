@@ -85,8 +85,6 @@
       <section id="whisper-section" hidden>
         <h2>Whisper</h2>
         <div class="controls">
-          <input type="checkbox" id="whisper-enabled" />
-          <label for="whisper-enabled">Transcribe audio</label>
           <label for="whisper-model" id="whisper-model-label">Model</label>
           <select id="whisper-model"></select>
           <button
@@ -152,7 +150,6 @@
       const convertFps = document.getElementById("convert-fps");
       const convert = document.getElementById("convert");
       const whisperSection = document.getElementById("whisper-section");
-      const whisperEnabled = document.getElementById("whisper-enabled");
       const whisperModel = document.getElementById("whisper-model");
       const whisperModelLabel = document.getElementById("whisper-model-label");
       const whisperDelete = document.getElementById("whisper-delete");
@@ -506,6 +503,7 @@
       let currentFile = null;
       let syncAvailable = false;
       let syncPoll = null;
+      let whisperActive = false;
       let activeCues = [];
       let cuesFile = null;
       let nextStart = null;
@@ -535,7 +533,7 @@
         autoSync.disabled =
           !syncAvailable ||
           currentFile === null ||
-          !whisperEnabled.checked ||
+          whisperModel.value === "" ||
           syncPoll !== null;
       }
 
@@ -724,7 +722,7 @@
       }
 
       function applyWhisperState({ enabled, model, models }) {
-        whisperEnabled.checked = enabled;
+        whisperActive = enabled;
         // The select lists the store; a model set outside it (a
         // --whisper path) shows as its own entry.
         const names = [...models];
@@ -750,20 +748,53 @@
         updateAutoSyncState();
       }
 
+      // The tap exists for auto-sync sessions: it stops when the
+      // session ends, however it ends.
+      async function stopWhisper() {
+        try {
+          applyWhisperState(await subtitler.setWhisper({ enabled: "false" }));
+        } catch {
+          await refreshWhisper();
+        }
+      }
+
       async function startAutoSync() {
         syncStatus.value = "";
         if (syncPoll !== null) {
           clearInterval(syncPoll);
           syncPoll = null;
         }
+
+        // The session listens through the tap: enable it with the
+        // chosen model for the session's duration.
+        let startedWhisper = false;
+        if (!whisperActive) {
+          try {
+            applyWhisperState(
+              await subtitler.setWhisper({
+                enabled: "true",
+                model: whisperModel.value,
+              }),
+            );
+            startedWhisper = true;
+          } catch {
+            syncStatus.value = "Couldn't enable whisper";
+            return;
+          }
+        }
+
         try {
           await subtitler.startSubtitleSync();
         } catch (error) {
+          if (startedWhisper) {
+            await stopWhisper();
+          }
           // A 409 carries the server's reason ({"state":"failed",
           // "reason":...}); anything else is a transport failure.
           syncStatus.value = error.body?.reason ?? "Couldn't start auto-sync";
           return;
         }
+
         syncStatus.value = "Listening…";
         syncPoll = setInterval(async () => {
           let state;
@@ -778,6 +809,7 @@
           clearInterval(syncPoll);
           syncPoll = null;
           updateAutoSyncState();
+          await stopWhisper();
           if (state.state === "synced") {
             syncStatus.value = `Synced to ${formatTime(state.time)}`;
             // Pull the corrected position in right away.
@@ -933,19 +965,6 @@
         );
         convertFps.addEventListener("change", updateConvertState);
         convert.addEventListener("click", convertSelected);
-        whisperEnabled.addEventListener("change", async () => {
-          try {
-            const params = { enabled: String(whisperEnabled.checked) };
-            if (whisperModel.value !== "") {
-              params.model = whisperModel.value;
-            }
-            applyWhisperState(await subtitler.setWhisper(params));
-          } catch {
-            // Enabling needs a stored model; keep the checkbox honest.
-            whisperEnabled.checked = !whisperEnabled.checked;
-            whisperStatus.value = "Select a downloaded model first";
-          }
-        });
         whisperModel.addEventListener("change", async () => {
           try {
             applyWhisperState(
