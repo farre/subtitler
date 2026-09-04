@@ -181,6 +181,11 @@
       const knownModelUrl = (file) =>
         `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${file}`;
 
+      // The store holds file names; a known model shows its friendly
+      // label with the size, anything else the bare name.
+      const modelLabel = (file) =>
+        knownModels.find((known) => known.file === file)?.label ?? file;
+
       // The classic subtitle colors first; the picker covers the rest.
       const presetColors = ["#ffffff", "#ffff00", "#00ffff", "#00ff00"];
 
@@ -733,7 +738,9 @@
           names.push(model);
         }
         whisperModel.replaceChildren(
-          ...names.map((name) => new Option(name, name, false, name === model)),
+          ...names.map(
+            (name) => new Option(modelLabel(name), name, false, name === model),
+          ),
         );
         // An empty select has nothing to choose or delete.
         whisperModelLabel.hidden = names.length === 0;
