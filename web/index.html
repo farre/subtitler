@@ -289,14 +289,17 @@
       let knownFiles = [];
 
       async function refreshSubtitles() {
-        library.replaceChildren();
-        knownFiles = await subtitler.list();
-        knownFiles.forEach((file, i) =>
-          library.appendChild(subtitleRow(file, i)),
+        // Fetch before swapping the rows: clearing first lets a
+        // concurrent refresh (e.g. the syncState tick reacting to the
+        // live switch after an upload) interleave into duplicate rows.
+        const files = await subtitler.list();
+        knownFiles = files;
+        library.replaceChildren(
+          ...files.map((file, i) => subtitleRow(file, i)),
         );
         applyFilter();
         updateTryNextState();
-        return knownFiles;
+        return files;
       }
 
       // Fuzzy filter, VSCode-style: the query's characters must appear
