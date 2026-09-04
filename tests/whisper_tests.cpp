@@ -1,9 +1,11 @@
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -82,10 +84,10 @@ TEST_CASE("whisper transcriber") {
     // The fifth second completes a window. Digital silence still earns a
     // token or two from the tiny model — fine, the spike logs whatever
     // it hears.
-    const auto text = transcriber->Push(chunk);
-    REQUIRE(text.has_value());
-    INFO("silence transcript: '", *text, "'");
-    CHECK(text->size() < 16);
+    const auto transcription = transcriber->Push(chunk);
+    REQUIRE(transcription.has_value());
+    INFO("silence transcript: '", transcription->text, "'");
+    CHECK(transcription->text.size() < 16);
   }
 
   SUBCASE("transcribes speech fed in live-sized chunks") {
@@ -100,15 +102,23 @@ TEST_CASE("whisper transcriber") {
 
     // Feed 10 ms chunks, the cadence of the capture pipeline's buffers.
     std::string transcript;
+    std::optional<std::chrono::milliseconds> trailing;
     for (std::size_t offset = 0; offset < samples.size(); offset += 160) {
       const auto size = std::min<std::size_t>(160, samples.size() - offset);
-      if (auto text = transcriber->Push(
+      if (auto transcription = transcriber->Push(
               std::span<const float>{samples.data() + offset, size})) {
-        transcript += *text;
+        transcript += transcription->text;
+        trailing = transcription->trailing_silence;
       }
     }
 
     INFO("transcript: ", transcript);
     CHECK(transcript.contains("country"));
+    // The speech end must stay inside the window: a unit error (e.g.
+    // reading whisper's centiseconds as milliseconds) blows this up.
+    REQUIRE(trailing.has_value());
+    INFO("trailing silence: ", trailing->count(), " ms");
+    CHECK(*trailing >= std::chrono::milliseconds{0});
+    CHECK(*trailing <= std::chrono::seconds{5});
   }
 }

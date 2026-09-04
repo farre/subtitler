@@ -757,8 +757,8 @@ struct Stream::Implementation {
   // font-desc (unset fields keep the renderer's defaults; "Sans 24",
   // "Serif", and "24" all parse). Safe to call from any thread.
   void ApplySubtitleStyle(GstElement* renderer) const;
-  static void OnSubtitleChildAdded(GstChildProxy*, GObject* child,
-                                   gchar* name, gpointer user_data);
+  static void OnSubtitleChildAdded(GstChildProxy*, GObject* child, gchar* name,
+                                   gpointer user_data);
   // Applies subtitle_anchor_ + subtitle_delay_ as the parser's pad
   // offset. The offset reaches only cues parsed after the change, so
   // position and delay changes must follow up with ReparseSubtitles.
@@ -783,8 +783,7 @@ struct Stream::Implementation {
   // The transcript sink (web capture). An atomic shared_ptr like the
   // transcriber above it: swapped from any thread, copied per window by
   // the whisper thread, which takes no mutex.
-  std::atomic<std::shared_ptr<Stream::TranscriptCallback>>
-      transcript_callback_;
+  std::atomic<std::shared_ptr<Stream::TranscriptCallback>> transcript_callback_;
 
   // The one-shot sync session (#433). Guarded by sync_mutex_, which is
   // always taken after mutex_ (Poll applies a lock) or whisper_mutex_
@@ -1092,31 +1091,36 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
     const std::span<const float> samples{
         reinterpret_cast<const float*>(info.data), info.size / sizeof(float)};
 
-    auto text = transcriber->Push(samples);
+    auto transcription = transcriber->Push(samples);
 
     gst_buffer_unmap(buffer, &info);
 
-    if (!text) {
+    if (!transcription) {
       continue;
     }
 
-    if (!text->empty()) {
-      STREAM_LOG(LogLevel::kInfo, "Whisper heard: {}", *text);
+    if (!transcription->text.empty()) {
+      STREAM_LOG(LogLevel::kInfo, "Whisper heard: {}", transcription->text);
     }
 
-    const auto audio_end = GST_CLOCK_TIME_IS_VALID(window_end)
-                               ? static_cast<std::int64_t>(window_end)
-                               : static_cast<std::int64_t>(MasterRunningTime());
+    // Stamp the window where its speech ends, not where its audio
+    // ends: trailing silence would otherwise leak into every voted θ
+    // (whisper_transcriber reports it per window).
+    const auto audio_end =
+        GST_CLOCK_TIME_IS_VALID(window_end)
+            ? static_cast<std::int64_t>(window_end) -
+                  transcription->trailing_silence.count() * 1'000'000
+            : static_cast<std::int64_t>(MasterRunningTime());
 
     if (const auto callback = transcript_callback_.load();
-        callback && *callback && !text->empty()) {
-      (*callback)(*text, audio_end);
+        callback && *callback && !transcription->text.empty()) {
+      (*callback)(transcription->text, audio_end);
     }
 
     std::lock_guard sync_lock{sync_mutex_};
     if (sync_session_) {
-      const auto result = sync_session_->Feed({std::move(*text), audio_end},
-                                              MasterRunningTime());
+      const auto result = sync_session_->Feed(
+          {std::move(transcription->text), audio_end}, MasterRunningTime());
 
       if (result.state == SyncSession::State::kSynced) {
         STREAM_LOG(LogLevel::kInfo, "Subtitle sync locked at {} ms",
@@ -1209,9 +1213,9 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
   output_mode_ = output_mode;
   connector_id_ = connector_id;
 
-  ResetGuard reset{output_pipeline_,  output_source_, output_audio_source_,
-                   preview_sink_,     preview_queue_, subtitle_overlay_,
-                   subtitle_parser_,  subtitle_source_, output_bus_};
+  ResetGuard reset{output_pipeline_, output_source_,   output_audio_source_,
+                   preview_sink_,    preview_queue_,   subtitle_overlay_,
+                   subtitle_parser_, subtitle_source_, output_bus_};
 
   const std::optional<std::string_view> audio_device =
       audio_enabled_
@@ -1524,8 +1528,7 @@ void Stream::Implementation::ApplySubtitleOffset() {
   // parser: textoverlay compares text and video by running time, so cue
   // time t lands on anchor + delay + t (#438).
   PadPtr pad{gst_element_get_static_pad(subtitle_parser_.get(), "src")};
-  gst_pad_set_offset(pad.get(),
-                     subtitle_anchor_ + subtitle_delay_.load());
+  gst_pad_set_offset(pad.get(), subtitle_anchor_ + subtitle_delay_.load());
 }
 
 void Stream::Implementation::ReparseSubtitles() {
@@ -1671,8 +1674,7 @@ void Stream::Implementation::ApplySubtitleTimeLocked(std::int64_t time_ms) {
 void Stream::Implementation::SetSubtitlesPaused(bool paused) {
   std::lock_guard lock{mutex_};
 
-  if (subtitle_parser_ == nullptr ||
-      paused == subtitle_frozen_.has_value()) {
+  if (subtitle_parser_ == nullptr || paused == subtitle_frozen_.has_value()) {
     return;
   }
 
@@ -1808,8 +1810,7 @@ std::optional<std::int64_t> Stream::Implementation::SubtitleFontSize() const {
   return std::nullopt;
 }
 
-std::optional<std::uint32_t> Stream::Implementation::SubtitleFontColor()
-    const {
+std::optional<std::uint32_t> Stream::Implementation::SubtitleFontColor() const {
   if (const auto style = subtitle_style_.load(); style != nullptr) {
     return style->color_argb;
   }
@@ -1928,9 +1929,9 @@ void Stream::Implementation::StopOutputPipeline(
       preview_thread_.join();
     }
 
-    ResetGuard reset{output_pipeline_,  output_source_, output_audio_source_,
-                     preview_sink_,     preview_queue_, subtitle_overlay_,
-                     subtitle_parser_,  subtitle_source_, output_bus_};
+    ResetGuard reset{output_pipeline_, output_source_,   output_audio_source_,
+                     preview_sink_,    preview_queue_,   subtitle_overlay_,
+                     subtitle_parser_, subtitle_source_, output_bus_};
   }
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -16,6 +17,16 @@ inline constexpr bool kWhisperAvailable = true;
 #else
 inline constexpr bool kWhisperAvailable = false;
 #endif
+
+// What one full window transcribed to.
+struct Transcription {
+  std::string text;
+  // The window's trailing silence: the speech in text ends this far
+  // before the window's own end, so timestamps taken from the window
+  // end can be moved back to the speech (0 when speech runs to the
+  // end, the whole window when nothing was transcribed).
+  std::chrono::milliseconds trailing_silence{0};
+};
 
 // Windowed speech-to-text over 16 kHz mono float samples — the caps of
 // the whisper tap's appsink (#19 spike, #266). Push accumulates samples;
@@ -36,10 +47,11 @@ class WhisperTranscriber {
   WhisperTranscriber(const WhisperTranscriber&) = delete;
   WhisperTranscriber& operator=(const WhisperTranscriber&) = delete;
 
-  // Feeds 16 kHz mono samples. Returns the window's text each time a full
-  // window has been transcribed (empty when the window held nothing
-  // transcribable), nullopt while still accumulating.
-  std::optional<std::string> Push(std::span<const float> samples);
+  // Feeds 16 kHz mono samples. Returns the window's transcription each
+  // time a full window has been transcribed (empty text when the
+  // window held nothing transcribable), nullopt while still
+  // accumulating.
+  std::optional<Transcription> Push(std::span<const float> samples);
 
  private:
   explicit WhisperTranscriber(std::unique_ptr<Implementation> implementation);

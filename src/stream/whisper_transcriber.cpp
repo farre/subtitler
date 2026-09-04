@@ -1,5 +1,6 @@
 #include "stream/whisper_transcriber.h"
 
+#include <algorithm>
 #include <chrono>
 #include <print>
 #include <string_view>
@@ -86,7 +87,7 @@ WhisperTranscriber::WhisperTranscriber(
 
 WhisperTranscriber::~WhisperTranscriber() = default;
 
-std::optional<std::string> WhisperTranscriber::Push(
+std::optional<Transcription> WhisperTranscriber::Push(
     std::span<const float> samples) {
   auto& window = implementation_->window;
   window.insert(window.end(), samples.begin(), samples.end());
@@ -104,9 +105,10 @@ std::optional<std::string> WhisperTranscriber::Push(
   params.language = "en";
   params.n_threads = kThreads;
   // Windowed mode (like whisper.cpp's stream example): no cross-window
-  // context, no timestamp tokens — one text per window.
+  // context — one text per window. Timestamps stay on: the segment
+  // boundaries are where the window's speech end is read from.
   params.no_context = true;
-  params.no_timestamps = true;
+  params.no_timestamps = false;
   // Non-speech tokens ([BLANK_AUDIO], (music), ♪, ...) are pure noise for
   // the sync matcher and the capture log. Off by default in whisper.cpp.
   params.suppress_nst = true;
@@ -138,10 +140,26 @@ std::optional<std::string> WhisperTranscriber::Push(
     text += whisper_full_get_segment_text(implementation_->context.get(), i);
   }
 
-  STREAM_LOG(LogLevel::kDebug, "Whisper transcribed a {} s window in {}",
-             kWindowSeconds, elapsed);
+  // The last segment's end (centiseconds from the window's start) is
+  // where the speech stops; the rest of the window is silence the sync
+  // vote shouldn't be stamped with. No segments: nothing was heard, so
+  // the whole window is trailing silence.
+  constexpr std::chrono::milliseconds kWindow{kWindowSeconds * 1000};
+  std::chrono::milliseconds trailing = kWindow;
+  if (segments > 0) {
+    const auto speech_end =
+        std::chrono::milliseconds{whisper_full_get_segment_t1(
+            implementation_->context.get(), segments - 1)} *
+        10;
+    trailing = std::max(kWindow - speech_end, std::chrono::milliseconds{0});
+  }
 
-  return text;
+  STREAM_LOG(LogLevel::kDebug,
+             "Whisper transcribed a {} s window in {} ({} ms of trailing "
+             "silence)",
+             kWindowSeconds, elapsed, trailing.count());
+
+  return Transcription{std::move(text), trailing};
 }
 
 #else  // SUBTITLER_ENABLE_WHISPER
@@ -163,7 +181,7 @@ WhisperTranscriber::WhisperTranscriber(
 
 WhisperTranscriber::~WhisperTranscriber() = default;
 
-std::optional<std::string> WhisperTranscriber::Push(std::span<const float>) {
+std::optional<Transcription> WhisperTranscriber::Push(std::span<const float>) {
   return std::nullopt;
 }
 

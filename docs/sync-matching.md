@@ -7,8 +7,11 @@ against the examples in `fragments/`.
 ## Current design (#18/#21/#290/#433)
 
 - The whisper tap transcribes **disjoint 5 s windows**; each window's
-  `TimestampedText` is stamped with the **end of the complete audio window**
-  (the last buffer's PTS+duration, `RunWhisper` in `src/stream/stream.cpp`).
+  `TimestampedText` is stamped with the window's **speech end** — the last
+  buffer's PTS+duration minus the window's trailing silence, read from the
+  last whisper segment (`RunWhisper` in `src/stream/stream.cpp`).
+  (Originally stamped at the bare window end — see the experiment below
+  for why that changed.)
 - Each window votes for a word-offset region in the flattened SRT word
   stream by **rarity-weighted** word-trigram hits (1/occurrences each;
   buckets within ±1 word merge); a window votes only when the winning
@@ -90,14 +93,19 @@ evidence they accept is *stronger*, not weaker.
 - Under this rule fragment 1's "son of a bitch." (2 unique anchors) votes;
   "There you are" (1 anchor) still doesn't — accepted, see root cause 4.
 
-### 2. Speech-end timestamps (transcriber + stream)
+### 2. Speech-end timestamps (transcriber + stream, **done**)
 
-Root-cause fix for root cause 2: set `no_timestamps = false`, read the last
-segment's end (`whisper_full_get_segment_t1`, centiseconds from window
-start) and stamp the window with `window_end − 5 s + t1 × 10 ms` instead of
-the bare window end. Shrinks correct-vote noise from ~5 s to sub-second,
-keeping the 2 s cluster strict — strictly better than widening the spread.
-Verify with `SUBTITLER_TEST_WHISPER_MODEL`/`_WAV` and on the Pi.
+Root-cause fix for root cause 2: `no_timestamps = false` so whisper
+segments on speech pauses, and `WhisperTranscriber::Push` now returns a
+`Transcription{text, trailing_silence}` — the trailing silence read from
+the last segment's end (`whisper_full_get_segment_t1`, centiseconds from
+window start; the whole window when no segments). `RunWhisper` stamps each
+window at `window_end − trailing_silence` for both the sync feed and the
+transcript callback, so the capture log carries matcher-ready timestamps.
+Implemented as trailing silence rather than an absolute offset so the
+stream needs no window-length bookkeeping. Real-capture verification on
+the Pi pending: recapture the fragments and confirm the vote clusters
+tighten (fragment 2's spread should drop well under 1.87 s).
 
 ### 3. Window overlap (transcriber)
 
