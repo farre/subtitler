@@ -107,6 +107,9 @@ std::optional<std::string> WhisperTranscriber::Push(
   // context, no timestamp tokens — one text per window.
   params.no_context = true;
   params.no_timestamps = true;
+  // Non-speech tokens ([BLANK_AUDIO], (music), ♪, ...) are pure noise for
+  // the sync matcher and the capture log. Off by default in whisper.cpp.
+  params.suppress_nst = true;
   // The mel hop is 160 samples; sizing the encoder context to the window
   // (instead of the 30 s default) cuts the encoder's work accordingly.
   params.audio_ctx = static_cast<int>(kWindowSamples / 160);
