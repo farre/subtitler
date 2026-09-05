@@ -157,9 +157,15 @@
         <form id="search-form">
           <label for="search">IMDb id</label>
           <input type="text" id="search" placeholder="tt1234567" />
-          <button type="submit">Save</button>
-          <button type="button" id="try-next" hidden>Try next</button>
+          <button type="submit" id="download">Download</button>
+          <button type="button" id="search-button" class="accent">
+            Search
+          </button>
         </form>
+        <div id="search-results" popover>
+          <h3 id="search-results-title"></h3>
+          <div id="search-results-list"></div>
+        </div>
       </section>
     </main>
 
@@ -250,7 +256,13 @@
       const loginForm = document.getElementById("login-form");
       const search = document.getElementById("search");
       const searchForm = document.getElementById("search-form");
-      const tryNext = document.getElementById("try-next");
+      const downloadButton = document.getElementById("download");
+      const searchButton = document.getElementById("search-button");
+      const searchResults = document.getElementById("search-results");
+      const searchResultsTitle = document.getElementById(
+        "search-results-title",
+      );
+      const searchResultsList = document.getElementById("search-results-list");
 
       const subtitler = new Subtitler(new URL("api/", location.href).href);
 
@@ -349,7 +361,7 @@
           ...files.map((file, i) => subtitleRow(file, i)),
         );
         applyFilter();
-        updateTryNextState();
+        updateSearchState();
         return files;
       }
 
@@ -369,9 +381,16 @@
 
       function applyFilter() {
         const needle = filter.value.toLowerCase().replace(/\s+/g, "");
+        // While the searched id names library entries, the list also
+        // restricts to just them.
+        const id = searchedImdbId();
+        const restrict =
+          id !== "" && knownFiles.some((file) => imdbId(file) === id);
         for (const row of library.children) {
           const file = row.querySelector("input").value;
-          row.hidden = !fuzzyMatch(needle, file.toLowerCase());
+          row.hidden =
+            !fuzzyMatch(needle, file.toLowerCase()) ||
+            (restrict && imdbId(file) !== id);
         }
       }
 
@@ -379,14 +398,17 @@
         return search.value.trim().toLowerCase().replace(/^tt/, "");
       }
 
-      // Trying the next candidate makes sense once the library carries
-      // anything for the searched title.
-      function updateTryNextState() {
+      // The searched id gates the OpenSubtitles buttons: both need an
+      // id and the API key, and best-guess download is disabled once
+      // the library carries the title — then the list, filtered to the
+      // matching entries, is how an existing version gets selected.
+      function updateSearchState() {
         const id = searchedImdbId();
-        tryNext.hidden =
-          subtitles === null ||
-          id === "" ||
-          !knownFiles.some((file) => imdbId(file) === id);
+        const known =
+          id !== "" && knownFiles.some((file) => imdbId(file) === id);
+        downloadButton.disabled = subtitles === null || id === "" || known;
+        searchButton.disabled = subtitles === null || id === "";
+        applyFilter();
       }
 
       // Radio selection lives in applyState: the checked radio always
@@ -414,8 +436,8 @@
         );
         // Tag the release's rate so the convert control knows the source
         // timing; 0 means unknown and stays untagged. The version tag is
-        // how try-next tells apart the candidates already in the
-        // library.
+        // how the search results tell which candidates the library
+        // already carries.
         const tag = Number(attributes.fps) > 0 ? `.${attributes.fps}fps` : "";
         const version = `.os${attributes.subtitle_id}`;
         await subtitler.upload(
@@ -428,16 +450,16 @@
         applyState(await subtitler.state());
       }
 
+      // Best guess: the top-ranked candidate. The button is disabled
+      // while the library carries the searched id, so there is no
+      // existing-entry check here.
       async function download() {
         if (subtitles === null) {
           return;
         }
 
         const id = searchedImdbId();
-        const known = await refreshSubtitles();
-        const existing = known.find((file) => imdbId(file) === id);
-        if (existing) {
-          applyState(await subtitler.select(existing));
+        if (id === "") {
           return;
         }
 
@@ -453,14 +475,66 @@
         await fetchCandidate(data[0], id);
       }
 
-      // Advances to the first candidate ranked past the frontier
-      // (#453): the newest remaining download is the tombstone, so
-      // everything ranked at or before the furthest-ranked version the
-      // library carries counts as tried — deleting bad downloads behind
-      // the frontier never re-fetches them; deleting everything for a
-      // title starts over. Legacy uploads carry no version tag and
-      // can't anchor the frontier — they cost one re-download.
-      async function tryNextCandidate() {
+      function resultStatus(text) {
+        const status = document.createElement("div");
+        status.className = "result-status";
+        status.textContent = text;
+        return status;
+      }
+
+      // A candidate row: the release name is what tells cuts apart.
+      // Candidates the library already carries (same version tag) are
+      // marked and disabled; legacy uploads carry no tag and never
+      // match. Clicking fetches that exact candidate.
+      function resultRow(candidate, id) {
+        const { attributes } = candidate;
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "result";
+
+        const release = document.createElement("span");
+        release.className = "release";
+        release.textContent =
+          attributes.release_info ||
+          attributes.files[0]?.file_name ||
+          attributes.feature_details.movie_name;
+
+        const parts = [];
+        if (Number(attributes.fps) > 0) {
+          parts.push(`${attributes.fps} fps`);
+        }
+        parts.push(`${attributes.download_count} downloads`);
+        if (attributes.votes > 0) {
+          parts.push(`${attributes.ratings.toFixed(1)}★ (${attributes.votes})`);
+        }
+        if (attributes.hearing_impaired) {
+          parts.push("HI");
+        }
+        const inLibrary = knownFiles.some(
+          (file) =>
+            imdbId(file) === id &&
+            subtitleVersion(file) === String(attributes.subtitle_id),
+        );
+        if (inLibrary) {
+          parts.push("in library");
+          row.disabled = true;
+        }
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        meta.textContent = parts.join(" · ");
+
+        row.append(release, meta);
+        row.addEventListener("click", async () => {
+          searchResults.hidePopover();
+          await fetchCandidate(candidate, id);
+        });
+        return row;
+      }
+
+      // Lists every ranked candidate for the searched id in a popover,
+      // so a different cut can be picked by hand. The popover is
+      // light-dismissed and only exists for the duration of a search.
+      async function searchCandidates() {
         if (subtitles === null) {
           return;
         }
@@ -470,26 +544,30 @@
           return;
         }
 
-        if (!subtitles.authenticated) {
-          await authenticate();
+        searchResultsTitle.textContent = `Results for ${search.value.trim()}`;
+        searchResultsList.replaceChildren(resultStatus("Searching…"));
+        if (!searchResults.matches(":popover-open")) {
+          searchResults.showPopover();
         }
-
-        const { data } = await subtitles.search(search.value);
-        const ranked = data.map(({ attributes }) => attributes.subtitle_id);
-        let frontier = -1;
-        for (const file of knownFiles) {
-          if (imdbId(file) !== id) {
-            continue;
+        searchButton.disabled = true;
+        try {
+          if (!subtitles.authenticated) {
+            await authenticate();
           }
-          const version = subtitleVersion(file);
-          if (version !== null) {
-            // A version missing from the current page can't anchor.
-            frontier = Math.max(frontier, ranked.indexOf(version));
+          const { data } = await subtitles.search(search.value);
+          if (data.length < 1) {
+            searchResultsList.replaceChildren(resultStatus("No results"));
+            return;
           }
-        }
-        const candidate = data.find((unused, index) => index > frontier);
-        if (candidate !== undefined) {
-          await fetchCandidate(candidate, id);
+          searchResultsList.replaceChildren(
+            ...data.map((candidate) => resultRow(candidate, id)),
+          );
+        } catch (error) {
+          searchResultsList.replaceChildren(
+            resultStatus(`Search failed: ${error.message}`),
+          );
+        } finally {
+          updateSearchState();
         }
       }
 
@@ -1101,8 +1179,8 @@
           event.preventDefault();
           await download();
         });
-        search.addEventListener("input", updateTryNextState);
-        tryNext.addEventListener("click", tryNextCandidate);
+        search.addEventListener("input", updateSearchState);
+        searchButton.addEventListener("click", searchCandidates);
 
         setInterval(tick, 250);
         setInterval(syncState, syncIntervalMs);
