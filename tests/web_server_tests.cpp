@@ -1497,9 +1497,11 @@ TEST_CASE("web server transcript stream") {
   server->PublishTranscript("hello world", 123456789);
   server->PublishTranscript("quotes \" and \\ slashes", 123456790);
 
-  // Read until both events show up; the watchdog bounds the wait.
+  // Read until both events have fully arrived; the watchdog bounds the
+  // wait. Waiting for the timestamp alone races a chunk split: the
+  // marker can arrive before the rest of its event.
   std::string received;
-  while (!received.contains("123456790")) {
+  while (!received.contains("slashes\"}\n\n")) {
     BytesPtr chunk{g_input_stream_read_bytes(stream.get(), 16384,
                                              cancellable.get(), nullptr)};
 
