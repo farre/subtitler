@@ -315,11 +315,8 @@ TEST_CASE("sync matcher window votes") {
 
     CHECK(match.reject == subtitler::WindowReject::kNone);
     REQUIRE(match.theta_ns.has_value());
-    // The two halves tie; whichever offset represents the region, θ
-    // lands within a word of the true offset.
-    const auto diff = *match.theta_ns > theta ? *match.theta_ns - theta
-                                              : theta - *match.theta_ns;
-    CHECK(diff <= 600 * kMillisecond);
+    // The final matched word determines θ even when the two buckets tie.
+    CHECK(*match.theta_ns == theta);
     CHECK(match.best_hits == 8);
     CHECK(match.best_score == doctest::Approx(8.0));
     CHECK(match.runner_up_hits == 0);
@@ -395,4 +392,44 @@ TEST_CASE("sync matcher normalization") {
                                "over"});
   CHECK(subtitler::NormalizeMatchWords("").empty());
   CHECK(subtitler::NormalizeMatchWords("---").empty());
+}
+
+TEST_CASE("matched endpoints survive insertions and omissions before long gaps") {
+  const std::vector<subtitler::SrtCue> cues{
+      {0, 4000,
+       "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima"},
+      {90000, 94000, "mango nectar orange papaya quartz river"}};
+
+  SUBCASE("insertion near the end must not project into the next cue") {
+    const auto match = subtitler::MatchWindow(
+        cues, {"alpha bravo charlie delta echo foxtrot golf hotel um india "
+               "juliet kilo lima", 0});
+    REQUIRE(match.theta_ns.has_value());
+    // Previously 90,000 ms: the dominant prefix offset was mistakenly
+    // applied to a suffix whose actual offset had changed by one word.
+    CHECK(*match.theta_ns == 4000 * kMillisecond);
+  }
+  SUBCASE("omission near the end uses the actual final matched word") {
+    const auto match = subtitler::MatchWindow(
+        cues, {"alpha bravo charlie delta echo foxtrot golf hotel juliet "
+               "kilo lima", 0});
+    REQUIRE(match.theta_ns.has_value());
+    CHECK(*match.theta_ns == 4000 * kMillisecond);
+  }
+  SUBCASE("unmatched trailing words do not change the endpoint") {
+    const auto match = subtitler::MatchWindow(
+        cues, {"alpha bravo charlie delta echo foxtrot golf hotel um india "
+               "juliet kilo lima zqx jkvb", 0});
+    REQUIRE(match.theta_ns.has_value());
+    CHECK(*match.theta_ns == 4000 * kMillisecond);
+  }
+}
+
+TEST_CASE("ambiguous final matched endpoints do not vote") {
+  const std::vector<subtitler::SrtCue> cues{
+      {0, 4000, "alpha bravo charlie delta echo foxtrot ha ha ha ha"}};
+  const auto match = subtitler::MatchWindow(
+      cues, {"alpha bravo charlie delta echo foxtrot ha ha ha", 0});
+  CHECK(match.reject == subtitler::WindowReject::kAmbiguous);
+  CHECK_FALSE(match.theta_ns.has_value());
 }

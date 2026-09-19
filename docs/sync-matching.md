@@ -26,6 +26,10 @@ against the examples in `fragments/`.
   after the matched region, one wrong word could otherwise span minutes
   (the 2026-09 review's projection finding; regression-tested with a
   matched prefix before a long SRT gap).
+  The SRT word index comes from that final trigram's actual occurrence,
+  rather than projecting through the strongest raw offset bucket. This
+  matters when an insertion/omission changes the offset near the end of
+  a window. Ambiguous final endpoints in the winning region do not vote.
 - θ locks when **≥ 3 windows** vote within a **2 s spread** (median of the
   tightest run). Design rule: **fail loudly, never lock wrong** — a failed
   match is always preferable to a confident wrong one.
@@ -95,7 +99,7 @@ evidence they accept is *stronger*, not weaker.
   weighted scores.
 - **Merge offset buckets within ±1 word** before picking the winner, so one
   inserted/dropped word doesn't split a window's hits into two offsets; θ
-  comes from the strongest raw bucket inside the winning region.
+  comes from the actual final matched SRT word inside the winning region.
 - `WindowMatch` keeps the raw hit counts for tooling and exposes the
   weighted scores; decisions use scores only.
 - Under this rule fragment 1's "son of a bitch." (2 unique anchors) votes;

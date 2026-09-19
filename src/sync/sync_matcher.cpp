@@ -160,24 +160,16 @@ WindowMatch VoteWindow(const TimestampedText& window, const SrtIndex& index) {
     return match;
   }
 
-  // The region's representative for θ: its strongest raw bucket (ties
-  // to the lowest offset; a wrong pick costs one word, which the
-  // cluster tolerance absorbs).
-  std::ptrdiff_t vote_at = best_at;
-  int vote_hits = 0;
-  for (const auto offset : {best_at - 1, best_at, best_at + 1}) {
-    if (const auto it = hits.find(offset);
-        it != hits.end() && it->second > vote_hits) {
-      vote_at = offset;
-      vote_hits = it->second;
-    }
-  }
-
   // The window's last MATCHED word anchors θ, not its last word: a
   // hallucinated or misrecognized trailing suffix never votes, so it
   // must not project the estimate into a later cue — with a long gap
   // after the matched region, one wrong word can span minutes.
-  std::size_t last_matched = 0;
+  // Keep the actual SRT endpoint of that match. An insertion/omission
+  // can change the offset after the strongest bucket's evidence; even
+  // a one-word projection error can cross a long silent gap.
+  std::optional<std::size_t> last_srt_word;
+  std::size_t last_transcript_word = 0;
+  bool ambiguous_endpoint = false;
   for (std::size_t i = 0; i + 2 < words.size(); ++i) {
     const std::string trigram =
         words[i] + ' ' + words[i + 1] + ' ' + words[i + 2];
@@ -189,7 +181,15 @@ WindowMatch VoteWindow(const TimestampedText& window, const SrtIndex& index) {
       const auto offset =
           static_cast<std::ptrdiff_t>(at) - static_cast<std::ptrdiff_t>(i);
       if (std::abs(offset - best_at) <= 1) {
-        last_matched = i + 2;
+        if (!last_srt_word || i + 2 > last_transcript_word) {
+          last_transcript_word = i + 2;
+          last_srt_word = at + 2;
+          ambiguous_endpoint = false;
+        } else if (at + 2 != *last_srt_word) {
+          // Two occurrences of the final matching trigram in the same
+          // region leave its endpoint ambiguous. Refuse to guess.
+          ambiguous_endpoint = true;
+        }
       }
     }
   }
@@ -197,13 +197,15 @@ WindowMatch VoteWindow(const TimestampedText& window, const SrtIndex& index) {
   // The last matched word maps to its offset in the SRT stream; its
   // time is interpolated across its cue. That instant is what the
   // window's timestamp is the running time of, so θ = srt - running.
-  const std::ptrdiff_t last =
-      vote_at + static_cast<std::ptrdiff_t>(last_matched);
-  if (last < 0 || static_cast<std::size_t>(last) >= index.stream.size()) {
+  if (!last_srt_word) {
     match.reject = WindowReject::kOutOfRange;
     return match;
   }
-  const SrtWord& word = index.stream[last];
+  if (ambiguous_endpoint) {
+    match.reject = WindowReject::kAmbiguous;
+    return match;
+  }
+  const SrtWord& word = index.stream[*last_srt_word];
   const auto word_ms = static_cast<std::int64_t>(
       word.start_ms + word.position * (word.end_ms - word.start_ms));
   match.theta_ns = word_ms * 1'000'000 - window.timestamp_ns;
