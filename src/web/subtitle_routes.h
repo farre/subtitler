@@ -18,6 +18,7 @@ enum class SubtitleUploadStatus {
   kStored,        // saved to the library and activated on the stream
   kInvalidTitle,  // not a usable library name
   kFailed,        // storage or activation failed
+  kPersistenceFailed,  // applied live, but durable selection is incomplete
 };
 
 struct SubtitleUploadResult {
@@ -72,15 +73,23 @@ enum class SubtitleDeleteStatus : std::uint8_t {
   kDeleted,
   kNotFound,  // no such library title
   kFailed,    // removal or live detach failed
+  kPersistenceFailed,  // removed/detached, but durable selection is incomplete
 };
 
 // Removes a library title, for DELETE /api/subtitles/<title>.
 using SubtitleDeleteHandler =
     std::function<SubtitleDeleteStatus(std::string_view title)>;
-// The live subtitle state getters/setters; the setter answers false on
-// an unusable value (e.g. a title not in the library), mapped to 400.
+// Invalid inputs map to 400; activation failures and partial persistence
+// failures map to 500, with applied/persisted flags for the latter.
 using SubtitleStateGetHandler = std::function<SubtitleState()>;
-using SubtitleStateSetHandler = std::function<bool(const SubtitleStatePatch&)>;
+enum class SubtitleStateSetStatus {
+  kApplied,
+  kInvalid,
+  kFailed,
+  kPersistenceFailed,
+};
+using SubtitleStateSetHandler =
+    std::function<SubtitleStateSetStatus(const SubtitleStatePatch&)>;
 
 // The one-shot auto-sync state, exposed at GET /api/subtitle-sync
 // (#433).

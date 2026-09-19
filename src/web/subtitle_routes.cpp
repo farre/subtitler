@@ -27,6 +27,13 @@ constexpr std::string_view kSubtitleStateRoute = "/api/subtitle-state";
 constexpr std::string_view kSubtitleSyncRoute = "/api/subtitle-sync";
 constexpr std::size_t kMaxSubtitleBytes = 8 * 1024 * 1024;
 
+void RespondPersistenceFailure(SoupServerMessage* message) {
+  RespondJson(message,
+              R"({"reason":"change applied, but persistence failed","applied":true,"persisted":false})");
+  soup_server_message_set_status(message, SOUP_STATUS_INTERNAL_SERVER_ERROR,
+                                 nullptr);
+}
+
 void RespondSubtitleState(SoupServerMessage* message,
                           const SubtitleState& state) {
   const std::string file = state.file.has_value()
@@ -108,6 +115,9 @@ void HandleSubtitleUpload(SoupServerMessage* message, const char* path,
       soup_server_message_set_status(message, SOUP_STATUS_INTERNAL_SERVER_ERROR,
                                      nullptr);
       break;
+    case SubtitleUploadStatus::kPersistenceFailed:
+      RespondPersistenceFailure(message);
+      break;
   }
 }
 
@@ -136,6 +146,9 @@ void HandleSubtitleDelete(SoupServerMessage* message, const char* path,
     case SubtitleDeleteStatus::kFailed:
       soup_server_message_set_status(message, SOUP_STATUS_INTERNAL_SERVER_ERROR,
                                      nullptr);
+      break;
+    case SubtitleDeleteStatus::kPersistenceFailed:
+      RespondPersistenceFailure(message);
       break;
   }
 }
@@ -327,9 +340,24 @@ void HandleSubtitleState(SoupServer*, SoupServerMessage* message,
     }
   }
 
-  if (!valid || !self.state_set_(patch)) {
+  if (!valid) {
     soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
     return;
+  }
+
+  switch (self.state_set_(patch)) {
+    case SubtitleStateSetStatus::kInvalid:
+      soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
+      return;
+    case SubtitleStateSetStatus::kFailed:
+      soup_server_message_set_status(message, SOUP_STATUS_INTERNAL_SERVER_ERROR,
+                                     nullptr);
+      return;
+    case SubtitleStateSetStatus::kPersistenceFailed:
+      RespondPersistenceFailure(message);
+      return;
+    case SubtitleStateSetStatus::kApplied:
+      break;
   }
 
   RespondSubtitleState(message, self.state_get_());

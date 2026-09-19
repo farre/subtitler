@@ -28,4 +28,9 @@ enum class BusHealth : std::uint8_t {
 BusHealth PollBus(GstView<GstBus> bus, GstView<GstElement> pipeline,
                   std::string_view pipeline_name);
 
+// Used after feeders have started. Timeout, asynchronous failure, and
+// an error/EOS already on the bus all refuse startup confirmation.
+bool WaitForPipelineStartup(GstView<GstElement> pipeline, GstView<GstBus> bus,
+                             GstClockTime timeout);
+
 }  // namespace subtitler

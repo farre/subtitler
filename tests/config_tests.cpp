@@ -306,7 +306,7 @@ TEST_CASE("clearing the whisper model removes the key") {
   CHECK(reloaded->values().whisper_model == std::nullopt);
 }
 
-TEST_CASE("clearing the subtitle file removes the key") {
+TEST_CASE("clearing the subtitle file persists an explicit detach") {
   const TempDir dir;
   const auto path = dir.File("[subtitles]\nfile = /library/m/Movie.srt\n");
 
@@ -315,11 +315,13 @@ TEST_CASE("clearing the subtitle file removes the key") {
 
   config->SetSubtitleFile(std::nullopt);
   CHECK(config->values().subtitle_file == std::nullopt);
+  CHECK(config->values().subtitle_selection_set);
   REQUIRE(config->Save());
 
   const auto reloaded = subtitler::Config::Load(path);
   REQUIRE(reloaded != nullptr);
   CHECK(reloaded->values().subtitle_file == std::nullopt);
+  CHECK(reloaded->values().subtitle_selection_set);
 }
 
 TEST_CASE("Save creates missing parent directories") {

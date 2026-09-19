@@ -14,6 +14,7 @@
 #include "config/config.h"
 #include "stream/fonts.h"
 #include "stream/stream.h"
+#include "utils/file_replacement.h"
 #include "utils/logging.h"
 #include "utils/paths.h"
 #include "web/web_server.h"
@@ -291,7 +292,8 @@ int main(int argc, char** argv) {
     subtitles = std::nullopt;
   }
 
-  if (!subtitles && state_dir) {
+  if (!subtitles && state_dir &&
+      !(config && config->values().subtitle_selection_set)) {
     // Boot resume: replay the SRT selected the last time around (#438).
     if (const auto active = subtitler::ActiveSubtitleFile(*state_dir)) {
       subtitles = active->string();
@@ -394,32 +396,29 @@ int main(int argc, char** argv) {
           return {subtitler::SubtitleUploadStatus::kInvalidTitle, {}};
         }
 
-        // Storing is atomic and separate from selecting (#448): the
-        // durable selection (marker, config) changes only after the
-        // live switch succeeds, so a failed activation leaves playback
-        // and persisted state consistent with each other.
-        const auto stored =
-            subtitler::StoreSubtitle(*state_dir, title, contents);
-        if (!stored || !stream->SetSubtitleFile(stored->string())) {
+        const auto stored = *state_dir / "subtitles" / *relative;
+        if (!subtitler::ReplaceAndActivateFile(
+                stored, contents, [&](const auto& path, const auto& restore) {
+                  return stream->SetSubtitleFile(path, restore);
+                })) {
           return {subtitler::SubtitleUploadStatus::kFailed, {}};
         }
 
-        // generic_string: the marker always uses '/' as the separator.
-        if (!subtitler::SetActiveSubtitle(*state_dir,
-                                          relative->generic_string())) {
-          MAIN_LOG(subtitler::LogLevel::kWarning,
-                   "Could not write the active subtitle marker");
-        }
         active_title = std::string{title};
 
         if (config) {
-          config->SetSubtitleFile(stored->string());
+          config->SetSubtitleFile(stored.string());
           // The switch reset the delay; restore the persisted style.
           ApplySubtitleStyle(*stream, *config);
           if (!config->Save()) {
-            MAIN_LOG(subtitler::LogLevel::kWarning,
-                     "Could not save the configuration");
+            return {subtitler::SubtitleUploadStatus::kPersistenceFailed, {}};
           }
+        }
+        // Config is authoritative once its file key is present. The
+        // marker remains a legacy fallback, updated only after Save.
+        if (!subtitler::SetActiveSubtitle(*state_dir,
+                                          relative->generic_string())) {
+          return {subtitler::SubtitleUploadStatus::kPersistenceFailed, {}};
         }
 
         return {subtitler::SubtitleUploadStatus::kStored,
@@ -435,9 +434,9 @@ int main(int argc, char** argv) {
       };
 
       // Deletion (#453): removes the library entry; deleting the
-      // attached subtitle detaches it like an empty state-set file. The
-      // entry goes first (#448): a failed removal then changes nothing
-      // — the selection stays usable.
+      // attached subtitle detaches it like an empty state-set file. Keep
+      // the bytes until output startup succeeds; a failed remove rolls
+      // the output back while the old file is still available.
       hooks.subtitle_delete =
           [&stream, &state_dir, &active_title,
            &config](std::string_view title) -> subtitler::SubtitleDeleteStatus {
@@ -448,25 +447,24 @@ int main(int argc, char** argv) {
         const bool attached =
             active_title.has_value() && *active_title == title;
 
-        if (!subtitler::RemoveLibrarySubtitle(*state_dir, title)) {
-          return subtitler::SubtitleDeleteStatus::kFailed;
-        }
-
-        // The entry is gone, so a boot resume already skips it; detach
-        // it live and clear the persisted selection.
         if (attached) {
-          if (!stream->SetSubtitleFile(std::nullopt)) {
+          if (!stream->SetSubtitleFile(std::nullopt, {}, [&] {
+                return subtitler::RemoveLibrarySubtitle(*state_dir, title);
+              })) {
             return subtitler::SubtitleDeleteStatus::kFailed;
           }
-          subtitler::ClearActiveSubtitle(*state_dir);
           active_title = std::nullopt;
           if (config) {
             config->SetSubtitleFile(std::nullopt);
             if (!config->Save()) {
-              MAIN_LOG(subtitler::LogLevel::kWarning,
-                       "Could not save the configuration");
+              return subtitler::SubtitleDeleteStatus::kPersistenceFailed;
             }
           }
+          if (!subtitler::ClearActiveSubtitle(*state_dir)) {
+            return subtitler::SubtitleDeleteStatus::kPersistenceFailed;
+          }
+        } else if (!subtitler::RemoveLibrarySubtitle(*state_dir, title)) {
+          return subtitler::SubtitleDeleteStatus::kFailed;
         }
 
         return subtitler::SubtitleDeleteStatus::kDeleted;
@@ -607,13 +605,14 @@ int main(int argc, char** argv) {
 
       hooks.subtitle_state_set =
           [&stream, &state_dir, &active_title,
-           &config](const subtitler::SubtitleStatePatch& patch) -> bool {
+           &config](const subtitler::SubtitleStatePatch& patch) {
+        using Status = subtitler::SubtitleStateSetStatus;
+        std::optional<std::string> marker;
         if (patch.file) {
           if (patch.file->empty()) {
             if (!stream->SetSubtitleFile(std::nullopt)) {
-              return false;
+              return Status::kFailed;
             }
-            subtitler::ClearActiveSubtitle(*state_dir);
             active_title = std::nullopt;
             if (config) {
               config->SetSubtitleFile(std::nullopt);
@@ -621,16 +620,14 @@ int main(int argc, char** argv) {
           } else {
             const auto relative =
                 subtitler::FindLibrarySubtitle(*state_dir, *patch.file);
-            if (!relative ||
-                !stream->SetSubtitleFile(
+            if (!relative) {
+              return Status::kInvalid;
+            }
+            if (!stream->SetSubtitleFile(
                     (*state_dir / "subtitles" / *relative).string())) {
-              return false;
+              return Status::kFailed;
             }
-            if (!subtitler::SetActiveSubtitle(*state_dir,
-                                              relative->generic_string())) {
-              MAIN_LOG(subtitler::LogLevel::kWarning,
-                       "Could not write the active subtitle marker");
-            }
+            marker = relative->generic_string();
             active_title = *patch.file;
             if (config) {
               config->SetSubtitleFile(
@@ -686,12 +683,16 @@ int main(int argc, char** argv) {
             (patch.file || patch.visible || patch.delay_ms ||
              patch.font_family || patch.font_size || patch.font_color)) {
           if (!config->Save()) {
-            MAIN_LOG(subtitler::LogLevel::kWarning,
-                     "Could not save the configuration");
+            return Status::kPersistenceFailed;
           }
         }
 
-        return true;
+        if (patch.file &&
+            !(marker ? subtitler::SetActiveSubtitle(*state_dir, *marker)
+                     : subtitler::ClearActiveSubtitle(*state_dir))) {
+          return Status::kPersistenceFailed;
+        }
+        return Status::kApplied;
       };
     }
 

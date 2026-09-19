@@ -4,6 +4,9 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <utility>
@@ -11,6 +14,57 @@
 #include "stream/deleters.h"
 #include "stream/drop_gate.h"
 #include "stream/stream.h"
+#include "utils/file_replacement.h"
+
+TEST_CASE("subtitle replacement restores working playback on failure") {
+  struct Directory {
+    std::filesystem::path path;
+    ~Directory() { std::filesystem::remove_all(path); }
+  };
+  auto pattern = (std::filesystem::temp_directory_path() /
+                  "subtitler-live-rollback-XXXXXX").string();
+  REQUIRE(::mkdtemp(pattern.data()) != nullptr);
+  Directory directory{pattern};
+  const auto path = directory.path / "Movie.srt";
+  const std::string original = "1\n00:00:00,000 --> 00:10:00,000\nHello\n";
+  std::ofstream{path} << original;
+  const char* device = std::getenv("SUBTITLER_TEST_VIDEO_DEVICE");
+  auto stream = subtitler::Stream::Create(
+      device ? device : "/dev/video0", subtitler::OutputMode::kNull,
+      std::nullopt, false, std::nullopt, 0, false, path.string());
+  if (!stream) {
+    MESSAGE("skipping: subtitle rollback integration needs a capture device");
+    return;
+  }
+
+  SUBCASE("same-name invalid upload preserves the original bytes") {
+    CHECK_FALSE(subtitler::ReplaceAndActivateFile(
+        path, "invalid subtitle", [&](const auto& file, const auto& restore) {
+          return stream->SetSubtitleFile(file, restore);
+        }));
+    std::ifstream file{path};
+    const std::string contents{std::istreambuf_iterator<char>{file}, {}};
+    CHECK(contents == original);
+  }
+  SUBCASE("failed deletion commit restores the old output and pause") {
+    stream->SetSubtitleTime(1000);
+    stream->SetSubtitlesPaused(true);
+    const auto frozen = stream->SubtitleTime();
+    bool commit_called = false;
+    CHECK_FALSE(stream->SetSubtitleFile(std::nullopt, {}, [&] {
+      commit_called = true;
+      return false;
+    }));
+    CHECK(commit_called);
+    CHECK(stream->SubtitlesPaused());
+    CHECK(stream->SubtitleTime() == frozen);
+    CHECK(std::filesystem::exists(path));
+  }
+  stream->Poll();
+  CHECK_FALSE(stream->Failed());
+  CHECK(stream->SubtitleTime().has_value());
+  stream->Stop();
+}
 
 TEST_CASE("stream throughput with audio enabled") {
   // The ALSA null PCM playback device emulates real hardware timing

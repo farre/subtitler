@@ -38,6 +38,9 @@ class Config {
     std::optional<std::string> api_key;
     // [subtitles]
     std::optional<std::string> subtitle_file;
+    // A present empty file key records an explicit detach. It must not
+    // fall back to a stale legacy active marker at boot.
+    bool subtitle_selection_set = false;
     std::optional<bool> subtitles_visible;
     std::optional<std::int64_t> subtitle_delay_ms;
     std::optional<std::string> subtitle_font_family;

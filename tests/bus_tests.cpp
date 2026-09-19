@@ -34,6 +34,39 @@ void PostError(GstView<GstElement> element) {
 
 }  // namespace
 
+TEST_CASE("startup confirmation rejects asynchronous errors and timeouts") {
+  gst_init(nullptr, nullptr);
+  SUBCASE("an asynchronous streaming failure is not startup success") {
+    ElementPtr pipeline{gst_parse_launch(
+        "videotestsrc ! identity error-after=1 ! fakesink", nullptr)};
+    REQUIRE(pipeline != nullptr);
+    BusPtr bus{gst_element_get_bus(pipeline.get())};
+    const auto started = gst_element_set_state(pipeline.get(), GST_STATE_PLAYING);
+    CHECK(started == GST_STATE_CHANGE_ASYNC);
+    CHECK_FALSE(WaitForPipelineStartup(pipeline.get(), bus.get(), GST_SECOND));
+    gst_element_set_state(pipeline.get(), GST_STATE_NULL);
+  }
+  SUBCASE("a pipeline waiting for preroll times out") {
+    ElementPtr pipeline{gst_parse_launch("appsrc ! fakesink", nullptr)};
+    REQUIRE(pipeline != nullptr);
+    BusPtr bus{gst_element_get_bus(pipeline.get())};
+    CHECK(gst_element_set_state(pipeline.get(), GST_STATE_PLAYING) ==
+          GST_STATE_CHANGE_ASYNC);
+    CHECK_FALSE(WaitForPipelineStartup(pipeline.get(), bus.get(), 10 * GST_MSECOND));
+    gst_element_set_state(pipeline.get(), GST_STATE_NULL);
+  }
+  SUBCASE("a completed live startup is accepted") {
+    ElementPtr pipeline{gst_parse_launch(
+        "videotestsrc is-live=true ! fakesink", nullptr)};
+    REQUIRE(pipeline != nullptr);
+    BusPtr bus{gst_element_get_bus(pipeline.get())};
+    REQUIRE(gst_element_set_state(pipeline.get(), GST_STATE_PLAYING) !=
+            GST_STATE_CHANGE_FAILURE);
+    CHECK(WaitForPipelineStartup(pipeline.get(), bus.get(), GST_SECOND));
+    gst_element_set_state(pipeline.get(), GST_STATE_NULL);
+  }
+}
+
 TEST_CASE("poll bus classifies pipeline health") {
   gst_init(nullptr, nullptr);
 

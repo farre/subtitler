@@ -594,6 +594,9 @@ struct Stream::Implementation {
 
   bool StartCapture(const std::string& device);
   bool StartOutput(OutputMode output_mode, std::optional<int> connector_id);
+  bool StartOutputLocked(OutputMode output_mode,
+                          std::optional<int> connector_id,
+                          const std::lock_guard<std::mutex>& lock);
 
   // Puts a pipeline on the shared timeline (see master_clock_).
   void ConfigureTimeline(GstView<GstElement> pipeline) const;
@@ -627,7 +630,9 @@ struct Stream::Implementation {
       const std::optional<std::string>& model_path);
   Stream::SyncState SubtitleSync() const;
 
-  bool SetSubtitleFile(const std::optional<std::string>& path);
+  bool SetSubtitleFile(const std::optional<std::string>& path,
+                       const std::function<bool()>& restore_file,
+                       const std::function<bool()>& commit_file);
   void SetSubtitleDelay(std::int64_t delay_ms);
   void SetSubtitlesVisible(bool visible);
   std::optional<std::int64_t> SubtitleTime();
@@ -1213,7 +1218,12 @@ void Stream::Implementation::ClearWhisperModel() {
 bool Stream::Implementation::StartOutput(OutputMode output_mode,
                                          std::optional<int> connector_id) {
   std::lock_guard lock{mutex_};
+  return StartOutputLocked(output_mode, connector_id, lock);
+}
 
+bool Stream::Implementation::StartOutputLocked(
+    OutputMode output_mode, std::optional<int> connector_id,
+    const std::lock_guard<std::mutex>& lock) {
   const std::optional<std::string_view> audio_device =
       audio_enabled_
           ? std::make_optional<std::string_view>(audio_output_device_)
@@ -1364,17 +1374,13 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
   if (gst_element_set_state(output_pipeline_.get(), GST_STATE_PLAYING) ==
       GST_STATE_CHANGE_FAILURE) {
     std::println(stderr, "Could not start output pipeline");
-    // The old output is gone now; the caller restores or fails.
-    ResetGuard reset{output_pipeline_, output_source_,   output_audio_source_,
-                     preview_sink_,    preview_queue_,   subtitle_overlay_,
-                     subtitle_parser_, subtitle_source_, output_bus_};
+    StopOutputPipeline(lock);
+    output_failed_.store(true);
     return false;
   }
 
-  // Live pipelines can return NO_PREROLL. That is not an error.
-  gst_element_get_state(output_pipeline_.get(), nullptr, nullptr,
-                        2 * GST_SECOND);
-
+  // Feed before waiting: the sinks may need actual video/audio to
+  // complete their asynchronous transition to PLAYING.
   output_failed_.store(false);
 
   output_thread_ =
@@ -1388,6 +1394,14 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
   if (preview_enabled_) {
     preview_thread_ =
         std::jthread{[this](std::stop_token stop) { RunPreview(stop); }};
+  }
+
+  if (!WaitForPipelineStartup(output_pipeline_.get(), output_bus_.get(),
+                               2 * GST_SECOND) || output_failed_.load()) {
+    std::println(stderr, "Output did not complete startup successfully");
+    StopOutputPipeline(lock);
+    output_failed_.store(true);
+    return false;
   }
 
   return true;
@@ -1581,39 +1595,60 @@ void Stream::Implementation::SetPreviewActive(bool active) {
 }
 
 bool Stream::Implementation::SetSubtitleFile(
-    const std::optional<std::string>& path) {
-  std::optional<std::string> previous;
-  std::int64_t previous_delay;
-  OutputMode output_mode;
-  std::optional<int> connector_id;
-  {
-    std::lock_guard lock{mutex_};
-    previous = subtitle_path_;
-    previous_delay = subtitle_delay_.load();
-    subtitle_path_ = path;
-    subtitle_delay_.store(0);
-    output_mode = output_mode_;
-    connector_id = connector_id_;
-    // The session belongs to the previous file; a switch cancels it.
-    CancelSyncLocked();
+    const std::optional<std::string>& path,
+    const std::function<bool()>& restore_file,
+    const std::function<bool()>& commit_file) {
+  std::lock_guard lock{mutex_};
+  if (path) {
+    std::ifstream file{*path};
+    const std::string contents{std::istreambuf_iterator<char>{file},
+                               std::istreambuf_iterator<char>{}};
+    if (!file || ParseSrtCues(contents).empty()) {
+      if (restore_file && !restore_file()) {
+        output_failed_.store(true);
+      }
+      return false;
+    }
   }
 
-  if (StartOutput(output_mode, connector_id)) {
+  const auto previous = subtitle_path_;
+  const auto previous_delay = subtitle_delay_.load();
+  const auto previous_anchor = subtitle_anchor_;
+  const auto previous_frozen = subtitle_frozen_;
+  // Retain a reference so pointer identity cannot be recycled by the
+  // candidate. It is only used to detect a pre-teardown failure.
+  ElementPtr previous_pipeline{
+      output_pipeline_ ? GST_ELEMENT(gst_object_ref(output_pipeline_.get()))
+                       : nullptr};
+  subtitle_path_ = path;
+  subtitle_delay_.store(0);
+  CancelSyncLocked();
+
+  if (StartOutputLocked(output_mode_, connector_id_, lock) &&
+      (!commit_file || commit_file())) {
     return true;
   }
 
-  // The switch failed; bring the previous working output back rather
-  // than leaving a dead appliance (#448). If restoration also fails,
-  // fail the process: the service manager restart is the last resort
-  // against a silently blank screen.
-  {
-    std::lock_guard lock{mutex_};
-    subtitle_path_ = previous;
-    subtitle_delay_.store(previous_delay);
-  }
-  if (!StartOutput(output_mode, connector_id)) {
+  // Restore on-disk bytes before reopening the previous path. This is
+  // essential when an upload replaces the currently selected filename.
+  const bool file_restored = !restore_file || restore_file();
+  subtitle_path_ = previous;
+  subtitle_delay_.store(previous_delay);
+  if (!file_restored) {
+    StopOutputPipeline(lock);
     output_failed_.store(true);
+    return false;
   }
+
+  if (output_pipeline_.get() != previous_pipeline.get() &&
+      !StartOutputLocked(output_mode_, connector_id_, lock)) {
+    output_failed_.store(true);
+    return false;
+  }
+  subtitle_anchor_ = previous_anchor;
+  subtitle_frozen_ = previous_frozen;
+  ApplySubtitleSilent();
+  ReparseSubtitles();
   return false;
 }
 
@@ -2040,30 +2075,25 @@ void Stream::Implementation::StopCapturePipeline(
 
 void Stream::Implementation::StopOutputPipeline(
     const std::lock_guard<std::mutex>&) {
-  if (output_thread_.joinable()) {
-    output_thread_.request_stop();
-    audio_output_thread_.request_stop();
-    preview_thread_.request_stop();
-
-    // Changing state unblocks pending appsrc and appsink operations.
-    if (output_pipeline_ != nullptr) {
-      gst_element_set_state(output_pipeline_.get(), GST_STATE_NULL);
-    }
-
-    output_thread_.join();
-
-    if (audio_output_thread_.joinable()) {
-      audio_output_thread_.join();
-    }
-
-    if (preview_thread_.joinable()) {
-      preview_thread_.join();
-    }
-
-    ResetGuard reset{output_pipeline_, output_source_,   output_audio_source_,
-                     preview_sink_,    preview_queue_,   subtitle_overlay_,
-                     subtitle_parser_, subtitle_source_, output_bus_};
+  output_thread_.request_stop();
+  audio_output_thread_.request_stop();
+  preview_thread_.request_stop();
+  // Also tear down pipelines whose startup failed before workers began.
+  if (output_pipeline_ != nullptr) {
+    gst_element_set_state(output_pipeline_.get(), GST_STATE_NULL);
   }
+  if (output_thread_.joinable()) {
+    output_thread_.join();
+  }
+  if (audio_output_thread_.joinable()) {
+    audio_output_thread_.join();
+  }
+  if (preview_thread_.joinable()) {
+    preview_thread_.join();
+  }
+  ResetGuard reset{output_pipeline_, output_source_,   output_audio_source_,
+                   preview_sink_,    preview_queue_,   subtitle_overlay_,
+                   subtitle_parser_, subtitle_source_, output_bus_};
 }
 
 void Stream::Implementation::Stop() {
@@ -2191,7 +2221,8 @@ bool Stream::Implementation::Initialize(
              OutputPipelineDescription(output_mode, connector_id, branch_device,
                                        preview_enabled_, subtitle_path_));
 
-  return StartOutput(output_mode, connector_id) && StartCapture(device);
+  // Startup confirmation needs buffers reaching the output sinks.
+  return StartCapture(device) && StartOutput(output_mode, connector_id);
 }
 
 Stream::~Stream() = default;
@@ -2285,8 +2316,10 @@ bool Stream::RestartOutput(OutputMode output_mode,
   return implementation_->StartOutput(output_mode, connector_id);
 }
 
-bool Stream::SetSubtitleFile(const std::optional<std::string>& path) {
-  return implementation_->SetSubtitleFile(path);
+bool Stream::SetSubtitleFile(const std::optional<std::string>& path,
+                             const std::function<bool()>& restore_file,
+                             const std::function<bool()>& commit_file) {
+  return implementation_->SetSubtitleFile(path, restore_file, commit_file);
 }
 
 void Stream::SetSubtitleDelay(std::int64_t delay_ms) {

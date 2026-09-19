@@ -9,6 +9,7 @@
   <body>
     <main>
       <h1>subtitler</h1>
+      <p id="persistence-status" role="alert" hidden></p>
 
       <details>
         <summary>Preview</summary>
@@ -265,6 +266,15 @@
       const searchResultsList = document.getElementById("search-results-list");
 
       const subtitler = new Subtitler(new URL("api/", location.href).href);
+      subtitler.onPersistenceFailure = async () => {
+        const status = document.getElementById("persistence-status");
+        status.hidden = false;
+        status.textContent =
+          "The change took effect, but could not be fully saved. " +
+          "It may not survive a restart.";
+        await refreshSubtitles();
+        applyState(await subtitler.state());
+      };
 
       const endpoint = "https://api.opensubtitles.com/api/v1/";
       // Without --api-key the key endpoint isn't registered; the

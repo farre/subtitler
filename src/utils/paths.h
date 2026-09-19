@@ -180,9 +180,10 @@ inline bool SetActiveSubtitle(const std::filesystem::path& state_dir,
 }
 
 // Clears the active marker, so the next boot attaches no subtitles.
-inline void ClearActiveSubtitle(const std::filesystem::path& state_dir) {
+inline bool ClearActiveSubtitle(const std::filesystem::path& state_dir) {
   std::error_code error;
   std::filesystem::remove(state_dir / "active", error);
+  return !error;
 }
 
 // Stores contents as the library entry for title (sharded by

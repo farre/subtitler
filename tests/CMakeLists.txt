@@ -3,6 +3,7 @@ find_package(doctest REQUIRED)
 include(doctest)
 
 add_executable(control_tests control_tests.cpp whisper_demand_tests.cpp)
+target_sources(control_tests PRIVATE file_replacement_tests.cpp)
 target_link_libraries(control_tests PRIVATE doctest::doctest)
 target_include_directories(control_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_compile_options(control_tests PRIVATE -Wall -Wextra -Wpedantic)

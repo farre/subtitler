@@ -84,7 +84,14 @@ class Stream {
   // nullopt) on a live stream. Rebuilds the output side through the
   // restart-safe path — capture is never restarted — and re-anchors the
   // new file at the current running time with the delay reset to zero.
-  bool SetSubtitleFile(const std::optional<std::string>& path);
+  // On a failed switch, restore_file (when supplied) restores replaced
+  // library bytes before the previous output is rebuilt. It must not
+  // re-enter Stream. False from it marks the stream failed.
+  // commit_file runs after confirmed startup; false rolls playback back.
+  // Deletion uses it to remove the file only once detaching succeeded.
+  bool SetSubtitleFile(const std::optional<std::string>& path,
+                       const std::function<bool()>& restore_file = {},
+                       const std::function<bool()>& commit_file = {});
 
   // Live subtitle delay trim in milliseconds; positive delays cues.
   // Applies without rebuilding the pipeline (#169): the branch re-parses

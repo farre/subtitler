@@ -548,6 +548,15 @@ TEST_CASE("web server subtitle upload") {
           SOUP_STATUS_INTERNAL_SERVER_ERROR);
   }
 
+  SUBCASE("upload persistence failure reports a partial outcome") {
+    next_status = subtitler::SubtitleUploadStatus::kPersistenceFailed;
+    const auto response =
+        HttpRequest("PUT", port, "/api/subtitles/movie.srt", "x");
+    CHECK(response.status == SOUP_STATUS_INTERNAL_SERVER_ERROR);
+    CHECK(response.body.find("\"applied\":true") != std::string::npos);
+    CHECK(response.body.find("\"persisted\":false") != std::string::npos);
+  }
+
   SUBCASE("methods other than PUT are a 405") {
     CHECK(HttpGet(port, "/api/subtitles/movie.srt").status ==
           SOUP_STATUS_METHOD_NOT_ALLOWED);
@@ -872,6 +881,14 @@ TEST_CASE("web server subtitle delete") {
           SOUP_STATUS_INTERNAL_SERVER_ERROR);
   }
 
+  SUBCASE("delete persistence failure reports a partial outcome") {
+    next_status = subtitler::SubtitleDeleteStatus::kPersistenceFailed;
+    const auto response = HttpRequest("DELETE", port, "/api/subtitles/movie.srt");
+    CHECK(response.status == SOUP_STATUS_INTERNAL_SERVER_ERROR);
+    CHECK(response.body.find("\"applied\":true") != std::string::npos);
+    CHECK(response.body.find("\"persisted\":false") != std::string::npos);
+  }
+
   SUBCASE("methods other than DELETE are a 405") {
     CHECK(HttpGet(port, "/api/subtitles/movie.srt").status ==
           SOUP_STATUS_METHOD_NOT_ALLOWED);
@@ -926,12 +943,13 @@ TEST_CASE("web server subtitle state") {
   subtitler::SubtitleState state{
       {"Movie.srt"}, true, false, 1234, -150, {"Sans"}, {24}, {0xFF'FF'FF'FFu}};
   bool set_ok = true;
+  bool persist_ok = true;
 
   subtitler::WebServerHooks hooks;
   hooks.subtitle_state_get = [&] { return state; };
   hooks.subtitle_state_set = [&](const subtitler::SubtitleStatePatch& patch) {
     if (!set_ok) {
-      return false;
+      return subtitler::SubtitleStateSetStatus::kInvalid;
     }
     if (patch.file) {
       if (patch.file->empty()) {
@@ -961,7 +979,8 @@ TEST_CASE("web server subtitle state") {
     if (patch.font_color) {
       state.font_color = *patch.font_color;
     }
-    return true;
+    return persist_ok ? subtitler::SubtitleStateSetStatus::kApplied
+                      : subtitler::SubtitleStateSetStatus::kPersistenceFailed;
   };
 
   auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
@@ -1123,6 +1142,16 @@ TEST_CASE("web server subtitle state") {
     CHECK(HttpRequest("PUT", port, "/api/subtitle-state?paused=true").status ==
           SOUP_STATUS_BAD_REQUEST);
     CHECK_FALSE(state.paused);
+  }
+
+  SUBCASE("persistence failure is explicit even though playback changed") {
+    persist_ok = false;
+    const auto response =
+        HttpRequest("PUT", port, "/api/subtitle-state?paused=true");
+    CHECK(response.status == SOUP_STATUS_INTERNAL_SERVER_ERROR);
+    CHECK(response.body.find("\"applied\":true") != std::string::npos);
+    CHECK(response.body.find("\"persisted\":false") != std::string::npos);
+    CHECK(state.paused);
   }
 
   SUBCASE("methods other than GET and PUT are a 405") {

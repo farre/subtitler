@@ -164,6 +164,8 @@ std::unique_ptr<Config> Config::Load(const std::filesystem::path& path) {
   values.web_root = GetString(key_file.get(), "web", "root");
   values.api_key = GetString(key_file.get(), "web", "api-key");
   values.subtitle_file = GetString(key_file.get(), "subtitles", "file");
+  values.subtitle_selection_set =
+      g_key_file_has_key(key_file.get(), "subtitles", "file", nullptr) != 0;
   values.subtitles_visible = GetBoolean(key_file.get(), "subtitles", "visible");
   // The same semantic constraints as the web API (#446): out-of-range
   // values are dropped with a warning, per-key (#220).
@@ -202,9 +204,10 @@ void Config::SetSubtitleFile(const std::optional<std::string>& file) {
   if (file) {
     g_key_file_set_string(key_file_.get(), "subtitles", "file", file->c_str());
   } else {
-    g_key_file_remove_key(key_file_.get(), "subtitles", "file", nullptr);
+    g_key_file_set_string(key_file_.get(), "subtitles", "file", "");
   }
   values_.subtitle_file = file;
+  values_.subtitle_selection_set = true;
 }
 
 void Config::SetSubtitlesVisible(bool visible) {

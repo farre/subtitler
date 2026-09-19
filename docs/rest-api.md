@@ -1,5 +1,20 @@
 # REST API
 
+Subtitle upload, deletion, and state changes report a persistence failure as
+HTTP 500 with `{"reason":"change applied, but persistence failed",
+"applied":true,"persisted":false}`. The live change remains applied; refresh
+the library and state before retrying. The UI displays this partial outcome.
+Configuration is saved before the legacy `active` marker is updated. Once
+`[subtitles] file` is present, configuration controls boot selection, including
+an empty value meaning explicitly detached; an older marker is ignored.
+
+Uploads keep a same-filesystem backup until activation has completed. A failed
+activation restores the bytes before reopening the previous output. Deletion
+removes the file only after detaching succeeds, and a failed remove restores
+playback. These are recoverable operations, not a cross-resource or power-loss
+transaction. If restoring a file itself fails, playback is marked failed and
+the `.subtitler-*` staging directory retains `previous` for recovery.
+
 Whisper model-only updates preserve the continuous-transcription preference.
 Changing the model cancels a listening auto-sync session. Only an explicit
 `enabled=true` requests continuous transcription, and only an explicitly

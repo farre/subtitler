@@ -6,6 +6,19 @@
 
 namespace subtitler {
 
+bool WaitForPipelineStartup(GstView<GstElement> pipeline, GstView<GstBus> bus,
+                             GstClockTime timeout) {
+  GstState current = GST_STATE_NULL;
+  GstState pending = GST_STATE_VOID_PENDING;
+  const auto result = gst_element_get_state(pipeline, &current, &pending,
+                                             timeout);
+  const auto health = PollBus(bus, pipeline, "output startup");
+  return (result == GST_STATE_CHANGE_SUCCESS ||
+          result == GST_STATE_CHANGE_NO_PREROLL) &&
+         current == GST_STATE_PLAYING && pending == GST_STATE_VOID_PENDING &&
+         health == BusHealth::kOk;
+}
+
 namespace {
 
 void PrintBusError(std::string_view pipeline_name, MessagePtr& message) {

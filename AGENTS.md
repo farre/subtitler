@@ -128,6 +128,16 @@ cmake --build --preset default
 
 ## Gotchas
 
+- Subtitle activation now starts output feeders before confirming PLAYING
+  (`WaitForPipelineStartup`). Initial creation starts capture first so the
+  output can receive data. A file switch and its rollback hold `mutex_`
+  throughout. `SetSubtitleFile` accepts narrow file commit/restore callbacks:
+  uploads restore old bytes before old playback is rebuilt; deletion commits
+  only after detach starts successfully. These callbacks must not re-enter
+  Stream. Persistence failures return HTTP 500 with applied/persisted flags;
+  the config file key, including an empty explicit detach, takes precedence
+  over the legacy active marker. Backups are not a power-loss journal.
+
 - Whisper demand is now split into explicit continuous demand and session
   demand (`stream/whisper_demand.h`), both guarded by `sync_mutex_`.
   `ReleaseUnusedWhisper` takes `whisper_mutex_` then `sync_mutex_` and checks

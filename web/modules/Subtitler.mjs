@@ -1,6 +1,23 @@
 import { Rest } from "./Rest.mjs";
 
 class Subtitler extends Rest {
+  onPersistenceFailure = null;
+
+  async api(...args) {
+    try {
+      return await super.api(...args);
+    } catch (error) {
+      if (error.body?.applied === true && error.body?.persisted === false) {
+        try {
+          await this.onPersistenceFailure?.(error);
+        } catch {
+          // Preserve the original operation's error if refreshing fails.
+        }
+      }
+      throw error;
+    }
+  }
+
   list() {
     return this.get("subtitles");
   }
