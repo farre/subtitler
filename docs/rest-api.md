@@ -1,5 +1,12 @@
 # REST API
 
+Whisper model-only updates preserve the continuous-transcription preference.
+Changing the model cancels a listening auto-sync session. Only an explicit
+`enabled=true` requests continuous transcription, and only an explicitly
+supplied `enabled` value is persisted. Failed sync validation never enables
+the tap; cleanup rechecks current demand, including a new session or an
+explicit enable received since the preceding session ended.
+
 The appliance web server (`--web`, port 8080) exposes the endpoints below.
 They are building blocks: the web interface (#15) composes complex behavior
 in JavaScript, and the server exposes only primitives. Response JSON is

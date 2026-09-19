@@ -147,7 +147,9 @@ class Stream {
   // unloads the model. False when the model can't be loaded or the
   // audio branch is missing — the state is then unchanged. Enabling
   // with a new model path switches models live.
-  bool SetWhisperState(bool enabled,
+  // nullopt changes only the model selection. Changing models cancels
+  // any sync session; it does not request continuous transcription.
+  bool SetWhisperState(std::optional<bool> enabled,
                        const std::optional<std::string>& model_path);
   // Clears the stored model selection (the model a future enable would
   // load) — e.g. after the selected model was deleted from the store.

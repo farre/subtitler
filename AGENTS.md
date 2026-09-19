@@ -128,6 +128,16 @@ cmake --build --preset default
 
 ## Gotchas
 
+- Whisper demand is now split into explicit continuous demand and session
+  demand (`stream/whisper_demand.h`), both guarded by `sync_mutex_`.
+  `ReleaseUnusedWhisper` takes `whisper_mutex_` then `sync_mutex_` and checks
+  current demand before disabling; there is no pending unconditional release.
+  `StartSubtitleSync` validates subtitles before loading/enabling a tap and
+  commits under `mutex_` -> `whisper_mutex_` -> `sync_mutex_`. Model-only
+  updates leave continuous demand and its persisted enabled flag unchanged;
+  changing models cancels the old session. Capture stop also goes through
+  `EndSyncSessionLocked`. The ownership tests are in `control_tests`.
+
 - Resolution/format constants (1080p60 YUY2) and the CV105 audio constants (ALSA device `hw:CARD=Video,DEV=0`, S16LE/48kHz/stereo) live once in `src/stream/stream.cpp`; `src/probe/pipeline.cpp` keeps its own copies of the video ones for its standalone negotiation checks. They may move to the config file once that exists.
 - The KMS output pipelines hardcode `kmssink driver-name=vc4` (Raspberry Pi). Output mode is selected with `--output=software|pisp|window|null` (`OutputMode` in `src/stream/stream.h`); the `kms` modes need a real V4L2 capture device and a KMS display — don't use them as a smoke test on a dev machine; build-only verification is the norm. `window` (glimagesink) and `null` (fakesink) are the dev-machine modes; `--no-audio` drops the CV105 audio branch for machines without it. The `pisp` mode is currently blocked upstream — pispconvert renders NV12 output blue on BCM2712C1 (raspberrypi/libpisp#76, see docs/pi-setup.md); `software` is the default.
 - No vc4 plane supports packed 4:2:2 (no YUYV/UYVY/YVYU/VYUY — verified via `modetest -p`), so captured YUY2 frames **cannot be scanned out directly**: a conversion step (e.g. YUY2→NV16) before kmssink is mandatory. The empirical gst-launch confirmation pair is still pending; hardware profile in `docs/pi-setup.md`.

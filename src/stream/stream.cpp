@@ -24,6 +24,7 @@
 #include "stream/deleters.h"
 #include "stream/drop_gate.h"
 #include "stream/frame_buffer.h"
+#include "stream/whisper_demand.h"
 #include "stream/whisper_transcriber.h"
 #include "sync/sync_matcher.h"
 #include "sync/sync_session.h"
@@ -612,8 +613,12 @@ struct Stream::Implementation {
 
   void SetPreviewActive(bool active);
 
-  bool SetWhisperState(bool enabled,
+  bool SetWhisperState(std::optional<bool> enabled,
                        const std::optional<std::string>& model_path);
+  // Takes whisper_mutex_ then sync_mutex_; never call under sync_mutex_.
+  void ReleaseUnusedWhisper();
+  // Both whisper_mutex_ and sync_mutex_ must be held.
+  void DisableWhisperLocked();
   void ClearWhisperModel();
   bool WhisperEnabled() const { return whisper_enabled_.load(); }
   std::optional<std::string> WhisperModel() const;
@@ -633,9 +638,8 @@ struct Stream::Implementation {
   // mutex_ held.
   void CancelSyncLocked();
   // The one session-completion path: synced, failed, and cancelled all
-  // end here. Resets the session, stamps the public state, and — when
-  // the session owned the tap — schedules the tap's release on the
-  // control path. Call with sync_mutex_ held.
+  // end here. Resets the session, stamps the public state, and clears
+  // session demand. Poll reconciles the tap. Call with sync_mutex_ held.
   void EndSyncSessionLocked(Stream::SyncStatus status, std::string reason,
                             std::optional<std::int64_t> time_ms = std::nullopt,
                             std::optional<std::int64_t> theta_ns =
@@ -778,17 +782,12 @@ struct Stream::Implementation {
   // position is recomputed from it at application time so it advances
   // with the running time between the lock and its application.
   std::optional<std::int64_t> sync_pending_theta_ns_;
-  // Whether the running session enabled the tap itself: a session that
-  // owns the tap releases it when it ends, however it ends. An explicit
-  // SetWhisperState enable transfers the ownership to the user.
-  bool sync_owns_whisper_ = false;
+  // Only explicit enabled requests change continuous demand. Selecting
+  // a model never promotes a temporary session to continuous activity.
+  WhisperDemand whisper_demand_;
   // Incremented on every session start and end; the whisper thread
   // drops windows whose inference began under another generation.
   std::atomic_uint64_t sync_generation_ = 0;
-  // Set when a session that owned the tap ended; Poll then releases the
-  // tap outside all locks — SetWhisperState takes whisper_mutex_ and
-  // sync_mutex_ and must not run under sync_mutex_.
-  std::atomic_bool whisper_release_pending_ = false;
   // When the current session started (ns, shared timeline), for the
   // completion summary.
   std::int64_t sync_started_ns_ = 0;
@@ -1064,6 +1063,7 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
 
     // Buffers can arrive while the gate drains the backlog queued
     // before a disable; drop them with no transcriber.
+    const auto generation = sync_generation_.load();
     const auto transcriber = whisper_transcriber_.load();
     if (transcriber == nullptr) {
       continue;
@@ -1088,11 +1088,6 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
     // The tap's caps pin F32LE; buffers hold whole frames.
     const std::span<const float> samples{
         reinterpret_cast<const float*>(info.data), info.size / sizeof(float)};
-
-    // The session generation before the inference work begins: a window
-    // completed after a session change belongs to that old attempt and
-    // must not feed the new one.
-    const auto generation = sync_generation_.load();
 
     auto transcription = transcriber->Push(samples);
 
@@ -1124,7 +1119,8 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
     // The generation is rechecked under the lock: session changes all
     // happen here, so a window whose inference began under another
     // generation is stale evidence and dropped.
-    if (sync_session_ && generation == sync_generation_.load()) {
+    if (sync_session_ && generation == sync_generation_.load() &&
+        transcriber == whisper_transcriber_.load()) {
       const auto result = sync_session_->Feed(
           {std::move(transcription->text), audio_end}, MasterRunningTime());
 
@@ -1141,65 +1137,61 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
 }
 
 bool Stream::Implementation::SetWhisperState(
-    bool enabled, const std::optional<std::string>& model_path) {
+    std::optional<bool> enabled,
+    const std::optional<std::string>& model_path) {
   std::lock_guard lock{whisper_mutex_};
-
-  if (!enabled) {
-    // Gate first: nothing new reaches the transcriber, then the model
-    // can go (the whisper thread's copy keeps its window alive).
-    whisper_enabled_.store(false);
-    whisper_gate_.active.store(false, std::memory_order_relaxed);
-    whisper_transcriber_.store({});
-    // Selecting the next model works while disabled; it is loaded on
-    // the next enable.
-    if (model_path) {
-      whisper_model_path_ = *model_path;
-    }
-
-    // A listening session depends on the tap. The disable is itself the
-    // release, so nothing keeps owning the tap afterwards.
-    std::lock_guard sync_lock{sync_mutex_};
-    sync_owns_whisper_ = false;
-    if (sync_session_) {
-      EndSyncSessionLocked(SyncStatus::kFailed, "whisper disabled");
-    }
-    return true;
-  }
-
-  if (!audio_enabled_) {
-    return false;
-  }
-
   const std::string path = model_path.value_or(whisper_model_path_);
-  if (path.empty()) {
-    return false;
+  const bool changed_model = path != whisper_model_path_;
+  bool continuous;
+  {
+    std::lock_guard sync_lock{sync_mutex_};
+    continuous = enabled.value_or(whisper_demand_.Continuous());
   }
 
-  if (path == whisper_model_path_ && whisper_transcriber_.load() != nullptr) {
-    // Already running this model; just re-open the gate.
-    whisper_enabled_.store(true);
-    whisper_gate_.active.store(true, std::memory_order_relaxed);
-  } else {
-    auto transcriber = WhisperTranscriber::Create(path);
+  // Prepare before changing any state. A model change cancels the old
+  // session; only continuous demand needs the replacement loaded now.
+  auto transcriber = whisper_transcriber_.load();
+  if (continuous && (changed_model || !transcriber)) {
+    if (!audio_enabled_ || path.empty()) {
+      return false;
+    }
+    transcriber = WhisperTranscriber::Create(path);
     if (!transcriber) {
       return false;
     }
+  }
 
-    whisper_model_path_ = path;
-    // The transcriber before the gate, so no buffer meets a null one.
+  std::lock_guard sync_lock{sync_mutex_};
+  whisper_demand_.SetContinuous(enabled);
+  if (changed_model || enabled == false) {
+    EndSyncSessionLocked(sync_session_ ? SyncStatus::kFailed
+                                      : SyncStatus::kIdle,
+                         changed_model ? "whisper model changed"
+                                       : "whisper disabled");
+  }
+  whisper_model_path_ = path;
+  if (whisper_demand_.Wanted()) {
     whisper_transcriber_.store(std::move(transcriber));
     whisper_enabled_.store(true);
     whisper_gate_.active.store(true, std::memory_order_relaxed);
-  }
-
-  // An explicit enable owns the tap: a session listening on it keeps
-  // going, but no longer owns (and won't release) it. The session's own
-  // enable path sets its ownership after this call returns.
-  {
-    std::lock_guard sync_lock{sync_mutex_};
-    sync_owns_whisper_ = false;
+  } else {
+    DisableWhisperLocked();
   }
   return true;
+}
+
+void Stream::Implementation::DisableWhisperLocked() {
+  whisper_gate_.active.store(false, std::memory_order_relaxed);
+  whisper_enabled_.store(false);
+  whisper_transcriber_.store({});
+}
+
+void Stream::Implementation::ReleaseUnusedWhisper() {
+  std::lock_guard whisper_lock{whisper_mutex_};
+  std::lock_guard sync_lock{sync_mutex_};
+  if (!whisper_demand_.Wanted()) {
+    DisableWhisperLocked();
+  }
 }
 
 std::optional<std::string> Stream::Implementation::WhisperModel() const {
@@ -1658,12 +1650,9 @@ void Stream::Implementation::EndSyncSessionLocked(
   sync_session_.reset();
   ++sync_generation_;
 
-  // A session that owned the tap releases it on the control path
-  // (Poll): SetWhisperState must not run under sync_mutex_.
-  if (sync_owns_whisper_) {
-    sync_owns_whisper_ = false;
-    whisper_release_pending_.store(true);
-  }
+  // Poll reconciles physical activity with current demand under both
+  // locks. There is no stale deferred disable to apply to a later owner.
+  whisper_demand_.EndSession();
 
   sync_state_ = {};
   sync_state_.status = status;
@@ -1675,38 +1664,23 @@ void Stream::Implementation::EndSyncSessionLocked(
 
 Stream::SyncStartResult Stream::Implementation::StartSubtitleSync(
     const std::optional<std::string>& model_path) {
-  std::optional<std::string> path;
-  bool capturing;
-  {
-    std::lock_guard lock{mutex_};
-    path = subtitle_path_;
-    capturing = capture_state_ == CaptureState::kCapturing;
-  }
-
-  if (!path) {
+  // Keep capture/subtitle selection stable through validation and
+  // commit. Lock order: mutex_ -> whisper_mutex_ -> sync_mutex_.
+  std::lock_guard lock{mutex_};
+  if (!subtitle_path_) {
     return SyncStartResult::kNoSubtitles;
   }
 
   // The session listens to capture audio; without capture there is
   // nothing to listen to (a session started now would just fail at the
   // deadline).
-  if (!capturing) {
+  if (capture_state_ != CaptureState::kCapturing) {
     return SyncStartResult::kNoCapture;
   }
 
-  // The session enables the tap itself when it's off and owns it for
-  // the session's duration — a temporary activation that is never
-  // persisted and is released when the session ends, however it ends.
-  // An already-running tap is ridden as-is and owned by no one new.
-  bool session_enabled = false;
-  if (!whisper_enabled_.load()) {
-    if (!model_path || !SetWhisperState(true, model_path)) {
-      return SyncStartResult::kModelUnavailable;
-    }
-    session_enabled = true;
-  }
-
-  std::ifstream file{*path};
+  // Validate all subtitle input before activating the tap. These early
+  // returns must leave both physical activity and ownership unchanged.
+  std::ifstream file{*subtitle_path_};
   if (!file) {
     return SyncStartResult::kUnparseableSubtitles;
   }
@@ -1714,8 +1688,21 @@ Stream::SyncStartResult Stream::Implementation::StartSubtitleSync(
                              std::istreambuf_iterator<char>{}};
 
   auto cues = ParseSrtCues(contents);
-  if (cues.empty()) {
+  if (file.bad() || cues.empty()) {
     return SyncStartResult::kUnparseableSubtitles;
+  }
+
+  std::lock_guard whisper_lock{whisper_mutex_};
+  auto transcriber = whisper_transcriber_.load();
+  const auto selected = model_path.value_or(whisper_model_path_);
+  if (!transcriber) {
+    if (!audio_enabled_ || selected.empty()) {
+      return SyncStartResult::kModelUnavailable;
+    }
+    transcriber = WhisperTranscriber::Create(selected);
+    if (!transcriber) {
+      return SyncStartResult::kModelUnavailable;
+    }
   }
 
   // The deadline rides the shared timeline, so a capture clock that
@@ -1726,22 +1713,6 @@ Stream::SyncStartResult Stream::Implementation::StartSubtitleSync(
   {
     std::lock_guard lock{sync_mutex_};
 
-    if (!whisper_enabled_.load()) {
-      // Raced a disable between the enable and here; undo the session's
-      // own enable on the control path.
-      if (session_enabled) {
-        whisper_release_pending_.store(true);
-      }
-      return SyncStartResult::kNoWhisper;
-    }
-
-    // Own the tap when the session enabled it, when the replaced
-    // session did (a restart inherits), or when a just-ended session's
-    // release is still pending (adopt it: the tap was session-enabled,
-    // never user-enabled).
-    sync_owns_whisper_ = session_enabled || sync_owns_whisper_ ||
-                         whisper_release_pending_.exchange(false);
-
     sync_session_.emplace(std::move(cues), MatchTranscript, deadline);
     ++sync_generation_;
     sync_started_ns_ = now;
@@ -1749,6 +1720,13 @@ Stream::SyncStartResult Stream::Implementation::StartSubtitleSync(
     sync_state_.status = SyncStatus::kListening;
     sync_apply_pending_ = false;
     sync_pending_theta_ns_.reset();
+    whisper_demand_.StartSession();
+    if (!whisper_transcriber_.load()) {
+      whisper_model_path_ = selected;
+    }
+    whisper_transcriber_.store(std::move(transcriber));
+    whisper_enabled_.store(true);
+    whisper_gate_.active.store(true, std::memory_order_relaxed);
   }
 
   SYNC_LOG(LogLevel::kInfo, "Subtitle sync listening for up to {} s",
@@ -2051,14 +2029,13 @@ void Stream::Implementation::StopCapturePipeline(
   // The session listens to capture audio; capture going away ends it.
   {
     std::lock_guard sync_lock{sync_mutex_};
-    if (sync_session_) {
-      sync_state_.status = SyncStatus::kFailed;
-      sync_state_.reason = "capture stopped";
-      sync_session_.reset();
+    if (sync_session_ || sync_apply_pending_) {
+      EndSyncSessionLocked(SyncStatus::kFailed, "capture stopped");
     }
   }
 
   capture_state_ = CaptureState::kStopped;
+  ReleaseUnusedWhisper();
 }
 
 void Stream::Implementation::StopOutputPipeline(
@@ -2164,14 +2141,10 @@ void Stream::Implementation::Poll() {
     }
   }
 
-  // A session that owned the tap and just ended releases it here,
-  // outside all locks: SetWhisperState takes whisper_mutex_ and
-  // sync_mutex_ and must not run under sync_mutex_. A session started
-  // after that end adopts the tap by consuming this flag first; one
-  // that slips past it fails promptly with "whisper disabled".
-  if (whisper_release_pending_.exchange(false)) {
-    SetWhisperState(false, std::nullopt);
-  }
+  // No sync lock is held here. Recheck demand while serializing with
+  // explicit requests and session starts, rather than replaying a
+  // previously scheduled disable.
+  ReleaseUnusedWhisper();
 }
 
 bool Stream::Implementation::Initialize(
@@ -2273,7 +2246,7 @@ void Stream::SetPreviewActive(bool active) {
   implementation_->SetPreviewActive(active);
 }
 
-bool Stream::SetWhisperState(bool enabled,
+bool Stream::SetWhisperState(std::optional<bool> enabled,
                              const std::optional<std::string>& model_path) {
   return implementation_->SetWhisperState(enabled, model_path);
 }

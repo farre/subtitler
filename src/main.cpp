@@ -559,13 +559,14 @@ int main(int argc, char** argv) {
           path = resolved->string();
         }
 
-        if (!stream->SetWhisperState(enabled.value_or(stream->WhisperEnabled()),
-                                     path)) {
+        if (!stream->SetWhisperState(enabled, path)) {
           return false;
         }
 
         if (config) {
-          config->SetWhisperEnabled(stream->WhisperEnabled());
+          if (enabled) {
+            config->SetWhisperEnabled(*enabled);
+          }
           if (model) {
             config->SetWhisperModel(*model);
           }
