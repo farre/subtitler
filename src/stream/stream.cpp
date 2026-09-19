@@ -668,13 +668,16 @@ struct Stream::Implementation {
   void StopOutputPipeline(const std::lock_guard<std::mutex>&);
 
   bool Failed() const {
+    // A failed replacement can still recover through rollback. Wait for
+    // the whole transition before exposing its outcome to the main loop.
+    std::lock_guard lock{mutex_};
     return capture_failed_.load() || output_failed_.load();
   }
 
   std::uint64_t DroppedFrames() const { return frames_.DroppedFrames(); }
 
   // Guards the pipelines, buses, threads, and capture_state_ below.
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
 
   // One clock and base time for every pipeline, so capture and output
   // share a running-time domain: captured PTS are valid output timestamps

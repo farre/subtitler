@@ -210,6 +210,9 @@ class Stream {
   // and after a cancel (subtitle switch, manual seek, whisper toggle).
   SyncState SubtitleSync() const;
 
+  // Waits for any pipeline transition, including subtitle rollback, to
+  // finish before reporting failure. Do not call from Stream callbacks
+  // or workers whose completion a pipeline transition waits for.
   bool Failed() const;
   std::uint64_t DroppedFrames() const;
 

@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <string>
 #include <thread>
@@ -51,11 +52,28 @@ TEST_CASE("subtitle replacement restores working playback on failure") {
     stream->SetSubtitlesPaused(true);
     const auto frozen = stream->SubtitleTime();
     bool commit_called = false;
+    std::promise<void> query_started;
+    auto query_ready = query_started.get_future();
+    std::future<bool> failure;
+    bool query_waited = false;
     CHECK_FALSE(stream->SetSubtitleFile(std::nullopt, {}, [&] {
       commit_called = true;
+      // SetSubtitleFile holds its transition lock here. A concurrent
+      // public failure query must wait until rollback has completed.
+      // Keep the future outside this callback: destroying it here would
+      // join a query waiting for the lock that this callback still holds.
+      failure = std::async(std::launch::async, [&] {
+        query_started.set_value();
+        return std::as_const(*stream).Failed();
+      });
+      query_ready.wait();
+      query_waited = failure.wait_for(std::chrono::milliseconds{100}) ==
+                     std::future_status::timeout;
       return false;
     }));
-    CHECK(commit_called);
+    REQUIRE(commit_called);
+    CHECK(query_waited);
+    CHECK_FALSE(failure.get());
     CHECK(stream->SubtitlesPaused());
     CHECK(stream->SubtitleTime() == frozen);
     CHECK(std::filesystem::exists(path));
