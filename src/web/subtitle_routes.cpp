@@ -28,8 +28,9 @@ constexpr std::string_view kSubtitleSyncRoute = "/api/subtitle-sync";
 constexpr std::size_t kMaxSubtitleBytes = 8 * 1024 * 1024;
 
 void RespondPersistenceFailure(SoupServerMessage* message) {
-  RespondJson(message,
-              R"({"reason":"change applied, but persistence failed","applied":true,"persisted":false})");
+  RespondJson(
+      message,
+      R"({"reason":"change applied, but persistence failed","applied":true,"persisted":false})");
   soup_server_message_set_status(message, SOUP_STATUS_INTERNAL_SERVER_ERROR,
                                  nullptr);
 }
@@ -157,8 +158,7 @@ void HandleSubtitleDelete(SoupServerMessage* message, const char* path,
 // streaming reception of the body into a staged file; the completion
 // handler (HandleSubtitleUpload) works with that file.
 void HandleSubtitleUploadEarly(SoupServer*, SoupServerMessage* message,
-                               const char* path, GHashTable*,
-                               gpointer user_data) {
+                               const char* path, GHashTable*, gpointer) {
   const std::string_view method{soup_server_message_get_method(message)};
   const std::string_view route{path};
 
@@ -445,7 +445,7 @@ void HandleSubtitleSync(SoupServer*, SoupServerMessage* message,
   }
 
   switch (self.sync_start_(model ? std::make_optional<std::string_view>(*model)
-                                : std::nullopt)) {
+                                 : std::nullopt)) {
     case SubtitleSyncStartResult::kStarted:
       RespondJson(message, R"({"state":"listening"})");
       soup_server_message_set_status(message, SOUP_STATUS_ACCEPTED, nullptr);
