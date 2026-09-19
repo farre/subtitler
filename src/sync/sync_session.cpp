@@ -20,12 +20,19 @@ SyncSession::SyncSession(std::vector<SrtCue> cues, SyncMatcher matcher,
 
 SyncSession::Result SyncSession::Feed(TimestampedText window,
                                       std::int64_t now_ns) {
+  // Expiry before evidence: a window that arrives after the deadline
+  // must not lock, however strong the match.
+  if (auto result = Poll(now_ns); result.state != State::kListening) {
+    return result;
+  }
+
   windows_.push_back(std::move(window));
 
   if (windows_.size() >= kMinWindows) {
     if (const auto theta = matcher_(cues_, windows_)) {
       return {.state = State::kSynced,
               .time_ms = (now_ns + *theta) / 1'000'000,
+              .theta_ns = *theta,
               .reason = {}};
     }
   }

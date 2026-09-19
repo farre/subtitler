@@ -10,6 +10,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -17,8 +18,10 @@
 #include <thread>
 #include <vector>
 
+#include "utils/paths.h"
 #include "utils/preview_frame.h"
 #include "utils/unique_ptr.h"
+#include "web/json_helpers.h"
 #include "web/web_server.h"
 
 namespace {
@@ -107,6 +110,85 @@ Response HttpRequest(std::string_view method, std::uint16_t port,
 
 Response HttpGet(std::uint16_t port, std::string_view path) {
   return HttpRequest("GET", port, path);
+}
+
+// Writes request parts over a raw socket and reads the response status
+// line: for declared lengths and chunked bodies the libsoup client API
+// doesn't produce on demand. shutdown_write signals the request's end
+// without a body (libsoup won't answer an incomplete declared body).
+guint RawHttpRequest(std::uint16_t port,
+                     const std::vector<std::string_view>& parts,
+                     bool shutdown_write = false) {
+  GObjectPtr<GSocketClient> client{g_socket_client_new()};
+  g_socket_client_set_timeout(client.get(), 10);
+  GObjectPtr<GSocketConnection> connection{g_socket_client_connect_to_host(
+      client.get(), "127.0.0.1", port, nullptr, nullptr)};
+  REQUIRE(connection != nullptr);
+
+  GOutputStream* out =
+      g_io_stream_get_output_stream(G_IO_STREAM(connection.get()));
+  for (const auto part : parts) {
+    REQUIRE(g_output_stream_write_all(out, part.data(), part.size(), nullptr,
+                                      nullptr, nullptr));
+  }
+
+  if (shutdown_write) {
+    GError* error = nullptr;
+    REQUIRE(g_socket_shutdown(
+        g_socket_connection_get_socket(connection.get()), FALSE, TRUE,
+        &error));
+  }
+
+  GInputStream* in =
+      g_io_stream_get_input_stream(G_IO_STREAM(connection.get()));
+  std::string head;
+  char buffer[4096];
+  while (!head.contains("\r\n\r\n")) {
+    const gssize read =
+        g_input_stream_read(in, buffer, sizeof buffer, nullptr, nullptr);
+    if (read <= 0) {
+      break;
+    }
+    head.append(buffer, static_cast<std::size_t>(read));
+  }
+
+  unsigned status = 0;
+  REQUIRE(std::sscanf(head.c_str(), "HTTP/%*c.%*c %u", &status) == 1);
+  return status;
+}
+
+// RawHttpRequest for requests the server legitimately never answers
+// (a truncated declared body is just disconnected); asserts the
+// connection closes without a response.
+void RawHttpRequestQuiet(std::uint16_t port,
+                         const std::vector<std::string_view>& parts,
+                         bool shutdown_write = false) {
+  GObjectPtr<GSocketClient> client{g_socket_client_new()};
+  g_socket_client_set_timeout(client.get(), 10);
+  GObjectPtr<GSocketConnection> connection{g_socket_client_connect_to_host(
+      client.get(), "127.0.0.1", port, nullptr, nullptr)};
+  REQUIRE(connection != nullptr);
+
+  GOutputStream* out =
+      g_io_stream_get_output_stream(G_IO_STREAM(connection.get()));
+  for (const auto part : parts) {
+    REQUIRE(g_output_stream_write_all(out, part.data(), part.size(), nullptr,
+                                      nullptr, nullptr));
+  }
+
+  if (shutdown_write) {
+    GError* error = nullptr;
+    REQUIRE(g_socket_shutdown(
+        g_socket_connection_get_socket(connection.get()), FALSE, TRUE,
+        &error));
+  }
+
+  GInputStream* in =
+      g_io_stream_get_input_stream(G_IO_STREAM(connection.get()));
+  char buffer[1024];
+  const gssize read =
+      g_input_stream_read(in, buffer, sizeof buffer, nullptr, nullptr);
+  CHECK(read <= 0);  // closed without a response
 }
 
 // A held-open MJPEG connection.
@@ -496,6 +578,28 @@ TEST_CASE("web server subtitle upload") {
           SOUP_STATUS_REQUEST_ENTITY_TOO_LARGE);
     CHECK(captured_title.empty());
   }
+
+  // #8: a body with no declared length is bounded while streaming; the
+  // 413 comes from counting received bytes, not from a header.
+  SUBCASE("a chunked body crossing the cap is a 413") {
+    const std::string chunk(1024 * 1024, 'x');  // 0x100000 bytes
+    std::vector<std::string_view> parts{
+        "PUT /api/subtitles/movie.srt HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "Connection: close\r\n\r\n",
+    };
+    const std::string chunk_head = std::format("{:x}\r\n", chunk.size());
+    for (int i = 0; i < 9; ++i) {  // 9 MiB > the 8 MiB cap
+      parts.push_back(chunk_head);
+      parts.push_back(chunk);
+      parts.push_back("\r\n");
+    }
+    parts.push_back("0\r\n\r\n");
+
+    CHECK(RawHttpRequest(port, parts) == SOUP_STATUS_REQUEST_ENTITY_TOO_LARGE);
+    CHECK(captured_title.empty());
+  }
 }
 
 TEST_CASE("web server subtitle upload without a handler") {
@@ -630,6 +734,102 @@ TEST_CASE("web server subtitle get") {
     CHECK(HttpGet(port, "/api/subtitles/missing.srt").status ==
           SOUP_STATUS_NOT_FOUND);
   }
+}
+
+// Filenames travel the route exactly once-encoded: the client
+// percent-encodes the segment, libsoup decodes the path once, and the
+// hook sees the title byte-for-byte — `?`, `#`, `%`, literal `%20` or
+// `%2F` text, spaces, quotes, and Unicode included (#2 review). Actual
+// decoded separators and traversal still fail validation.
+TEST_CASE("web server subtitle filenames round-trip") {
+  const std::uint16_t port = FindFreePort();
+
+  subtitler::PreviewFrameBuffer frames;
+
+  std::map<std::string, std::string> library;
+
+  subtitler::WebServerHooks hooks;
+  hooks.subtitle_upload =
+      [&library](std::string_view title,
+                 std::string_view contents) -> subtitler::SubtitleUploadResult {
+    if (!subtitler::LibrarySubtitlePath(title)) {
+      return {subtitler::SubtitleUploadStatus::kInvalidTitle, {}};
+    }
+    library[std::string{title}] = contents;
+    return {subtitler::SubtitleUploadStatus::kStored,
+            subtitler::LibrarySubtitlePath(title)->generic_string()};
+  };
+  hooks.subtitle_get = [&library](std::string_view title)
+      -> std::optional<std::string> {
+    const auto entry = library.find(std::string{title});
+    if (entry == library.end()) {
+      return std::nullopt;
+    }
+    return entry->second;
+  };
+  hooks.subtitle_delete = [&library](std::string_view title) {
+    if (!subtitler::LibrarySubtitlePath(title)) {
+      return subtitler::SubtitleDeleteStatus::kNotFound;
+    }
+    return library.erase(std::string{title}) > 0
+               ? subtitler::SubtitleDeleteStatus::kDeleted
+               : subtitler::SubtitleDeleteStatus::kNotFound;
+  };
+  hooks.subtitle_list = [&library] {
+    std::vector<std::string> titles;
+    for (const auto& [title, _] : library) {
+      titles.push_back(title);
+    }
+    return titles;
+  };
+
+  auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
+  REQUIRE(server != nullptr);
+
+  // Percent-encodes like the client's encodeURIComponent: everything
+  // outside the unreserved set, UTF-8 bytes included.
+  const auto escape = [](std::string_view title) {
+    const subtitler::UniquePtr<gchar, g_free> escaped{g_uri_escape_string(
+        std::string{title}.c_str(), nullptr, FALSE)};
+    return std::string{escaped.get()};
+  };
+
+  const std::vector<std::string> titles = {
+      "Who?.srt", "C# Sharp.srt", "100%.srt", "a%20b.srt", "a%2Fb.srt",
+      "Quote\"Test.srt", "München Éire ☃.srt", "plain space.srt",
+  };
+
+  for (const auto& title : titles) {
+    const auto encoded = escape(title);
+    INFO("title: ", title, " encoded: ", encoded);
+
+    const std::string srt = "1\n00:00:01,000 --> 00:00:02,000\nHi\n";
+    CHECK(HttpRequest("PUT", port, "/api/subtitles/" + encoded, srt).status ==
+          SOUP_STATUS_CREATED);
+    CHECK(library.contains(title));
+
+    const auto got = HttpGet(port, "/api/subtitles/" + encoded);
+    CHECK(got.status == SOUP_STATUS_OK);
+    CHECK(got.body.contains("Hi"));
+
+    const auto list = HttpGet(port, "/api/subtitles");
+    CHECK(list.status == SOUP_STATUS_OK);
+    CHECK(list.body.contains(subtitler::JsonEscape(title)));
+
+    CHECK(HttpRequest("DELETE", port, "/api/subtitles/" + encoded).status ==
+          SOUP_STATUS_NO_CONTENT);
+    CHECK(!library.contains(title));
+  }
+
+  // A decoded slash from %2F is a separator, not a name character.
+  CHECK(HttpRequest("PUT", port, "/api/subtitles/a%2Fb.srt", "x").status ==
+        SOUP_STATUS_BAD_REQUEST);
+  // Traversal, encoded and plain, stays rejected.
+  CHECK(HttpRequest("PUT", port, "/api/subtitles/..%2F..%2Fetc.srt", "x")
+            .status == SOUP_STATUS_BAD_REQUEST);
+  CHECK(HttpRequest("PUT", port, "/api/subtitles/a/b.srt", "x").status ==
+        SOUP_STATUS_BAD_REQUEST);
+  CHECK(library.empty());
 }
 
 TEST_CASE("web server subtitle delete") {
@@ -864,6 +1064,59 @@ TEST_CASE("web server subtitle state") {
     CHECK(state.font_color == std::optional<std::uint32_t>{0xFF'FF'FF'FFu});
   }
 
+  SUBCASE("PUT accepts the documented numeric ranges (#446)") {
+    // The extremes of the ms range (~73 years either way) are valid;
+    // negative time and delay keep their meaning.
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?time=2305843009213")
+              .status == SOUP_STATUS_OK);
+    CHECK(state.time_ms == 2305843009213LL);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?time=-2305843009213")
+              .status == SOUP_STATUS_OK);
+    CHECK(state.time_ms == -2305843009213LL);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?delay=-2305843009213")
+              .status == SOUP_STATUS_OK);
+    CHECK(state.delay_ms == -2305843009213LL);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_size=1000")
+              .status == SOUP_STATUS_OK);
+    CHECK(state.font_size == std::optional<std::int64_t>{1000});
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_size=1")
+              .status == SOUP_STATUS_OK);
+    CHECK(state.font_size == std::optional<std::int64_t>{1});
+  }
+
+  SUBCASE("PUT rejects out-of-range numbers without touching the state "
+          "(#446)") {
+    // Past the ms bound the stream's ns conversion could overflow.
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?time=2305843009214")
+              .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?time=-2305843009214")
+              .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(
+        HttpRequest("PUT", port,
+                    "/api/subtitle-state?time=9223372036854775807")
+            .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(
+        HttpRequest("PUT", port,
+                    "/api/subtitle-state?time=-9223372036854775808")
+            .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?delay=2305843009214")
+              .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(
+        HttpRequest("PUT", port,
+                    "/api/subtitle-state?delay=-9223372036854775808")
+            .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-state?font_size=1001")
+              .status == SOUP_STATUS_BAD_REQUEST);
+    CHECK(
+        HttpRequest("PUT", port,
+                    "/api/subtitle-state?font_size=9223372036854775807")
+            .status == SOUP_STATUS_BAD_REQUEST);
+
+    CHECK(state.time_ms == 1234);
+    CHECK(state.delay_ms == -150);
+    CHECK(state.font_size == std::optional<std::int64_t>{24});
+  }
+
   SUBCASE("a failing set hook is a 400") {
     set_ok = false;
 
@@ -898,6 +1151,7 @@ TEST_CASE("web server whisper endpoints") {
 
   bool enabled = false;
   std::optional<std::string> model;
+  int model_clears = 0;
 
   subtitler::WebServerHooks hooks;
   hooks.state_dir = state_dir;
@@ -917,6 +1171,10 @@ TEST_CASE("web server whisper endpoints") {
       model = std::string{*new_model};
     }
     return !enabled || model.has_value();
+  };
+  hooks.whisper_model_clear = [&] {
+    ++model_clears;
+    model = std::nullopt;
   };
 
   auto server = subtitler::WebServer::Create(port, frames, std::move(hooks));
@@ -970,6 +1228,42 @@ TEST_CASE("web server whisper endpoints") {
                        std::ios::binary};
     CHECK(std::string{std::istreambuf_iterator<char>{file},
                       std::istreambuf_iterator<char>{}} == "fake-ggml-bytes");
+
+    // The staged upload is gone once the store commits.
+    CHECK(subtitler::ListWhisperModels(state_dir) ==
+          std::vector<std::string>{"ggml-base.en.bin", "ggml-tiny.en.bin"});
+    for (const auto& entry :
+         std::filesystem::directory_iterator(state_dir / "models")) {
+      CHECK(!entry.path().filename().string().starts_with(".upload-"));
+    }
+  }
+
+  // #8: an excessive declared length is rejected at the headers:
+  // nothing is staged. A full oversize body is discarded as it arrives
+  // and answered 413 at completion; a truncated one just gets its
+  // connection closed (libsoup never answers an incomplete declared
+  // body).
+  SUBCASE("a declared-oversize model is never staged") {
+    const std::vector<std::string_view> parts{
+        "PUT /api/whisper/models/ggml-huge.en.bin HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Content-Length: 536870913\r\n"  // 512 MiB + 1
+        "Connection: close\r\n\r\n",
+    };
+    // The shutdown ends the request; the server closes silently.
+    RawHttpRequestQuiet(port, parts, true);
+    CHECK(!std::filesystem::exists(state_dir / "models" /
+                                   "ggml-huge.en.bin"));
+    for (const auto& entry :
+         std::filesystem::directory_iterator(state_dir / "models")) {
+      CHECK(!entry.path().filename().string().starts_with(".upload-"));
+    }
+
+    // The server is unaffected and still serves requests.
+    const auto response =
+        HttpRequest("PUT", port, "/api/whisper/models/ggml-base.en.bin",
+                    std::string_view{"fake-ggml-bytes"});
+    CHECK(response.status == SOUP_STATUS_CREATED);
   }
 
   SUBCASE("model store rejects bad input") {
@@ -1014,6 +1308,30 @@ TEST_CASE("web server whisper endpoints") {
               .status == SOUP_STATUS_NO_CONTENT);
   }
 
+  SUBCASE("deleting the selected model clears the selection server-side") {
+    model = "ggml-tiny.en.bin";
+
+    CHECK(HttpRequest("DELETE", port, "/api/whisper/models/ggml-tiny.en.bin")
+              .status == SOUP_STATUS_NO_CONTENT);
+    CHECK(model_clears == 1);
+    CHECK(model == std::nullopt);
+
+    const auto response = HttpGet(port, "/api/whisper");
+    CHECK(response.body == R"({"enabled":false,"model":null,"models":[]})");
+  }
+
+  SUBCASE("deleting another model keeps the selection") {
+    model = "ggml-tiny.en.bin";
+    {
+      std::ofstream{state_dir / "models" / "ggml-base.en.bin"} << "fake";
+    }
+
+    CHECK(HttpRequest("DELETE", port, "/api/whisper/models/ggml-base.en.bin")
+              .status == SOUP_STATUS_NO_CONTENT);
+    CHECK(model_clears == 0);
+    CHECK(model == "ggml-tiny.en.bin");
+  }
+
   std::filesystem::remove_all(state_dir);
 }
 
@@ -1026,11 +1344,14 @@ TEST_CASE("web server subtitle sync endpoints") {
   subtitler::SubtitleSyncStartResult start_result =
       subtitler::SubtitleSyncStartResult::kStarted;
   int starts = 0;
+  std::optional<std::string> started_model;
 
   subtitler::WebServerHooks hooks;
   hooks.subtitle_sync_get = [&] { return state; };
-  hooks.subtitle_sync_start = [&] {
+  hooks.subtitle_sync_start = [&](std::optional<std::string_view> model) {
     ++starts;
+    started_model = model ? std::make_optional<std::string>(*model)
+                          : std::nullopt;
     return start_result;
   };
 
@@ -1044,6 +1365,7 @@ TEST_CASE("web server subtitle sync endpoints") {
     CHECK(response.status == SOUP_STATUS_ACCEPTED);
     CHECK(response.body == R"({"state":"listening"})");
     CHECK(starts == 1);
+    CHECK(started_model == std::nullopt);
 
     response = HttpGet(port, "/api/subtitle-sync");
     CHECK(response.status == SOUP_STATUS_OK);
@@ -1063,6 +1385,21 @@ TEST_CASE("web server subtitle sync endpoints") {
         R"({"state":"failed","reason":"no stable match within the listening window"})");
   }
 
+  SUBCASE("PUT passes the named model to the session") {
+    const auto response =
+        HttpRequest("PUT", port, "/api/subtitle-sync?model=ggml-tiny.en.bin");
+    CHECK(response.status == SOUP_STATUS_ACCEPTED);
+    CHECK(started_model == "ggml-tiny.en.bin");
+  }
+
+  SUBCASE("PUT rejects bad query input without starting") {
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-sync?model=").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(HttpRequest("PUT", port, "/api/subtitle-sync?bogus=1").status ==
+          SOUP_STATUS_BAD_REQUEST);
+    CHECK(starts == 0);
+  }
+
   SUBCASE("start failures answer 409 with the reason") {
     start_result = subtitler::SubtitleSyncStartResult::kNoSubtitles;
     auto response = HttpRequest("PUT", port, "/api/subtitle-sync");
@@ -1070,11 +1407,23 @@ TEST_CASE("web server subtitle sync endpoints") {
     CHECK(response.body ==
           R"({"state":"failed","reason":"no subtitles attached"})");
 
+    start_result = subtitler::SubtitleSyncStartResult::kNoCapture;
+    response = HttpRequest("PUT", port, "/api/subtitle-sync");
+    CHECK(response.status == SOUP_STATUS_CONFLICT);
+    CHECK(response.body ==
+          R"({"state":"failed","reason":"capture isn't running"})");
+
     start_result = subtitler::SubtitleSyncStartResult::kNoWhisper;
     response = HttpRequest("PUT", port, "/api/subtitle-sync");
     CHECK(response.status == SOUP_STATUS_CONFLICT);
     CHECK(response.body ==
           R"({"state":"failed","reason":"whisper is disabled"})");
+
+    start_result = subtitler::SubtitleSyncStartResult::kModelUnavailable;
+    response = HttpRequest("PUT", port, "/api/subtitle-sync");
+    CHECK(response.status == SOUP_STATUS_CONFLICT);
+    CHECK(response.body ==
+          R"({"state":"failed","reason":"the model isn't available"})");
 
     start_result = subtitler::SubtitleSyncStartResult::kUnparseableSubtitles;
     response = HttpRequest("PUT", port, "/api/subtitle-sync");

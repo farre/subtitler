@@ -18,6 +18,14 @@ enum class OutputMode {
   kNull,
 };
 
+// The one rendering decision behind the subtitle overlay's "silent"
+// property: hidden while paused (#439) or explicitly hidden (#158).
+// Both state setters must apply this composition — setting silent from
+// either state alone makes the two controls overwrite each other.
+inline bool SubtitlesSilent(bool paused, bool visible) {
+  return paused || !visible;
+}
+
 // The full capture pipeline: video branch plus, when audio is true, the
 // audio branch. The branches are separate functions so machines without
 // the capture device's ALSA card can run video-only. When whisper is
@@ -80,7 +88,8 @@ class Stream {
 
   // Live subtitle delay trim in milliseconds; positive delays cues.
   // Applies without rebuilding the pipeline (#169): the branch re-parses
-  // through the shifted offset (#439).
+  // through the shifted offset (#439). Out-of-range values
+  // (SubtitleOffsetMsValid, #446) are ignored.
   void SetSubtitleDelay(std::int64_t delay_ms);
 
   // Live show/hide toggle; does not disturb the subtitle branch (#158).
@@ -94,7 +103,8 @@ class Stream {
   // Moves the SRT position live: re-anchors and re-parses the SRT
   // through the new offset (a pad offset reaches only cues parsed after
   // the change). Works paused (moves the frozen position) and playing;
-  // 0 restarts from the beginning. No-op without subtitles.
+  // 0 restarts from the beginning. No-op without subtitles. Out-of-range
+  // values (SubtitleOffsetMsValid, #446) are ignored.
   void SetSubtitleTime(std::int64_t time_ms);
 
   // Pause hides the subtitles and freezes the SRT position; resume
@@ -113,6 +123,7 @@ class Stream {
   // the renderer's default. Re-applied when the auto-plugged renderer
   // child appears and across output rebuilds. No-op without subtitles.
   void SetSubtitleFontFamily(std::string family);
+  // Out-of-range sizes (SubtitleFontSizeValid, #446) are ignored.
   void SetSubtitleFontSize(std::int64_t size_pt);
   // Big-endian ARGB; 0xFFRRGGBB for an opaque #RRGGBB.
   void SetSubtitleFontColor(std::uint32_t color_argb);
@@ -138,6 +149,10 @@ class Stream {
   // with a new model path switches models live.
   bool SetWhisperState(bool enabled,
                        const std::optional<std::string>& model_path);
+  // Clears the stored model selection (the model a future enable would
+  // load) — e.g. after the selected model was deleted from the store.
+  // No-op while the tap is enabled: the running model stays.
+  void ClearWhisperModel();
   // Whether the tap is transcribing, and the model path in use (nullopt
   // when whisper was never enabled).
   bool WhisperEnabled() const;
@@ -153,20 +168,31 @@ class Stream {
 
   // One-shot subtitle auto-sync (#433): listens to the capture audio,
   // matches the transcript against the attached SRT, and jumps the SRT
-  // clock to the matched position. Needs subtitles attached and whisper
-  // running; restarting a running session starts it over.
+  // clock to the matched position. Needs subtitles attached and capture
+  // running; restarting a running session starts it over. When the tap
+  // is off, the session enables it itself with model_path and owns it
+  // for the session's duration — a temporary activation that is never
+  // persisted and always released when the session ends, however it
+  // ends. When the tap is already on, the session rides it and owns
+  // nothing; an explicit SetWhisperState enable transfers that
+  // ownership to the user.
   enum class SyncStartResult : std::uint8_t {
     kStarted,
     kNoSubtitles,
+    kNoCapture,
     kNoWhisper,
+    kModelUnavailable,
     kUnparseableSubtitles,
   };
-  SyncStartResult StartSubtitleSync();
+  SyncStartResult StartSubtitleSync(
+      const std::optional<std::string>& model_path);
 
   enum class SyncStatus : std::uint8_t { kIdle, kListening, kSynced, kFailed };
   struct SyncState {
     SyncStatus status = SyncStatus::kIdle;
-    // The matched SRT position in ms; set when synced.
+    // The matched SRT position at lock time in ms; set when synced.
+    // The applied position advances with the running time between the
+    // lock and its application.
     std::optional<std::int64_t> time_ms;
     // Why the session failed; set when failed.
     std::string reason;

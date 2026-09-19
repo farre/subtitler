@@ -57,20 +57,27 @@ first client starts the encoder, the last disconnect stops it.
 
 Subtitles live in the state-dir library, sharded by the title's first
 letter lowercased (`_` for non-letters): `subtitles/<bucket>/<title>`. A
-usable title is non-empty, does not start with a dot, contains no slashes,
-and ends in `.srt`.
+usable title is non-empty, at most 255 bytes, does not start with a dot,
+contains no slashes or control characters, and ends in `.srt`. Titles
+travel exactly once-encoded: the client percent-encodes the path
+segment and the server decodes it once.
 
 ### PUT /api/subtitles/<title>
 
-Uploads an SRT: the percent-decoded `<title>` is validated, the raw request
-body is stored in the library, marked `active` for boot resume, and
-switched in live (re-anchored at the current running time).
+Uploads an SRT: the `<title>` is validated, the request body is
+stored in the library, marked `active` for boot resume, and switched
+in live (re-anchored at the current running time). The body streams
+into a staged file rather than memory. Storing is separate from
+selecting: the marker and the persisted configuration change only
+after the live switch succeeds, and a failed switch restores the
+previous playback (an SRT switch never restarts capture).
 
 - `201 Created` — body is the library-relative name as JSON:
   `{"stored_name":"m/Movie.srt"}`
-- `400 Bad Request` — invalid title, bad percent-encoding, or empty body
+- `400 Bad Request` — invalid title or empty body
 - `405 Method Not Allowed` — anything but GET, PUT, or DELETE
-- `413 Content Too Large` — body over 8 MiB
+- `413 Content Too Large` — body over 8 MiB (rejected at the declared
+  length, or while streaming when the cap is crossed)
 - `500 Internal Server Error` — storage or live activation failed
 
 ```js
@@ -83,7 +90,7 @@ const { stored_name } = await response.json();
 
 ### GET /api/subtitles/<title>
 
-The stored SRT for the percent-decoded `<title>`, as JSON:
+The stored SRT for `<title>`, as JSON:
 
 ```json
 {
@@ -91,21 +98,21 @@ The stored SRT for the percent-decoded `<title>`, as JSON:
 }
 ```
 
-- `400 Bad Request` — bad percent-encoding
 - `404 Not Found` — no such library title
 
 ### DELETE /api/subtitles/<title>
 
-Removes the percent-decoded `<title>` from the library. Deleting the
-attached subtitle detaches it (like `PUT /api/subtitle-state?file=`)
-and clears the `active` marker.
+Removes `<title>` from the library. Deleting the attached subtitle
+detaches it (like `PUT /api/subtitle-state?file=`) and clears the
+`active` marker. The entry is removed first, so a failed removal
+changes nothing — the selection stays usable.
 
 ```js
 await window.fetch("/api/subtitles/Movie.srt", { method: "DELETE" });
 ```
 
 - `204 No Content` — deleted
-- `400 Bad Request` — bad percent-encoding or missing title
+- `400 Bad Request` — missing title
 - `404 Not Found` — no such library title
 - `500 Internal Server Error` — removal or live detach failed
 
@@ -160,32 +167,49 @@ await window.fetch("/api/subtitle-state?file=Show%20S01E01.srt", { method: "PUT"
 - `file` — a title from `GET /api/subtitles`; resolved via the library and
   marked `active` for boot resume. Empty detaches subtitles entirely.
 - `paused` — `true` hides the subtitles and freezes the SRT position;
-  `false` shows them again and resumes from the frozen position.
+  `false` shows them again and resumes from the frozen position. Pause
+  and visibility compose: rendering is off while paused OR hidden.
 - `time` — SRT position in milliseconds; works paused (moves the frozen
-  position) or playing. `0` restarts from the beginning.
-- `delay` — live trim in milliseconds; positive delays cues.
+  position) or playing. `0` restarts from the beginning. Negative seeks
+  before the start. Bounded at ±2305843009213 ms (~73 years).
+- `delay` — live trim in milliseconds; positive delays cues, negative
+  advances them. Same bound as `time`.
 - `visible` — show/hide without disturbing the subtitle branch.
 - `font_family` — cue font family, one of `GET /api/fonts`.
-- `font_size` — cue font size in points; a positive integer.
+- `font_size` — cue font size in points, 1–1000.
 - `font_color` — cue color as `#rrggbb` (always opaque). The `#` must be
   percent-encoded (`%23`) in the query string.
+
+The persisted `[subtitles]` configuration follows successful changes
+as a best-effort write-back: a write failure is logged, not reported,
+and the live state stands.
 
 ### PUT /api/subtitle-sync
 
 Starts (or restarts) a one-shot auto-sync session (#433): the appliance
 listens to the capture audio for up to ~45 seconds, matches the whisper
 transcript against the attached SRT, and on a stable match jumps the
-SRT clock to the matched position. Needs subtitles attached and whisper
-enabled (`PUT /api/whisper?enabled=true`).
+SRT clock to the matched position. Needs subtitles attached and capture
+running. The session owns its transcription: when the tap is off, it
+enables it with the model named by `model` and releases it when the
+session ends, however it ends — a temporary activation that is never
+persisted; when the tap is already on, the session rides it and changes
+nothing.
 
 ```js
-await window.fetch("/api/subtitle-sync", { method: "PUT" });
+await window.fetch("/api/subtitle-sync?model=ggml-tiny.en.bin", { method: "PUT" });
 ```
 
+- `model` — a model file name from `GET /api/whisper`; required when
+  the tap is off, ignored while it runs.
+
 - `202 Accepted` — listening: `{"state":"listening"}`
+- `400 Bad Request` — unknown parameters or an empty `model`
 - `409 Conflict` — can't start, with the reason:
   `{"state":"failed","reason":"no subtitles attached"}`,
-  `{"state":"failed","reason":"whisper is disabled"}`, or
+  `{"state":"failed","reason":"capture isn't running"}`,
+  `{"state":"failed","reason":"whisper is disabled"}`,
+  `{"state":"failed","reason":"the model isn't available"}`, or
   `{"state":"failed","reason":"the subtitle file can't be parsed"}`
 
 ### GET /api/subtitle-sync
@@ -198,9 +222,9 @@ The session state:
 
 `state` is `idle` (no session, or cancelled by a subtitle switch,
 manual seek, or whisper toggle), `listening`, `synced` (with
-`"time": <matched SRT position in ms>`), or `failed` (with `"reason"`).
-The film must actually be playing for a lock; a session that finds no
-stable match within the listening window fails.
+`"time": <matched SRT position at lock time in ms>`), or `failed` (with
+`"reason"`). The film must actually be playing for a lock; a session
+that finds no stable match within the listening window fails.
 
 ### GET /api/fonts
 
@@ -232,8 +256,10 @@ The live whisper state and the stored models:
 }
 ```
 
-`model` is the model in use (its store file name), or `null` when none
-was ever enabled. 404 when the hooks are unset.
+`model` is the selected model (its store file name), or `null` when
+none was ever selected. The selection survives reboot independently of
+`enabled`: at startup the configured model is restored whether or not
+transcription starts. 404 when the hooks are unset.
 
 ### PUT /api/whisper
 
@@ -241,7 +267,9 @@ Changes the state via query parameters; answers the state like GET:
 
 - `enabled` — `true` starts transcription, `false` stops it (the tap's
   gate closes and the model unloads). Enabling needs a model: the
-  current one, or the one named by `model`.
+  current one, or the one named by `model`. Enabling while an auto-sync
+  session owns the tap transfers the ownership: the tap stays on when
+  the session ends.
 - `model` — selects the ggml model: a file name from `models`. Applies
   live, also while disabled (loaded on the next enable).
 
@@ -251,9 +279,11 @@ GET/PUT.
 
 ### PUT /api/whisper/models/<name>
 
-Stores a model in the state dir's `models/`: the percent-decoded
-`<name>` must end in `.bin` with no slashes or leading dot; the body is
-the ggml file, written to `<name>` via a temp file + rename.
+Stores a model in the state dir's `models/`: `<name>` must end in
+`.bin` with no slashes, control characters, or leading dot; the body is
+the ggml file. The body streams into a staged file in the store (bounded
+memory, at most 4 concurrent uploads) and is renamed over `<name>` only
+once complete — a partial model is never exposed as installed.
 
 ```js
 await window.fetch("/api/whisper/models/ggml-tiny.en.bin", {
@@ -264,12 +294,14 @@ await window.fetch("/api/whisper/models/ggml-tiny.en.bin", {
 
 - `201 Created` — `{"stored_name":"ggml-tiny.en.bin"}`
 - `400 Bad Request` — invalid name or empty body
-- `413 Content Too Large` — body over 512 MiB (libsoup reads the whole
-  body before the handler runs, so the cap also bounds that transient)
+- `413 Content Too Large` — body over 512 MiB (rejected at the declared
+  length, or while streaming when the cap is crossed)
+- `503 Service Unavailable` — too many concurrent uploads
 
 ### DELETE /api/whisper/models/<name>
 
-Removes a model from the store:
+Removes a model from the store. Deleting the selected model clears the
+selection (and its persistence) server-side.
 
 ```js
 await window.fetch("/api/whisper/models/ggml-tiny.en.bin", {
@@ -282,7 +314,7 @@ await window.fetch("/api/whisper/models/ggml-tiny.en.bin", {
 - `404 Not Found` — no such model stored
 - `409 Conflict` — the tap is currently running this model:
   `{"reason":"model in use"}` (a selected-but-disabled model can be
-  deleted; the store doesn't track the selection)
+  deleted; the selection is then cleared)
 
 ### GET /api/whisper/transcript
 

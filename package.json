@@ -5,7 +5,8 @@
   "scripts": {
     "lint": "eslint web/",
     "format": "prettier --write web/",
-    "check": "prettier --check web/ && eslint web/"
+    "test": "node --test \"tests/js/**/*.test.mjs\"",
+    "check": "prettier --check web/ && eslint web/ && node --test \"tests/js/**/*.test.mjs\""
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -673,6 +673,117 @@ TEST_CASE("output pipeline subtitle pause and resume") {
   CHECK(stats.last_modified.load() < kResumedEnd + kEdgeTolerance);
 }
 
+// Pause and visibility compose into one rendering decision
+// (SubtitlesSilent: paused || !visible): the pause and visibility
+// setters both apply the composition, so neither overwrites the other.
+// The truth table covers both transition orders; the rig drives the
+// reported bug sequences — hide, pause, resume must stay hidden, and
+// showing while paused must stay hidden — checking the property and
+// the rendered output at every step.
+TEST_CASE("output pipeline subtitle pause and visibility compose") {
+  // Both transition orders reduce to the same decision.
+  CHECK(SubtitlesSilent(false, false));
+  CHECK(SubtitlesSilent(false, true) == false);
+  CHECK(SubtitlesSilent(true, false));
+  CHECK(SubtitlesSilent(true, true));
+
+  gst_init(nullptr, nullptr);
+
+  if (!SubtitleElementsAvailable()) {
+    return;
+  }
+
+  SubtitleRenderStats stats;
+  auto rig = StartSubtitlePipeline(kOneCueSrt, kOneCueAnchor, stats);
+  REQUIRE(rig.has_value());
+
+  ElementPtr overlay{gst_bin_get_by_name(GST_BIN(rig->pipeline.get()),
+                                         "subtitle_overlay")};
+  REQUIRE(overlay != nullptr);
+
+  bool paused = false;
+  bool visible = true;
+
+  const auto apply = [&] {
+    g_object_set(overlay.get(), "silent",
+                 SubtitlesSilent(paused, visible) ? TRUE : FALSE, nullptr);
+  };
+  const auto silent = [&] {
+    gboolean value = FALSE;
+    g_object_get(overlay.get(), "silent", &value, nullptr);
+    return value == TRUE;
+  };
+
+  const auto app_src = GstView<GstAppSrc>{GST_APP_SRC(rig->source.get())};
+
+  const auto push = [&](int count, std::uint64_t first_pts) {
+    std::jthread pusher([&] {
+      CHECK(PushSolidFrames(app_src, count, first_pts) == count);
+    });
+    pusher.join();
+    std::this_thread::sleep_for(std::chrono::milliseconds{500});
+  };
+  const auto reset = [&] {
+    stats.frames.store(0);
+    stats.modified.store(0);
+  };
+
+  // The cue renders while playing and visible.
+  push(90, 0);
+  INFO("playing rendered ", stats.modified.load(), " of ",
+       stats.frames.load());
+  CHECK(stats.modified.load() >= 12);
+
+  // Hide, then pause: both orders keep silent set.
+  reset();
+  visible = false;
+  apply();
+  CHECK(silent());
+  paused = true;
+  apply();
+  CHECK(silent());
+  push(60, 90 * kFrameDuration);
+  CHECK(stats.modified.load() == 0);
+
+  // Resume while still hidden: silent must stay set (the bug cleared
+  // it, rendering the cue into a hidden state).
+  reset();
+  paused = false;
+  apply();
+  CHECK(silent());
+  push(60, 150 * kFrameDuration);
+  CHECK(stats.modified.load() == 0);
+
+  // Pause, then show while paused: hidden-while-paused wins (the
+  // second bug cleared silent here).
+  reset();
+  paused = true;
+  apply();
+  visible = true;
+  apply();
+  CHECK(silent());
+  push(60, 210 * kFrameDuration);
+  CHECK(stats.modified.load() == 0);
+
+  // Resume, now visible: rendering returns. Re-anchor so the cue's
+  // [0.2 s, 1.4 s) window lands inside the pushed stretch, like the
+  // resume re-parse does.
+  reset();
+  paused = false;
+  apply();
+  CHECK(silent() == false);
+  gst_pad_set_offset(rig->parser_src.get(), 4600 * GST_MSECOND);
+  ElementPtr subtitle_source{gst_bin_get_by_name(GST_BIN(rig->pipeline.get()),
+                                                 "subtitle_source")};
+  REQUIRE(subtitle_source != nullptr);
+  CHECK(gst_element_seek_simple(subtitle_source.get(), GST_FORMAT_BYTES,
+                                GST_SEEK_FLAG_FLUSH, 0));
+  push(120, 270 * kFrameDuration);
+  INFO("resumed rendered ", stats.modified.load(), " of ",
+       stats.frames.load());
+  CHECK(stats.modified.load() >= 12);
+}
+
 // Cue font (#159): the production lookup — the overlay's auto-plugged
 // text renderer is its GstChildProxy child named "renderer" — and
 // setting its font-desc must visibly change compositing: a much larger

@@ -20,6 +20,12 @@ against the examples in `fragments/`.
   region scores **≥ 2.0** (two unique anchors) with a **2x margin** over
   the runner-up. (Originally a flat kMinHits = 4 — see the experiment
   below for why that changed.)
+- θ is anchored at the window's **last matched word**, not its last
+  word: a hallucinated or misrecognized trailing suffix never votes, so
+  it can't project the estimate into a later cue — with a long gap
+  after the matched region, one wrong word could otherwise span minutes
+  (the 2026-09 review's projection finding; regression-tested with a
+  matched prefix before a long SRT gap).
 - θ locks when **≥ 3 windows** vote within a **2 s spread** (median of the
   tightest run). Design rule: **fail loudly, never lock wrong** — a failed
   match is always preferable to a confident wrong one.
@@ -127,22 +133,26 @@ session-start reset was plumbed: the tap runs continuously, so the
 retained tail is always fresh audio — session boundaries are invisible to
 the audio stream, and a tap toggle swaps in a fresh transcriber anyway.
 
-### 4. Session-end diagnostics
+### 4. Session-end diagnostics (**done**)
 
-One `sync:info` summary per finished session — windows, votes, best cluster
-size and spread, reject breakdown — so real captures can be classified (no
-transcript / weak evidence / ambiguous / scattered / inaccurate lock) and
-the thresholds tuned on data rather than synthetic examples.
+One `sync:info` summary per finished session — windows, elapsed time, and
+outcome — plus the matcher's `sync:debug` detail: per-window votes (score,
+margin, reject reason) and the winning cluster's size and spread. Real
+captures can be classified (no transcript / weak evidence / ambiguous /
+scattered / inaccurate lock) and the thresholds tuned on data rather than
+synthetic examples.
 
 ### 5. Corruption tests, then judge alignment
 
 Extend the matcher tests: inserted/omitted/repeated words, leading/trailing
 hallucinations, contractions, trailing silence, boundary-crossing speech,
 `[MUSIC]`/`(SIGHS)` annotations, two similar scenes. Keep real captures as
-fixtures. Only if weighted trigrams still underperform against that corpus,
-evaluate weighted local sequence alignment (Smith–Waterman over the word
-streams; a few hundred thousand DP cells per window — see
-`subtitler_matching_improvements.md`).
+fixtures. (Started: trailing-hallucination cases landed with the
+matched-endpoint anchoring — a junk suffix before a long gap can't jump the
+vote, and junk suffixes don't break the lock.) Only if weighted trigrams
+still underperform against that corpus, evaluate weighted local sequence
+alignment (Smith–Waterman over the word streams; a few hundred thousand DP
+cells per window — see `subtitler_matching_improvements.md`).
 
 On phonetics: word-level alignment already tolerates the observed errors,
 which arrive isolated ("found" for "bound", "Bowne" for "Bellinger") —

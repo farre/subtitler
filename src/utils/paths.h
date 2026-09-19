@@ -13,6 +13,44 @@
 
 namespace subtitler {
 
+// Writes contents to path atomically: staged as a sibling temp file,
+// explicitly closed and checked — a buffered write can fail at the
+// final flush, after which a rename would commit an incomplete file —
+// then renamed over the destination. A failed write preserves the
+// previously committed file. Creates parent directories (skipped for a
+// bare relative filename, whose empty parent create_directories
+// rejects); false on any I/O failure.
+inline bool WriteFileAtomic(const std::filesystem::path& path,
+                            std::string_view contents) {
+  std::error_code error;
+  if (const auto parent = path.parent_path(); !parent.empty()) {
+    std::filesystem::create_directories(parent, error);
+    if (error) {
+      return false;
+    }
+  }
+
+  std::filesystem::path temp = path;
+  temp += ".tmp";
+  {
+    std::ofstream file{temp, std::ios::binary | std::ios::trunc};
+    file << contents;
+    file.close();
+    if (file.fail()) {
+      std::filesystem::remove(temp, error);
+      return false;
+    }
+  }
+
+  std::filesystem::rename(temp, path, error);
+  if (error) {
+    std::filesystem::remove(temp, error);
+    return false;
+  }
+
+  return true;
+}
+
 // $XDG_STATE_HOME/subtitler, or ~/.local/state/subtitler when the XDG
 // variable is unset. nullopt when neither variable gives a usable root.
 inline std::optional<std::filesystem::path> StateDirectory() {
@@ -90,17 +128,30 @@ inline std::optional<std::filesystem::path> WebRootDirectory() {
   return std::nullopt;
 }
 
+// A single filename component never exceeds NAME_MAX.
+inline constexpr std::size_t kMaxFileNameBytes = 255;
+
+// No stored name may contain control characters (DEL included).
+inline bool ContainsControlCharacter(std::string_view name) {
+  return std::ranges::any_of(name, [](char c) {
+    const auto byte = static_cast<unsigned char>(c);
+    return byte < 0x20 || byte == 0x7F;
+  });
+}
+
 // The library-relative path (<bucket>/<title>) for a stored subtitle
 // (#212). The bucket is the title's first letter lowercased, or "_"
 // for titles not starting with an ASCII letter. nullopt for titles
 // that aren't usable library names: empty, dot-relative, containing
-// slashes, or not ending in .srt.
+// slashes or control characters, over NAME_MAX, or not ending in .srt.
 inline std::optional<std::filesystem::path> LibrarySubtitlePath(
     std::string_view title) {
   constexpr std::string_view kExtension = ".srt";
 
-  if (title.size() <= kExtension.size() || title.front() == '.' ||
-      title.find_first_of("/\\") != std::string_view::npos) {
+  if (title.size() <= kExtension.size() ||
+      title.size() > kMaxFileNameBytes || title.front() == '.' ||
+      title.find_first_of("/\\") != std::string_view::npos ||
+      ContainsControlCharacter(title)) {
     return std::nullopt;
   }
 
@@ -124,12 +175,8 @@ inline std::optional<std::filesystem::path> LibrarySubtitlePath(
 // <title>) active for boot resume. false on I/O failure.
 inline bool SetActiveSubtitle(const std::filesystem::path& state_dir,
                               std::string_view relative) {
-  if (std::ofstream active{state_dir / "active", std::ios::trunc};
-      !(active << relative << '\n')) {
-    return false;
-  }
-
-  return true;
+  return WriteFileAtomic(state_dir / "active",
+                         std::string{relative} + '\n');
 }
 
 // Clears the active marker, so the next boot attaches no subtitles.
@@ -139,8 +186,11 @@ inline void ClearActiveSubtitle(const std::filesystem::path& state_dir) {
 }
 
 // Stores contents as the library entry for title (sharded by
-// LibrarySubtitlePath), marks it active for boot resume, and returns
-// the full path. nullopt on an invalid title or any I/O failure.
+// LibrarySubtitlePath) and returns the full path. Storing is separate
+// from selecting (#448): the entry appears in the library, but the
+// active marker is the caller's to write once the entry is actually in
+// use (SetActiveSubtitle). nullopt on an invalid title or any I/O
+// failure; the previous entry survives a failed write.
 inline std::optional<std::filesystem::path> StoreSubtitle(
     const std::filesystem::path& state_dir, std::string_view title,
     std::string_view contents) {
@@ -151,19 +201,7 @@ inline std::optional<std::filesystem::path> StoreSubtitle(
 
   const auto path = state_dir / "subtitles" / *relative;
 
-  std::error_code error;
-  std::filesystem::create_directories(path.parent_path(), error);
-  if (error) {
-    return std::nullopt;
-  }
-
-  if (std::ofstream file{path, std::ios::binary | std::ios::trunc};
-      !(file << contents)) {
-    return std::nullopt;
-  }
-
-  // generic_string: the marker always uses '/' as the separator.
-  if (!SetActiveSubtitle(state_dir, relative->generic_string())) {
+  if (!WriteFileAtomic(path, contents)) {
     return std::nullopt;
   }
 
@@ -324,12 +362,15 @@ inline std::filesystem::path WhisperModelsDirectory(
 }
 
 // A usable model file name: non-empty, doesn't start with a dot,
-// contains no slashes, ends in .bin (e.g. ggml-tiny.en.bin).
+// contains no slashes or control characters, fits NAME_MAX, ends in
+// .bin (e.g. ggml-tiny.en.bin).
 inline bool WhisperModelNameValid(std::string_view name) {
   constexpr std::string_view kExtension = ".bin";
 
-  return name.size() > kExtension.size() && name.front() != '.' &&
+  return name.size() > kExtension.size() && name.size() <= kMaxFileNameBytes &&
+         name.front() != '.' &&
          name.find_first_of("/\\") == std::string_view::npos &&
+         !ContainsControlCharacter(name) &&
          name.substr(name.size() - kExtension.size()) == kExtension;
 }
 

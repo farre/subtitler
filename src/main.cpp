@@ -333,13 +333,16 @@ int main(int argc, char** argv) {
 
   // The persisted whisper state applies when --whisper didn't override
   // it; a configured model that's gone leaves the tap disabled (#220).
+  // The model selection is restored whether or not transcription
+  // starts, so a selected-but-disabled model stays selected.
   if (!whisper_model && config && state_dir) {
     const auto& values = config->values();
-    if (values.whisper_enabled.value_or(false) && values.whisper_model) {
+    if (values.whisper_model) {
       if (const auto path =
               subtitler::WhisperModelPath(*state_dir, *values.whisper_model);
           path && std::filesystem::is_regular_file(*path)) {
-        if (!stream->SetWhisperState(true, path->string())) {
+        if (!stream->SetWhisperState(values.whisper_enabled.value_or(false),
+                                     path->string())) {
           MAIN_LOG(subtitler::LogLevel::kWarning,
                    "Could not enable whisper with {}", path->string());
         }
@@ -391,12 +394,22 @@ int main(int argc, char** argv) {
           return {subtitler::SubtitleUploadStatus::kInvalidTitle, {}};
         }
 
+        // Storing is atomic and separate from selecting (#448): the
+        // durable selection (marker, config) changes only after the
+        // live switch succeeds, so a failed activation leaves playback
+        // and persisted state consistent with each other.
         const auto stored =
             subtitler::StoreSubtitle(*state_dir, title, contents);
         if (!stored || !stream->SetSubtitleFile(stored->string())) {
           return {subtitler::SubtitleUploadStatus::kFailed, {}};
         }
 
+        // generic_string: the marker always uses '/' as the separator.
+        if (!subtitler::SetActiveSubtitle(*state_dir,
+                                          relative->generic_string())) {
+          MAIN_LOG(subtitler::LogLevel::kWarning,
+                   "Could not write the active subtitle marker");
+        }
         active_title = std::string{title};
 
         if (config) {
@@ -422,7 +435,9 @@ int main(int argc, char** argv) {
       };
 
       // Deletion (#453): removes the library entry; deleting the
-      // attached subtitle detaches it like an empty state-set file.
+      // attached subtitle detaches it like an empty state-set file. The
+      // entry goes first (#448): a failed removal then changes nothing
+      // — the selection stays usable.
       hooks.subtitle_delete =
           [&stream, &state_dir, &active_title,
            &config](std::string_view title) -> subtitler::SubtitleDeleteStatus {
@@ -430,7 +445,16 @@ int main(int argc, char** argv) {
           return subtitler::SubtitleDeleteStatus::kNotFound;
         }
 
-        if (active_title.has_value() && *active_title == title) {
+        const bool attached =
+            active_title.has_value() && *active_title == title;
+
+        if (!subtitler::RemoveLibrarySubtitle(*state_dir, title)) {
+          return subtitler::SubtitleDeleteStatus::kFailed;
+        }
+
+        // The entry is gone, so a boot resume already skips it; detach
+        // it live and clear the persisted selection.
+        if (attached) {
           if (!stream->SetSubtitleFile(std::nullopt)) {
             return subtitler::SubtitleDeleteStatus::kFailed;
           }
@@ -445,9 +469,7 @@ int main(int argc, char** argv) {
           }
         }
 
-        return subtitler::RemoveLibrarySubtitle(*state_dir, title)
-                   ? subtitler::SubtitleDeleteStatus::kDeleted
-                   : subtitler::SubtitleDeleteStatus::kFailed;
+        return subtitler::SubtitleDeleteStatus::kDeleted;
       };
 
       hooks.font_list = [] { return subtitler::AvailableFontFamilies(); };
@@ -477,14 +499,33 @@ int main(int argc, char** argv) {
         return result;
       };
 
-      hooks.subtitle_sync_start = [&stream] {
-        switch (stream->StartSubtitleSync()) {
+      // The session owns its temporary tap activation end to end: the
+      // model names the file the session enables the tap with when the
+      // tap is off. Nothing here persists — a session activation is not
+      // the next boot's continuous-transcription preference.
+      hooks.subtitle_sync_start = [&stream,
+                                   &state_dir](std::optional<std::string_view>
+                                                   model) {
+        std::optional<std::string> path;
+        if (model) {
+          const auto resolved = subtitler::WhisperModelPath(*state_dir, *model);
+          if (!resolved || !std::filesystem::is_regular_file(*resolved)) {
+            return subtitler::SubtitleSyncStartResult::kModelUnavailable;
+          }
+          path = resolved->string();
+        }
+
+        switch (stream->StartSubtitleSync(path)) {
           case subtitler::Stream::SyncStartResult::kStarted:
             return subtitler::SubtitleSyncStartResult::kStarted;
           case subtitler::Stream::SyncStartResult::kNoSubtitles:
             return subtitler::SubtitleSyncStartResult::kNoSubtitles;
+          case subtitler::Stream::SyncStartResult::kNoCapture:
+            return subtitler::SubtitleSyncStartResult::kNoCapture;
           case subtitler::Stream::SyncStartResult::kNoWhisper:
             return subtitler::SubtitleSyncStartResult::kNoWhisper;
+          case subtitler::Stream::SyncStartResult::kModelUnavailable:
+            return subtitler::SubtitleSyncStartResult::kModelUnavailable;
           case subtitler::Stream::SyncStartResult::kUnparseableSubtitles:
             return subtitler::SubtitleSyncStartResult::kUnparseableSubtitles;
         }
@@ -535,6 +576,19 @@ int main(int argc, char** argv) {
         }
 
         return true;
+      };
+
+      // Deleting the selected model clears the selection on the stream
+      // and in the config, server-side.
+      hooks.whisper_model_clear = [&stream, &config] {
+        stream->ClearWhisperModel();
+        if (config) {
+          config->ClearWhisperModel();
+          if (!config->Save()) {
+            MAIN_LOG(subtitler::LogLevel::kWarning,
+                     "Could not save the configuration");
+          }
+        }
       };
 
       hooks.subtitle_state_get = [&stream, &active_title] {

@@ -440,10 +440,16 @@
         // already carries.
         const tag = Number(attributes.fps) > 0 ? `.${attributes.fps}fps` : "";
         const version = `.os${attributes.subtitle_id}`;
-        await subtitler.upload(
-          `${feature_details.movie_name}${version}${tag}.tt${id}.srt`,
-          result,
-        );
+        // The display title is external data: path separators and
+        // control characters can't appear in a library filename. The
+        // identity tags are appended after sanitizing, and the os<id>
+        // version tag keeps distinct releases from colliding.
+        const name =
+          feature_details.movie_name
+            // eslint-disable-next-line no-control-regex -- control characters are what this strips
+            .replace(/[/\\\x00-\x1f\x7f]+/g, " ")
+            .trim() || "untitled";
+        await subtitler.upload(`${name}${version}${tag}.tt${id}.srt`, result);
         await refreshSubtitles();
         // The appliance switches to the upload live: position 0,
         // unpaused. Apply the authoritative state.
@@ -635,7 +641,6 @@
       let currentFile = null;
       let syncAvailable = false;
       let syncPoll = null;
-      let whisperActive = false;
       let activeCues = [];
       let cuesFile = null;
       let nextStart = null;
@@ -853,8 +858,7 @@
         );
       }
 
-      function applyWhisperState({ enabled, model, models }) {
-        whisperActive = enabled;
+      function applyWhisperState({ model, models }) {
         // The select lists the store; a model set outside it (a
         // --whisper path) shows as its own entry.
         const names = [...models];
@@ -882,50 +886,25 @@
         updateAutoSyncState();
       }
 
-      // The tap exists for auto-sync sessions: it stops when the
-      // session ends, however it ends.
-      async function stopWhisper() {
-        try {
-          applyWhisperState(await subtitler.setWhisper({ enabled: "false" }));
-        } catch {
-          await refreshWhisper();
-        }
-      }
-
       async function startAutoSync() {
         syncStatus.value = "";
         if (syncPoll !== null) {
           clearInterval(syncPoll);
           syncPoll = null;
         }
+        // Busy from the first await: the start sequence is asynchronous.
+        autoSync.disabled = true;
 
-        // The session listens through the tap: enable it with the
-        // chosen model for the session's duration.
-        let startedWhisper = false;
-        if (!whisperActive) {
-          try {
-            applyWhisperState(
-              await subtitler.setWhisper({
-                enabled: "true",
-                model: whisperModel.value,
-              }),
-            );
-            startedWhisper = true;
-          } catch {
-            syncStatus.value = "Couldn't enable whisper";
-            return;
-          }
-        }
-
+        // The server owns the session end to end: it enables the tap
+        // with the chosen model when it's off, and releases that
+        // temporary activation when the session ends, however it ends.
         try {
-          await subtitler.startSubtitleSync();
+          await subtitler.startSubtitleSync(whisperModel.value);
         } catch (error) {
-          if (startedWhisper) {
-            await stopWhisper();
-          }
           // A 409 carries the server's reason ({"state":"failed",
           // "reason":...}); anything else is a transport failure.
           syncStatus.value = error.body?.reason ?? "Couldn't start auto-sync";
+          updateAutoSyncState();
           return;
         }
 
@@ -943,7 +922,9 @@
           clearInterval(syncPoll);
           syncPoll = null;
           updateAutoSyncState();
-          await stopWhisper();
+          // The server released any session-owned tap already; pull the
+          // authoritative tap state.
+          await refreshWhisper();
           if (state.state === "synced") {
             syncStatus.value = `Synced to ${formatTime(state.time)}`;
             // Pull the corrected position in right away.
@@ -1013,22 +994,9 @@
           return;
         }
         whisperStatus.value = `Deleted ${file}`;
-        let state;
-        try {
-          state = await subtitler.whisper();
-        } catch {
-          return;
-        }
-        // Deleting the selected model moves the selection to another
-        // stored one, so the gone file doesn't linger as the
-        // configured model.
-        if (state.model === file && state.models.length > 0) {
-          applyWhisperState(
-            await subtitler.setWhisper({ model: state.models[0] }),
-          );
-        } else {
-          applyWhisperState(state);
-        }
+        // The server clears the selection when the selected model is
+        // deleted; pull the authoritative state.
+        await refreshWhisper();
       }
 
       async function refreshWhisper() {

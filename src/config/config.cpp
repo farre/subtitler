@@ -4,14 +4,13 @@
 
 #include <charconv>
 #include <format>
-#include <fstream>
 #include <print>
-#include <system_error>
 #include <utility>
 
 #include "utils/logging.h"
 #include "utils/paths.h"
 #include "utils/unique_ptr.h"
+#include "utils/validation.h"
 
 namespace subtitler {
 
@@ -166,12 +165,24 @@ std::unique_ptr<Config> Config::Load(const std::filesystem::path& path) {
   values.api_key = GetString(key_file.get(), "web", "api-key");
   values.subtitle_file = GetString(key_file.get(), "subtitles", "file");
   values.subtitles_visible = GetBoolean(key_file.get(), "subtitles", "visible");
-  values.subtitle_delay_ms =
-      GetInteger64(key_file.get(), "subtitles", "delay-ms");
+  // The same semantic constraints as the web API (#446): out-of-range
+  // values are dropped with a warning, per-key (#220).
+  if (auto delay = GetInteger64(key_file.get(), "subtitles", "delay-ms")) {
+    if (SubtitleOffsetMsValid(*delay)) {
+      values.subtitle_delay_ms = *delay;
+    } else {
+      WarnDroppedKey("subtitles", "delay-ms", std::to_string(*delay));
+    }
+  }
   values.subtitle_font_family =
       GetString(key_file.get(), "subtitles", "font-family");
-  values.subtitle_font_size_pt =
-      GetInteger64(key_file.get(), "subtitles", "font-size-pt");
+  if (auto size = GetInteger64(key_file.get(), "subtitles", "font-size-pt")) {
+    if (SubtitleFontSizeValid(*size)) {
+      values.subtitle_font_size_pt = *size;
+    } else {
+      WarnDroppedKey("subtitles", "font-size-pt", std::to_string(*size));
+    }
+  }
   values.subtitle_font_color =
       GetColor(key_file.get(), "subtitles", "font-color");
   values.whisper_enabled = GetBoolean(key_file.get(), "whisper", "enabled");
@@ -239,6 +250,11 @@ void Config::SetWhisperModel(std::string_view model) {
   values_.whisper_model = std::string{model};
 }
 
+void Config::ClearWhisperModel() {
+  g_key_file_remove_key(key_file_.get(), "whisper", "model", nullptr);
+  values_.whisper_model = std::nullopt;
+}
+
 void Config::SetDevice(std::string_view device) {
   g_key_file_set_string(key_file_.get(), "capture", "device",
                         std::string{device}.c_str());
@@ -271,24 +287,7 @@ bool Config::Save() const {
     return false;
   }
 
-  std::error_code error;
-  std::filesystem::create_directories(path_.parent_path(), error);
-  if (error) {
-    return false;
-  }
-
-  std::filesystem::path temp = path_;
-  temp += ".tmp";
-  {
-    std::ofstream file{temp, std::ios::binary | std::ios::trunc};
-    file.write(data.get(), static_cast<std::streamsize>(length));
-    if (!file) {
-      return false;
-    }
-  }
-
-  std::filesystem::rename(temp, path_, error);
-  return !error;
+  return WriteFileAtomic(path_, {data.get(), length});
 }
 
 }  // namespace subtitler

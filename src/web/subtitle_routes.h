@@ -104,12 +104,17 @@ struct SubtitleSyncState {
 enum class SubtitleSyncStartResult : std::uint8_t {
   kStarted,
   kNoSubtitles,
+  kNoCapture,
   kNoWhisper,
+  kModelUnavailable,
   kUnparseableSubtitles,
 };
 
 using SubtitleSyncGetHandler = std::function<SubtitleSyncState()>;
-using SubtitleSyncStartHandler = std::function<SubtitleSyncStartResult()>;
+// PUT takes the model the session should enable the tap with when the
+// tap is off (?model=<name>); nullopt when the request names none.
+using SubtitleSyncStartHandler = std::function<SubtitleSyncStartResult(
+    std::optional<std::string_view> model)>;
 
 // The /api/subtitles endpoints: PUT /api/subtitles/<title> uploads
 // (#212), GET /api/subtitles/<title> answers the stored SRT, DELETE

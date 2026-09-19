@@ -252,6 +252,41 @@ TEST_CASE("output pipeline description") {
                              "! tee name=output_tee"));
   }
 
+  // #445: values interpolated into a description are escaped, so a
+  // quote or backslash in a filename or device string can't break
+  // construction. The parse must round-trip the value byte-for-byte.
+  SUBCASE("a quote or backslash in the subtitle path survives parsing") {
+    const std::string path = "/tmp/a \"quoted\" \\backslash\\ sub.srt";
+    const auto description = subtitler::OutputPipelineDescription(
+        subtitler::OutputMode::kNull, std::nullopt, std::nullopt, false,
+        path);
+
+    subtitler::ErrorPtr error;
+    const subtitler::ElementPtr pipeline{
+        gst_parse_launch(description.c_str(), std::out_ptr(error))};
+    INFO("gst_parse_launch error: ",
+         error != nullptr ? std::string{error->message} : "none");
+    REQUIRE(error == nullptr);
+    REQUIRE(pipeline != nullptr);
+
+    subtitler::ElementPtr source{gst_bin_get_by_name(
+        GST_BIN(pipeline.get()), "subtitle_source")};
+    REQUIRE(source != nullptr);
+
+    // Varargs: std::out_ptr's conversion never runs through '...'.
+    gchar* raw_location = nullptr;
+    g_object_get(source.get(), "location", &raw_location, nullptr);
+    const subtitler::CharPtr location{raw_location};
+    CHECK(std::string{location.get()} == path);
+  }
+
+  SUBCASE("a quote in a device string survives parsing") {
+    CheckConstructible(subtitler::AudioOutputPipelineDescription(
+        "plughw:CARD=\"odd\",DEV=0"));
+    CheckConstructible(
+        subtitler::VideoCapturePipelineDescription("/dev/video\"odd\""));
+  }
+
   SUBCASE("preview branch is optional") {
     const auto plain = subtitler::VideoOutputPipelineDescription(
         subtitler::OutputMode::kKmsSoftware, std::nullopt);

@@ -136,9 +136,13 @@ restarts the appliance.
 
 ## Subtitle auto-sync
 
-One-shot by design: the web API starts a session, the whisper thread
-feeds it, and the matcher votes until ≥3 windows agree within 2 s —
-fail loudly, never lock wrong.
+One-shot by design: the web API starts a session and the server owns
+its transcription end to end — with the tap off, the session enables it
+with the requested model and releases that temporary (never persisted)
+activation when the session ends, however it ends; an already-running
+tap is ridden as-is. The whisper thread feeds the session, and the
+matcher votes until ≥3 windows agree within 2 s — fail loudly, never
+lock wrong.
 
 ```mermaid
 sequenceDiagram
@@ -148,16 +152,20 @@ sequenceDiagram
     participant WT as whisper thread
     participant S as SyncSession + matcher
 
-    UI->>Web: PUT /api/subtitle-sync
-    Web->>Stream: start session<br/>(needs subtitles + whisper, else 409)
+    UI->>Web: PUT /api/subtitle-sync?model=<name>
+    Web->>Stream: start session<br/>(needs subtitles + capture, else 409)
+    alt tap off
+        Stream->>Stream: enable tap with the model<br/>(session-owned, never persisted)
+    end
     Stream->>S: SyncSession(cues, MatchTranscript, 45 s deadline)
     loop every ~4.5 s whisper window
-        WT->>S: Feed(TimestampedText, stamped at speech end)
+        WT->>S: Feed(TimestampedText, stamped at speech end)<br/>— dropped when its generation is stale
         S->>S: vote per window — rarity-weighted trigrams,<br/>region merge, threshold + 2x margin
-        Note over S: lock when ≥3 votes cluster within 2 s
+        Note over S: lock when ≥3 votes cluster within 2 s;<br/>deadline checked before every vote
     end
-    S-->>Stream: θ (median of the tightest run)
+    S-->>Stream: θ (median of the tightest run,<br/>anchored at the last matched word)
     Stream-->>Stream: Poll applies: SetSubtitleTime(running time + θ)
+    Stream-->>Stream: Poll releases a session-owned tap<br/>(outside all locks)
     UI->>Web: GET /api/subtitle-sync
     Web-->>UI: synced(time) / listening / failed(reason)
 ```
@@ -184,7 +192,9 @@ toggles can't strand it.
 - Mutex order: `sync_mutex_` is always taken **after** `mutex_` /
   `whisper_mutex_`, never before; the whisper thread takes no locks
   (its lock is applied by the poll loop, since teardown joins the
-  thread while holding `mutex_`).
+  thread while holding `mutex_`). A session-owned whisper tap is
+  released by the poll loop outside all locks for the same reason —
+  `SetWhisperState` must not run under `sync_mutex_`.
 - Hot-swappable collaborators (transcriber, transcript callback) are
   `atomic<shared_ptr>` the whisper thread copies per window.
 - GStreamer objects are held with the RAII deleters in

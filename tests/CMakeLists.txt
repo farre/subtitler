@@ -4,6 +4,7 @@ include(doctest)
 
 add_executable(
     stream_tests
+    bus_tests.cpp
     description_tests.cpp
     fonts_tests.cpp
     frame_buffer_tests.cpp

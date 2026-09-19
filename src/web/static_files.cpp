@@ -10,8 +10,6 @@
 #include <string_view>
 #include <system_error>
 
-#include "utils/unique_ptr.h"
-
 namespace {
 
 using namespace subtitler;
@@ -47,13 +45,10 @@ void HandleStatic(SoupServer*, SoupServerMessage* message, const char* path,
     return;
   }
 
-  const UniquePtr<gchar, g_free> decoded{g_uri_unescape_string(path, nullptr)};
-  if (decoded == nullptr) {
-    not_found();
-    return;
-  }
-
-  std::string_view relative{decoded.get()};
+  // libsoup hands the path over already percent-decoded (no raw-paths):
+  // one decoding boundary, and traversal sequences arrive decoded and
+  // meet the segment guard below.
+  std::string_view relative{path};
   if (relative == "/") {
     relative = "/index.html";
   }

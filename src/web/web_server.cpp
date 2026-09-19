@@ -30,6 +30,7 @@ struct subtitler::WebServer::Implementation {
     font_routes_.list_ = std::move(hooks.font_list);
     whisper_routes_.state_get_ = std::move(hooks.whisper_state_get);
     whisper_routes_.state_set_ = std::move(hooks.whisper_state_set);
+    whisper_routes_.model_clear_ = std::move(hooks.whisper_model_clear);
     whisper_routes_.state_dir_ = std::move(hooks.state_dir);
     opensubtitles_routes_.api_key_ = std::move(hooks.api_key);
 

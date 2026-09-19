@@ -71,6 +71,8 @@ class Config {
   // Write-back for the web-API whisper state (#19).
   void SetWhisperEnabled(bool enabled);
   void SetWhisperModel(std::string_view model);
+  // Drops the model selection entirely (e.g. the model was deleted).
+  void ClearWhisperModel();
 
   // Write-back for values explicitly supplied on the command line, so
   // the next run needs no flags.

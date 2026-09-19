@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "stream/bus.h"
 #include "stream/deleters.h"
 #include "stream/drop_gate.h"
 #include "stream/frame_buffer.h"
@@ -28,6 +29,7 @@
 #include "sync/sync_session.h"
 #include "utils/logging.h"
 #include "utils/reset_guard.h"
+#include "utils/validation.h"
 
 namespace {
 
@@ -111,6 +113,21 @@ std::string DefaultAudioOutputDevice() {
   return "plughw:CARD=vc4hdmi0,DEV=0";
 }
 
+// Escapes a value interpolated into a gst_parse_launch description's
+// double-quoted property slot (#445): backslash and quote are the only
+// characters with meaning there, and the parser unescapes both.
+std::string GstEscape(std::string_view value) {
+  std::string escaped;
+  escaped.reserve(value.size());
+  for (const char c : value) {
+    if (c == '\\' || c == '"') {
+      escaped += '\\';
+    }
+    escaped += c;
+  }
+  return escaped;
+}
+
 ElementPtr ParsePipeline(std::string_view name,
                          const std::string& description) {
   ErrorPtr error;
@@ -126,59 +143,6 @@ ElementPtr ParsePipeline(std::string_view name,
                error != nullptr ? error->message : "unknown error");
 
   return nullptr;
-}
-
-void PrintBusError(std::string_view pipeline_name, MessagePtr& message) {
-  ErrorPtr error;
-  CharPtr debug;
-
-  gst_message_parse_error(message.get(), std::out_ptr(error),
-                          std::out_ptr(debug));
-
-  STREAM_LOG(LogLevel::kError, "{} pipeline error from {}: {}", pipeline_name,
-             GST_OBJECT_NAME(message->src),
-             error != nullptr ? error->message : "unknown error");
-
-  if (debug != nullptr) {
-    STREAM_LOG(LogLevel::kError, "Debug information: {}", debug.get());
-  }
-}
-
-bool PollBus(GstView<GstBus> bus, GstView<GstElement> pipeline,
-             std::string_view pipeline_name) {
-  if (bus == nullptr) {
-    return true;
-  }
-
-  bool ok = true;
-
-  while (auto message = MessagePtr{gst_bus_pop(bus)}) {
-    switch (GST_MESSAGE_TYPE(message.get())) {
-      case GST_MESSAGE_ERROR:
-        PrintBusError(pipeline_name, message);
-        ok = false;
-        break;
-      case GST_MESSAGE_EOS:
-        STREAM_LOG(LogLevel::kInfo, "{} pipeline reached EOS", pipeline_name);
-        ok = false;
-        break;
-      case GST_MESSAGE_LATENCY:
-        // A sink (re)negotiated its latency; redistribute the new global
-        // latency. With automatic latency this is the only way the
-        // pipeline learns about it (#437).
-        if (!gst_bin_recalculate_latency(GST_BIN(pipeline))) {
-          STREAM_LOG(LogLevel::kError,
-                     "Could not recalculate {} pipeline latency",
-                     pipeline_name);
-          ok = false;
-        }
-        break;
-      default:
-        break;
-    }
-  }
-
-  return ok;
 }
 
 BufferPtr MakeSolidFrame(int width, int height) {
@@ -361,7 +325,7 @@ std::string VideoCapturePipelineDescription(std::string_view device) {
       "sync=false "
       "max-buffers=2 "
       "drop=true",
-      device, kWidth, kHeight, kFramesPerSecond);
+      GstEscape(device), kWidth, kHeight, kFramesPerSecond);
 }
 
 std::string AudioCapturePipelineDescription(std::string_view device,
@@ -386,7 +350,7 @@ std::string AudioCapturePipelineDescription(std::string_view device,
       "sync=false "
       "max-buffers=8 "
       "drop=true",
-      device, kAudioRate, kAudioChannels,
+      GstEscape(device), kAudioRate, kAudioChannels,
       whisper ? "! tee name=whisper_tee "
                 "! queue "
                 "max-size-buffers=8 "
@@ -459,7 +423,7 @@ std::string SubtitlePipelineDescription(std::string_view path) {
       "! subparse "
       "name=subtitle_parser "
       "! subtitle_overlay.subtitle_sink",
-      path);
+      GstEscape(path));
 }
 
 // The preview side of the output tee. The leaky queue is the only coupling
@@ -509,7 +473,7 @@ std::string AudioOutputPipelineDescription(std::string_view device) {
       "buffer-time={} "
       "latency-time={} "
       "slave-method=skew",
-      kAppSrcMaxQueueTime, device, kAudioSinkBufferTimeUs,
+      kAppSrcMaxQueueTime, GstEscape(device), kAudioSinkBufferTimeUs,
       kAudioSinkLatencyTimeUs);
 }
 
@@ -650,10 +614,12 @@ struct Stream::Implementation {
 
   bool SetWhisperState(bool enabled,
                        const std::optional<std::string>& model_path);
+  void ClearWhisperModel();
   bool WhisperEnabled() const { return whisper_enabled_.load(); }
   std::optional<std::string> WhisperModel() const;
 
-  SyncStartResult StartSubtitleSync();
+  SyncStartResult StartSubtitleSync(
+      const std::optional<std::string>& model_path);
   Stream::SyncState SubtitleSync() const;
 
   bool SetSubtitleFile(const std::optional<std::string>& path);
@@ -666,6 +632,14 @@ struct Stream::Implementation {
   // Drops the sync session and resets its public state; call with
   // mutex_ held.
   void CancelSyncLocked();
+  // The one session-completion path: synced, failed, and cancelled all
+  // end here. Resets the session, stamps the public state, and — when
+  // the session owned the tap — schedules the tap's release on the
+  // control path. Call with sync_mutex_ held.
+  void EndSyncSessionLocked(Stream::SyncStatus status, std::string reason,
+                            std::optional<std::int64_t> time_ms = std::nullopt,
+                            std::optional<std::int64_t> theta_ns =
+                                std::nullopt);
   void SetSubtitlesPaused(bool paused);
   bool SubtitlesPaused();
   bool SubtitlesVisible();
@@ -759,6 +733,12 @@ struct Stream::Implementation {
   void ApplySubtitleStyle(GstElement* renderer) const;
   static void OnSubtitleChildAdded(GstChildProxy*, GObject* child, gchar* name,
                                    gpointer user_data);
+  // Applies the one rendering decision behind the overlay's "silent"
+  // property (SubtitlesSilent: paused || !visible). Called after either
+  // state changes and at output (re)start, so the pause and visibility
+  // controls compose instead of overwriting each other. Call with
+  // mutex_ held.
+  void ApplySubtitleSilent();
   // Applies subtitle_anchor_ + subtitle_delay_ as the parser's pad
   // offset. The offset reaches only cues parsed after the change, so
   // position and delay changes must follow up with ReparseSubtitles.
@@ -787,13 +767,31 @@ struct Stream::Implementation {
 
   // The one-shot sync session (#433). Guarded by sync_mutex_, which is
   // always taken after mutex_ (Poll applies a lock) or whisper_mutex_
-  // (whisper disable), never the other way. The whisper thread feeds
-  // windows; Poll applies a lock's position (a direct anchor set, since
-  // Poll already holds mutex_).
+  // (whisper disable/enable), never the other way. The whisper thread
+  // feeds windows; Poll applies a lock's position (a direct anchor set,
+  // since Poll already holds mutex_).
   mutable std::mutex sync_mutex_;
   std::optional<SyncSession> sync_session_;
   Stream::SyncState sync_state_;
   bool sync_apply_pending_ = false;
+  // The matched clock offset behind a pending application; the applied
+  // position is recomputed from it at application time so it advances
+  // with the running time between the lock and its application.
+  std::optional<std::int64_t> sync_pending_theta_ns_;
+  // Whether the running session enabled the tap itself: a session that
+  // owns the tap releases it when it ends, however it ends. An explicit
+  // SetWhisperState enable transfers the ownership to the user.
+  bool sync_owns_whisper_ = false;
+  // Incremented on every session start and end; the whisper thread
+  // drops windows whose inference began under another generation.
+  std::atomic_uint64_t sync_generation_ = 0;
+  // Set when a session that owned the tap ended; Poll then releases the
+  // tap outside all locks — SetWhisperState takes whisper_mutex_ and
+  // sync_mutex_ and must not run under sync_mutex_.
+  std::atomic_bool whisper_release_pending_ = false;
+  // When the current session started (ns, shared timeline), for the
+  // completion summary.
+  std::int64_t sync_started_ns_ = 0;
   std::string whisper_model_path_;
   DropGate whisper_gate_{1};
 
@@ -1091,6 +1089,11 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
     const std::span<const float> samples{
         reinterpret_cast<const float*>(info.data), info.size / sizeof(float)};
 
+    // The session generation before the inference work begins: a window
+    // completed after a session change belongs to that old attempt and
+    // must not feed the new one.
+    const auto generation = sync_generation_.load();
+
     auto transcription = transcriber->Push(samples);
 
     gst_buffer_unmap(buffer, &info);
@@ -1118,24 +1121,20 @@ void Stream::Implementation::RunWhisper(std::stop_token stop) {
     }
 
     std::lock_guard sync_lock{sync_mutex_};
-    if (sync_session_) {
+    // The generation is rechecked under the lock: session changes all
+    // happen here, so a window whose inference began under another
+    // generation is stale evidence and dropped.
+    if (sync_session_ && generation == sync_generation_.load()) {
       const auto result = sync_session_->Feed(
           {std::move(transcription->text), audio_end}, MasterRunningTime());
 
       if (result.state == SyncSession::State::kSynced) {
-        STREAM_LOG(LogLevel::kInfo, "Subtitle sync locked at {} ms",
-                   *result.time_ms);
-        sync_state_.status = SyncStatus::kSynced;
-        sync_state_.time_ms = result.time_ms;
         // Poll applies the position: it already holds mutex_ for the
         // anchor and re-parse, this thread must not take it.
-        sync_apply_pending_ = true;
-        sync_session_.reset();
+        EndSyncSessionLocked(SyncStatus::kSynced, {}, result.time_ms,
+                             result.theta_ns);
       } else if (result.state == SyncSession::State::kFailed) {
-        STREAM_LOG(LogLevel::kInfo, "Subtitle sync failed: {}", result.reason);
-        sync_state_.status = SyncStatus::kFailed;
-        sync_state_.reason = result.reason;
-        sync_session_.reset();
+        EndSyncSessionLocked(SyncStatus::kFailed, result.reason);
       }
     }
   }
@@ -1157,12 +1156,12 @@ bool Stream::Implementation::SetWhisperState(
       whisper_model_path_ = *model_path;
     }
 
-    // A listening session depends on the tap.
+    // A listening session depends on the tap. The disable is itself the
+    // release, so nothing keeps owning the tap afterwards.
     std::lock_guard sync_lock{sync_mutex_};
+    sync_owns_whisper_ = false;
     if (sync_session_) {
-      sync_state_.status = SyncStatus::kFailed;
-      sync_state_.reason = "whisper disabled";
-      sync_session_.reset();
+      EndSyncSessionLocked(SyncStatus::kFailed, "whisper disabled");
     }
     return true;
   }
@@ -1180,19 +1179,26 @@ bool Stream::Implementation::SetWhisperState(
     // Already running this model; just re-open the gate.
     whisper_enabled_.store(true);
     whisper_gate_.active.store(true, std::memory_order_relaxed);
-    return true;
+  } else {
+    auto transcriber = WhisperTranscriber::Create(path);
+    if (!transcriber) {
+      return false;
+    }
+
+    whisper_model_path_ = path;
+    // The transcriber before the gate, so no buffer meets a null one.
+    whisper_transcriber_.store(std::move(transcriber));
+    whisper_enabled_.store(true);
+    whisper_gate_.active.store(true, std::memory_order_relaxed);
   }
 
-  auto transcriber = WhisperTranscriber::Create(path);
-  if (!transcriber) {
-    return false;
+  // An explicit enable owns the tap: a session listening on it keeps
+  // going, but no longer owns (and won't release) it. The session's own
+  // enable path sets its ownership after this call returns.
+  {
+    std::lock_guard sync_lock{sync_mutex_};
+    sync_owns_whisper_ = false;
   }
-
-  whisper_model_path_ = path;
-  // The transcriber before the gate, so no buffer meets a null one.
-  whisper_transcriber_.store(std::move(transcriber));
-  whisper_enabled_.store(true);
-  whisper_gate_.active.store(true, std::memory_order_relaxed);
   return true;
 }
 
@@ -1204,38 +1210,42 @@ std::optional<std::string> Stream::Implementation::WhisperModel() const {
   return whisper_model_path_;
 }
 
+void Stream::Implementation::ClearWhisperModel() {
+  std::lock_guard lock{whisper_mutex_};
+  // The running model is unaffected; only the stored selection goes.
+  if (!whisper_enabled_.load()) {
+    whisper_model_path_.clear();
+  }
+}
+
 bool Stream::Implementation::StartOutput(OutputMode output_mode,
                                          std::optional<int> connector_id) {
   std::lock_guard lock{mutex_};
-
-  StopOutputPipeline(lock);
-
-  output_mode_ = output_mode;
-  connector_id_ = connector_id;
-
-  ResetGuard reset{output_pipeline_, output_source_,   output_audio_source_,
-                   preview_sink_,    preview_queue_,   subtitle_overlay_,
-                   subtitle_parser_, subtitle_source_, output_bus_};
 
   const std::optional<std::string_view> audio_device =
       audio_enabled_
           ? std::make_optional<std::string_view>(audio_output_device_)
           : std::nullopt;
 
-  output_pipeline_ = ParsePipeline(
+  // The replacement is constructed first; the working output keeps
+  // running until the new one is fully built, so a construction failure
+  // (a bad description, a missing element) changes nothing (#448).
+  // Construction touches no device — exclusive KMS/ALSA ownership only
+  // matters at the state change, which happens after the teardown.
+  ElementPtr pipeline = ParsePipeline(
       "output",
       OutputPipelineDescription(output_mode, connector_id, audio_device,
                                 preview_enabled_, subtitle_path_));
 
-  if (!output_pipeline_) {
+  if (!pipeline) {
     std::println(stderr, "Couldn't create output pipeline");
     return false;
   }
 
-  output_source_ = ElementPtr{
-      gst_bin_get_by_name(GST_BIN(output_pipeline_.get()), "output_source")};
+  ElementPtr output_source{
+      gst_bin_get_by_name(GST_BIN(pipeline.get()), "output_source")};
 
-  if (!output_source_) {
+  if (!output_source) {
     std::println(stderr, "Couldn't find appsrc");
     return false;
   }
@@ -1243,7 +1253,7 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
   {
     // The cast adds no reference; the view is non-owning and the
     // ElementPtr remains the sole owner.
-    const auto source = GstView<GstAppSrc>{GST_APP_SRC(output_source_.get())};
+    const auto source = GstView<GstAppSrc>{GST_APP_SRC(output_source.get())};
 
     auto caps = CapsPtr{gst_caps_new_simple(
         "video/x-raw", "format", G_TYPE_STRING, "YUY2", "width", G_TYPE_INT,
@@ -1255,23 +1265,24 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
     // Tell the latency query what hides behind the appsink/appsrc
     // boundary: the output pipeline can't see the capture side, and an
     // undercut latency budget makes sinks drop buffers as late (#437).
-    g_object_set(output_source_.get(), "min-latency",
+    g_object_set(output_source.get(), "min-latency",
                  static_cast<gint64>(kVideoMinLatency), "max-latency",
                  static_cast<gint64>(frame_capacity_ * kFrameDuration),
                  nullptr);
   }
 
+  ElementPtr output_audio_source;
   if (audio_enabled_) {
-    output_audio_source_ = ElementPtr{gst_bin_get_by_name(
-        GST_BIN(output_pipeline_.get()), "output_audio_source")};
+    output_audio_source = ElementPtr{gst_bin_get_by_name(
+        GST_BIN(pipeline.get()), "output_audio_source")};
 
-    if (!output_audio_source_) {
+    if (!output_audio_source) {
       std::println(stderr, "Couldn't find audio appsrc");
       return false;
     }
 
     const auto source =
-        GstView<GstAppSrc>{GST_APP_SRC(output_audio_source_.get())};
+        GstView<GstAppSrc>{GST_APP_SRC(output_audio_source.get())};
 
     auto caps = CapsPtr{gst_caps_new_simple(
         "audio/x-raw", "format", G_TYPE_STRING, "S16LE", "rate", G_TYPE_INT,
@@ -1280,57 +1291,77 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
 
     gst_app_src_set_caps(source, caps.get());
 
-    g_object_set(output_audio_source_.get(), "min-latency",
+    g_object_set(output_audio_source.get(), "min-latency",
                  static_cast<gint64>(kAudioMinLatency), "max-latency",
                  static_cast<gint64>(audio_capacity_ * kAudioChunkDuration),
                  nullptr);
   }
 
+  ElementPtr preview_sink;
+  ElementPtr preview_queue;
   if (preview_enabled_) {
-    preview_sink_ = ElementPtr{
-        gst_bin_get_by_name(GST_BIN(output_pipeline_.get()), "preview_sink")};
-    preview_queue_ = ElementPtr{
-        gst_bin_get_by_name(GST_BIN(output_pipeline_.get()), "preview_queue")};
+    preview_sink = ElementPtr{
+        gst_bin_get_by_name(GST_BIN(pipeline.get()), "preview_sink")};
+    preview_queue = ElementPtr{
+        gst_bin_get_by_name(GST_BIN(pipeline.get()), "preview_queue")};
 
-    if (!preview_sink_ || !preview_queue_) {
+    if (!preview_sink || !preview_queue) {
       std::println(stderr, "Couldn't find preview branch elements");
       return false;
     }
 
     // The gate drops all preview branch buffers while there are no web
     // clients, so no JPEG encoding happens without watchers (#384).
-    InstallDropGate(preview_queue_.get(), preview_gate_);
+    InstallDropGate(preview_queue.get(), preview_gate_);
   }
 
+  ElementPtr subtitle_overlay;
+  ElementPtr subtitle_parser;
+  ElementPtr subtitle_source;
   if (subtitle_path_) {
-    subtitle_overlay_ = ElementPtr{gst_bin_get_by_name(
-        GST_BIN(output_pipeline_.get()), "subtitle_overlay")};
-    subtitle_parser_ = ElementPtr{gst_bin_get_by_name(
-        GST_BIN(output_pipeline_.get()), "subtitle_parser")};
-    subtitle_source_ = ElementPtr{gst_bin_get_by_name(
-        GST_BIN(output_pipeline_.get()), "subtitle_source")};
+    subtitle_overlay = ElementPtr{
+        gst_bin_get_by_name(GST_BIN(pipeline.get()), "subtitle_overlay")};
+    subtitle_parser = ElementPtr{
+        gst_bin_get_by_name(GST_BIN(pipeline.get()), "subtitle_parser")};
+    subtitle_source = ElementPtr{
+        gst_bin_get_by_name(GST_BIN(pipeline.get()), "subtitle_source")};
 
-    if (!subtitle_overlay_ || !subtitle_parser_ || !subtitle_source_) {
+    if (!subtitle_overlay || !subtitle_parser || !subtitle_source) {
       std::println(stderr, "Couldn't find subtitle branch elements");
       return false;
     }
 
+    // The renderer child is auto-plugged only once the pipeline runs,
+    // so the stored style rides child-added (#159).
+    g_signal_connect(subtitle_overlay.get(), "child-added",
+                     G_CALLBACK(&OnSubtitleChildAdded), this);
+  }
+
+  // Construction succeeded: commit. The old output goes down now.
+  StopOutputPipeline(lock);
+
+  output_mode_ = output_mode;
+  connector_id_ = connector_id;
+  output_pipeline_ = std::move(pipeline);
+  output_source_ = std::move(output_source);
+  output_audio_source_ = std::move(output_audio_source);
+  preview_sink_ = std::move(preview_sink);
+  preview_queue_ = std::move(preview_queue);
+  subtitle_overlay_ = std::move(subtitle_overlay);
+  subtitle_parser_ = std::move(subtitle_parser);
+  subtitle_source_ = std::move(subtitle_source);
+
+  if (subtitle_path_) {
     // Anchor the SRT timeline at the current running time: cue time t
     // renders at anchor + delay + t (#438). An output (re)start replays
     // the position and drops any pause (#439).
     subtitle_anchor_ = static_cast<gint64>(MasterRunningTime());
     subtitle_frozen_.reset();
     ApplySubtitleOffset();
+    ApplySubtitleSilent();
 
-    if (!subtitles_visible_) {
-      g_object_set(subtitle_overlay_.get(), "silent", TRUE, nullptr);
-    }
-
-    // The renderer child is auto-plugged only once the pipeline runs,
-    // so the stored style rides child-added (#159); the direct call
-    // covers a renderer that already exists.
-    g_signal_connect(subtitle_overlay_.get(), "child-added",
-                     G_CALLBACK(&OnSubtitleChildAdded), this);
+    // The direct call covers a renderer that already exists; new ones
+    // ride child-added.
     ApplySubtitleStyle(SubtitleRenderer().get());
   }
 
@@ -1341,6 +1372,10 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
   if (gst_element_set_state(output_pipeline_.get(), GST_STATE_PLAYING) ==
       GST_STATE_CHANGE_FAILURE) {
     std::println(stderr, "Could not start output pipeline");
+    // The old output is gone now; the caller restores or fails.
+    ResetGuard reset{output_pipeline_, output_source_,   output_audio_source_,
+                     preview_sink_,    preview_queue_,   subtitle_overlay_,
+                     subtitle_parser_, subtitle_source_, output_bus_};
     return false;
   }
 
@@ -1363,7 +1398,6 @@ bool Stream::Implementation::StartOutput(OutputMode output_mode,
         std::jthread{[this](std::stop_token stop) { RunPreview(stop); }};
   }
 
-  reset.release();
   return true;
 }
 
@@ -1519,6 +1553,15 @@ void Stream::Implementation::RunPreview(std::stop_token stop) {
   }
 }
 
+void Stream::Implementation::ApplySubtitleSilent() {
+  if (subtitle_overlay_ != nullptr) {
+    g_object_set(subtitle_overlay_.get(), "silent",
+                 SubtitlesSilent(subtitle_frozen_.has_value(),
+                                 subtitles_visible_),
+                 nullptr);
+  }
+}
+
 void Stream::Implementation::ApplySubtitleOffset() {
   if (subtitle_parser_ == nullptr) {
     return;
@@ -1547,10 +1590,14 @@ void Stream::Implementation::SetPreviewActive(bool active) {
 
 bool Stream::Implementation::SetSubtitleFile(
     const std::optional<std::string>& path) {
+  std::optional<std::string> previous;
+  std::int64_t previous_delay;
   OutputMode output_mode;
   std::optional<int> connector_id;
   {
     std::lock_guard lock{mutex_};
+    previous = subtitle_path_;
+    previous_delay = subtitle_delay_.load();
     subtitle_path_ = path;
     subtitle_delay_.store(0);
     output_mode = output_mode_;
@@ -1559,31 +1606,104 @@ bool Stream::Implementation::SetSubtitleFile(
     CancelSyncLocked();
   }
 
-  return StartOutput(output_mode, connector_id);
+  if (StartOutput(output_mode, connector_id)) {
+    return true;
+  }
+
+  // The switch failed; bring the previous working output back rather
+  // than leaving a dead appliance (#448). If restoration also fails,
+  // fail the process: the service manager restart is the last resort
+  // against a silently blank screen.
+  {
+    std::lock_guard lock{mutex_};
+    subtitle_path_ = previous;
+    subtitle_delay_.store(previous_delay);
+  }
+  if (!StartOutput(output_mode, connector_id)) {
+    output_failed_.store(true);
+  }
+  return false;
 }
 
-// Drops the session and resets the public state; call with mutex_
+// Drops the session and resets its public state; call with mutex_
 // held.
 void Stream::Implementation::CancelSyncLocked() {
   std::lock_guard lock{sync_mutex_};
-  sync_session_.reset();
-  sync_state_ = {};
-  sync_apply_pending_ = false;
+  EndSyncSessionLocked(SyncStatus::kIdle, {});
 }
 
-Stream::SyncStartResult Stream::Implementation::StartSubtitleSync() {
+void Stream::Implementation::EndSyncSessionLocked(
+    Stream::SyncStatus status, std::string reason,
+    std::optional<std::int64_t> time_ms, std::optional<std::int64_t> theta_ns) {
+  // One completion summary per session (#5): windows observed, elapsed
+  // listening time, and the outcome. Cancels stay quiet.
+  if (status == SyncStatus::kSynced || status == SyncStatus::kFailed) {
+    const std::size_t windows =
+        sync_session_ ? sync_session_->WindowsFed() : 0;
+    const double elapsed_s =
+        static_cast<double>(static_cast<std::int64_t>(MasterRunningTime()) -
+                            sync_started_ns_) /
+        1e9;
+    if (status == SyncStatus::kSynced) {
+      SYNC_LOG(LogLevel::kInfo,
+               "Subtitle sync locked at {} ms after {} window(s) in {:.1f} s",
+               time_ms.value_or(0), windows, elapsed_s);
+    } else {
+      SYNC_LOG(LogLevel::kInfo,
+               "Subtitle sync failed after {} window(s) in {:.1f} s: {}",
+               windows, elapsed_s, reason);
+    }
+  }
+
+  sync_session_.reset();
+  ++sync_generation_;
+
+  // A session that owned the tap releases it on the control path
+  // (Poll): SetWhisperState must not run under sync_mutex_.
+  if (sync_owns_whisper_) {
+    sync_owns_whisper_ = false;
+    whisper_release_pending_.store(true);
+  }
+
+  sync_state_ = {};
+  sync_state_.status = status;
+  sync_state_.reason = std::move(reason);
+  sync_state_.time_ms = time_ms;
+  sync_pending_theta_ns_ = theta_ns;
+  sync_apply_pending_ = status == SyncStatus::kSynced && theta_ns.has_value();
+}
+
+Stream::SyncStartResult Stream::Implementation::StartSubtitleSync(
+    const std::optional<std::string>& model_path) {
   std::optional<std::string> path;
+  bool capturing;
   {
     std::lock_guard lock{mutex_};
     path = subtitle_path_;
+    capturing = capture_state_ == CaptureState::kCapturing;
   }
 
   if (!path) {
     return SyncStartResult::kNoSubtitles;
   }
 
+  // The session listens to capture audio; without capture there is
+  // nothing to listen to (a session started now would just fail at the
+  // deadline).
+  if (!capturing) {
+    return SyncStartResult::kNoCapture;
+  }
+
+  // The session enables the tap itself when it's off and owns it for
+  // the session's duration — a temporary activation that is never
+  // persisted and is released when the session ends, however it ends.
+  // An already-running tap is ridden as-is and owned by no one new.
+  bool session_enabled = false;
   if (!whisper_enabled_.load()) {
-    return SyncStartResult::kNoWhisper;
+    if (!model_path || !SetWhisperState(true, model_path)) {
+      return SyncStartResult::kModelUnavailable;
+    }
+    session_enabled = true;
   }
 
   std::ifstream file{*path};
@@ -1600,19 +1720,39 @@ Stream::SyncStartResult Stream::Implementation::StartSubtitleSync() {
 
   // The deadline rides the shared timeline, so a capture clock that
   // stops also stops the session's idea of elapsed time.
-  const auto deadline =
-      static_cast<std::int64_t>(MasterRunningTime()) + kSyncListenWindowNs;
+  const auto now = static_cast<std::int64_t>(MasterRunningTime());
+  const auto deadline = now + kSyncListenWindowNs;
 
   {
     std::lock_guard lock{sync_mutex_};
+
+    if (!whisper_enabled_.load()) {
+      // Raced a disable between the enable and here; undo the session's
+      // own enable on the control path.
+      if (session_enabled) {
+        whisper_release_pending_.store(true);
+      }
+      return SyncStartResult::kNoWhisper;
+    }
+
+    // Own the tap when the session enabled it, when the replaced
+    // session did (a restart inherits), or when a just-ended session's
+    // release is still pending (adopt it: the tap was session-enabled,
+    // never user-enabled).
+    sync_owns_whisper_ = session_enabled || sync_owns_whisper_ ||
+                         whisper_release_pending_.exchange(false);
+
     sync_session_.emplace(std::move(cues), MatchTranscript, deadline);
+    ++sync_generation_;
+    sync_started_ns_ = now;
     sync_state_ = {};
     sync_state_.status = SyncStatus::kListening;
     sync_apply_pending_ = false;
+    sync_pending_theta_ns_.reset();
   }
 
-  STREAM_LOG(LogLevel::kInfo, "Subtitle sync listening for up to {} s",
-             kSyncListenWindowNs / 1'000'000'000);
+  SYNC_LOG(LogLevel::kInfo, "Subtitle sync listening for up to {} s",
+           kSyncListenWindowNs / 1'000'000'000);
   return SyncStartResult::kStarted;
 }
 
@@ -1622,6 +1762,12 @@ Stream::SyncState Stream::Implementation::SubtitleSync() const {
 }
 
 void Stream::Implementation::SetSubtitleDelay(std::int64_t delay_ms) {
+  if (!SubtitleOffsetMsValid(delay_ms)) {
+    STREAM_LOG(LogLevel::kWarning, "Ignoring out-of-range subtitle delay: {}",
+               delay_ms);
+    return;
+  }
+
   std::lock_guard lock{mutex_};
   subtitle_delay_.store(delay_ms * static_cast<std::int64_t>(GST_MSECOND));
   // The pad offset reaches only cues parsed after the change: re-emit.
@@ -1645,6 +1791,12 @@ std::optional<std::int64_t> Stream::Implementation::SubtitleTime() {
 }
 
 void Stream::Implementation::SetSubtitleTime(std::int64_t time_ms) {
+  if (!SubtitleOffsetMsValid(time_ms)) {
+    STREAM_LOG(LogLevel::kWarning,
+               "Ignoring out-of-range subtitle position: {}", time_ms);
+    return;
+  }
+
   std::lock_guard lock{mutex_};
 
   // A manual seek cancels the session: last action wins.
@@ -1689,9 +1841,7 @@ void Stream::Implementation::SetSubtitlesPaused(bool paused) {
     ReparseSubtitles();
   }
 
-  if (subtitle_overlay_ != nullptr) {
-    g_object_set(subtitle_overlay_.get(), "silent", paused, nullptr);
-  }
+  ApplySubtitleSilent();
 }
 
 bool Stream::Implementation::SubtitlesPaused() {
@@ -1702,9 +1852,7 @@ bool Stream::Implementation::SubtitlesPaused() {
 void Stream::Implementation::SetSubtitlesVisible(bool visible) {
   std::lock_guard lock{mutex_};
   subtitles_visible_ = visible;
-  if (subtitle_overlay_ != nullptr) {
-    g_object_set(subtitle_overlay_.get(), "silent", !visible, nullptr);
-  }
+  ApplySubtitleSilent();
 }
 
 bool Stream::Implementation::SubtitlesVisible() {
@@ -1771,6 +1919,12 @@ void Stream::Implementation::SetSubtitleFontFamily(std::string family) {
 }
 
 void Stream::Implementation::SetSubtitleFontSize(std::int64_t size_pt) {
+  if (!SubtitleFontSizeValid(size_pt)) {
+    STREAM_LOG(LogLevel::kWarning, "Ignoring out-of-range cue font size: {}",
+               size_pt);
+    return;
+  }
+
   std::lock_guard lock{mutex_};
 
   auto style = std::make_shared<SubtitleStyle>();
@@ -1947,19 +2101,31 @@ void Stream::Implementation::Stop() {
 void Stream::Implementation::Poll() {
   std::lock_guard lock{mutex_};
 
-  const bool capture_bus_ok =
+  const auto capture_bus_health =
       PollBus(capture_bus_.get(), capture_pipeline_.get(), "capture");
+
+  // A capture device error is not the no-signal state — the pink
+  // fallback would sit in front of a dead device indefinitely, and
+  // Restart=on-failure can't see a process that looks alive. Fail the
+  // process instead, like the output side (#447): the service manager
+  // restart is the recovery path for a re-enumerating device.
+  if (capture_bus_health == BusHealth::kError) {
+    capture_failed_.store(true);
+  }
 
   // The output side has no fallback: a dead output renders nothing, so
   // fail the process and let the service manager restart it (#447).
-  if (!PollBus(output_bus_.get(), output_pipeline_.get(), "output")) {
+  if (PollBus(output_bus_.get(), output_pipeline_.get(), "output") !=
+      BusHealth::kOk) {
     output_failed_.store(true);
   }
 
   if (capture_state_ == CaptureState::kCapturing &&
-      (!capture_bus_ok || !capture_active_.load())) {
-    // Capture is gone; drop the pipeline and switch the capture thread
-    // over to the no-signal screen.
+      !capture_failed_.load() &&
+      (capture_bus_health != BusHealth::kOk || !capture_active_.load())) {
+    // Capture stopped without a device error (EOS, a stalled source);
+    // drop the pipeline and switch the capture thread over to the
+    // no-signal screen.
     StopCapturePipeline(lock);
   }
 
@@ -1974,11 +2140,16 @@ void Stream::Implementation::Poll() {
     std::lock_guard sync_lock{sync_mutex_};
 
     // Apply a lock's position here: the whisper thread flagged it
-    // because it must not take mutex_.
+    // because it must not take mutex_. The SRT clock kept running
+    // between the lock and its application, so recompute the position
+    // from the matched offset instead of applying the lock-time value.
     if (sync_apply_pending_) {
       sync_apply_pending_ = false;
-      if (sync_state_.time_ms) {
-        ApplySubtitleTimeLocked(*sync_state_.time_ms);
+      if (sync_pending_theta_ns_) {
+        ApplySubtitleTimeLocked(
+            (static_cast<std::int64_t>(MasterRunningTime()) +
+             *sync_pending_theta_ns_) /
+            1'000'000);
       }
     }
 
@@ -1988,12 +2159,18 @@ void Stream::Implementation::Poll() {
       const auto result =
           sync_session_->Poll(static_cast<std::int64_t>(MasterRunningTime()));
       if (result.state == SyncSession::State::kFailed) {
-        STREAM_LOG(LogLevel::kInfo, "Subtitle sync failed: {}", result.reason);
-        sync_state_.status = SyncStatus::kFailed;
-        sync_state_.reason = result.reason;
-        sync_session_.reset();
+        EndSyncSessionLocked(SyncStatus::kFailed, result.reason);
       }
     }
+  }
+
+  // A session that owned the tap and just ended releases it here,
+  // outside all locks: SetWhisperState takes whisper_mutex_ and
+  // sync_mutex_ and must not run under sync_mutex_. A session started
+  // after that end adopts the tap by consuming this flag first; one
+  // that slips past it fails promptly with "whisper disabled".
+  if (whisper_release_pending_.exchange(false)) {
+    SetWhisperState(false, std::nullopt);
   }
 }
 
@@ -2061,14 +2238,14 @@ std::unique_ptr<Stream> Stream::Create(
   }
 
   // The counter-stream delay from --audio-offset needs the extra frames
-  // (or ~10 ms audio chunks) in flight; make room for them.
-  const auto extra_video_frames =
-      static_cast<std::size_t>((audio_offset_ms < 0 ? -audio_offset_ms : 0) *
-                                   kFramesPerSecond +
-                               999) /
-      1000;
+  // (or ~10 ms audio chunks) in flight; make room for them. Computed in
+  // 64-bit: an extreme int offset would overflow the int multiplication
+  // (#446).
+  const std::int64_t offset_ms = audio_offset_ms;
+  const auto extra_video_frames = static_cast<std::size_t>(
+      (offset_ms < 0 ? -offset_ms * kFramesPerSecond + 999 : 0) / 1000);
   const auto extra_audio_chunks =
-      static_cast<std::size_t>(audio_offset_ms > 0 ? audio_offset_ms : 0) / 10;
+      static_cast<std::size_t>(offset_ms > 0 ? offset_ms : 0) / 10;
 
   auto implementation = std::make_unique<Implementation>(
       kFrameBufferCapacity + extra_video_frames,
@@ -2109,14 +2286,17 @@ std::optional<std::string> Stream::WhisperModel() const {
   return implementation_->WhisperModel();
 }
 
+void Stream::ClearWhisperModel() { implementation_->ClearWhisperModel(); }
+
 void Stream::SetTranscriptCallback(TranscriptCallback callback) {
   implementation_->transcript_callback_.store(
       callback ? std::make_shared<TranscriptCallback>(std::move(callback))
                : nullptr);
 }
 
-Stream::SyncStartResult Stream::StartSubtitleSync() {
-  return implementation_->StartSubtitleSync();
+Stream::SyncStartResult Stream::StartSubtitleSync(
+    const std::optional<std::string>& model_path) {
+  return implementation_->StartSubtitleSync(model_path);
 }
 
 Stream::SyncState Stream::SubtitleSync() const {

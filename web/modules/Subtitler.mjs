@@ -46,15 +46,15 @@ class Subtitler extends Rest {
   }
 
   upload(filename, body) {
-    return this.put(`subtitles/${filename}`, {}, { body });
+    return this.put(`subtitles/${encodeURIComponent(filename)}`, {}, { body });
   }
 
   download(file) {
-    return this.get(`subtitles/${file}`);
+    return this.get(`subtitles/${encodeURIComponent(file)}`);
   }
 
   remove(file) {
-    return this.delete(`subtitles/${file}`);
+    return this.delete(`subtitles/${encodeURIComponent(file)}`);
   }
 
   whisper() {
@@ -66,19 +66,19 @@ class Subtitler extends Rest {
   }
 
   uploadWhisperModel(name, body) {
-    return this.put(`whisper/models/${name}`, {}, { body });
+    return this.put(`whisper/models/${encodeURIComponent(name)}`, {}, { body });
   }
 
   removeWhisperModel(name) {
-    return this.delete(`whisper/models/${name}`);
+    return this.delete(`whisper/models/${encodeURIComponent(name)}`);
   }
 
   subtitleSync() {
     return this.get("subtitle-sync");
   }
 
-  startSubtitleSync() {
-    return this.put("subtitle-sync");
+  startSubtitleSync(model) {
+    return this.put("subtitle-sync", model ? { model } : {});
   }
 }
 

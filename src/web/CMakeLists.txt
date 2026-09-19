@@ -7,6 +7,7 @@ add_library(
     static_files.cpp
     subtitle_routes.cpp
     transcript_routes.cpp
+    upload_stream.cpp
     web_server.cpp
     whisper_routes.cpp
 )

@@ -4,14 +4,18 @@
 
 #include <charconv>
 #include <cstddef>
+#include <filesystem>
 #include <format>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <vector>
 
-#include "utils/unique_ptr.h"
+#include "utils/validation.h"
 #include "web/json_helpers.h"
+#include "web/upload_stream.h"
 
 namespace {
 
@@ -48,38 +52,48 @@ void RespondSubtitleState(SoupServerMessage* message,
 }
 
 // PUT /api/subtitles/<title> (#212): stores and activates the SRT in
-// the body. libsoup invokes the handler after the request body is
-// complete, so the body is fully available here.
+// the body. The body streamed into a staged file (see
+// HandleSubtitleUploadEarly), so this runs with bounded memory even
+// for the largest accepted SRT. The title is whatever follows the
+// prefix: libsoup hands handler paths over already percent-decoded (no
+// raw-paths), so no further unescaping happens here — encoding and
+// decoding each happen exactly once.
 void HandleSubtitleUpload(SoupServerMessage* message, const char* path,
                           const SubtitleRoutes& self) {
-  const UniquePtr<gchar, g_free> decoded{
-      g_uri_unescape_string(path + kSubtitlesPrefix.size(), nullptr)};
-  if (decoded == nullptr) {
-    soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
+  const std::string_view title{path + kSubtitlesPrefix.size()};
+
+  auto* upload = GetStagedUpload(message);
+  if (upload == nullptr || upload->failed) {
+    soup_server_message_set_status(message, SOUP_STATUS_INTERNAL_SERVER_ERROR,
+                                   nullptr);
     return;
   }
-
-  const UniquePtr<GBytes, g_bytes_unref> body{
-      soup_message_body_flatten(soup_server_message_get_request_body(message))};
-
-  const gsize body_size = body != nullptr ? g_bytes_get_size(body.get()) : 0;
-  if (body_size == 0) {
-    soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
-    return;
-  }
-
-  if (body_size > kMaxSubtitleBytes) {
+  if (upload->overflow) {
     soup_server_message_set_status(
         message, SOUP_STATUS_REQUEST_ENTITY_TOO_LARGE, nullptr);
     return;
   }
+  if (upload->bytes == 0) {
+    soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
+    return;
+  }
+  if (!upload->Close()) {
+    soup_server_message_set_status(message, SOUP_STATUS_INTERNAL_SERVER_ERROR,
+                                   nullptr);
+    return;
+  }
 
-  gsize data_size;
-  const auto* data =
-      static_cast<const char*>(g_bytes_get_data(body.get(), &data_size));
+  // The cap keeps the read-back small enough to hold in memory.
+  std::ifstream file{upload->path, std::ios::binary};
+  const std::string contents{std::istreambuf_iterator<char>{file},
+                             std::istreambuf_iterator<char>{}};
+  if (file.bad()) {
+    soup_server_message_set_status(message, SOUP_STATUS_INTERNAL_SERVER_ERROR,
+                                   nullptr);
+    return;
+  }
 
-  const auto result =
-      self.upload_(decoded.get(), std::string_view{data, data_size});
+  const auto result = self.upload_(title, contents);
 
   switch (result.status) {
     case SubtitleUploadStatus::kStored:
@@ -100,14 +114,7 @@ void HandleSubtitleUpload(SoupServerMessage* message, const char* path,
 // GET /api/subtitles/<title>: the stored SRT as JSON.
 void HandleSubtitleGet(SoupServerMessage* message, const char* path,
                        const SubtitleRoutes& self) {
-  const UniquePtr<gchar, g_free> decoded{
-      g_uri_unescape_string(path + kSubtitlesPrefix.size(), nullptr)};
-  if (decoded == nullptr) {
-    soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
-    return;
-  }
-
-  const auto body = self.get_(decoded.get());
+  const auto body = self.get_(path + kSubtitlesPrefix.size());
   if (!body) {
     soup_server_message_set_status(message, SOUP_STATUS_NOT_FOUND, nullptr);
     return;
@@ -119,14 +126,7 @@ void HandleSubtitleGet(SoupServerMessage* message, const char* path,
 // DELETE /api/subtitles/<title> (#453): removes the library entry.
 void HandleSubtitleDelete(SoupServerMessage* message, const char* path,
                           const SubtitleRoutes& self) {
-  const UniquePtr<gchar, g_free> decoded{
-      g_uri_unescape_string(path + kSubtitlesPrefix.size(), nullptr)};
-  if (decoded == nullptr) {
-    soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
-    return;
-  }
-
-  switch (self.delete_(decoded.get())) {
+  switch (self.delete_(path + kSubtitlesPrefix.size())) {
     case SubtitleDeleteStatus::kDeleted:
       soup_server_message_set_status(message, SOUP_STATUS_NO_CONTENT, nullptr);
       break;
@@ -138,6 +138,24 @@ void HandleSubtitleDelete(SoupServerMessage* message, const char* path,
                                      nullptr);
       break;
   }
+}
+
+// Early handler for PUT /api/subtitles/<title> (#8): sets up bounded
+// streaming reception of the body into a staged file; the completion
+// handler (HandleSubtitleUpload) works with that file.
+void HandleSubtitleUploadEarly(SoupServer*, SoupServerMessage* message,
+                               const char* path, GHashTable*,
+                               gpointer user_data) {
+  const std::string_view method{soup_server_message_get_method(message)};
+  const std::string_view route{path};
+
+  if (method != "PUT" || !route.starts_with(kSubtitlesPrefix) ||
+      route.size() <= kSubtitlesPrefix.size()) {
+    return;
+  }
+
+  BeginStagedUpload(message, std::filesystem::temp_directory_path(),
+                    kMaxSubtitleBytes);
 }
 
 void HandleSubtitles(SoupServer*, SoupServerMessage* message, const char* path,
@@ -283,11 +301,21 @@ void HandleSubtitleState(SoupServer*, SoupServerMessage* message,
         valid = false;
         break;
       }
+      // Range-checked (#446): the stream converts ms to ns and composes
+      // anchors; out-of-range values could overflow that arithmetic.
       if (name == "time") {
+        if (!SubtitleOffsetMsValid(parsed)) {
+          valid = false;
+          break;
+        }
         patch.time_ms = parsed;
       } else if (name == "delay") {
+        if (!SubtitleOffsetMsValid(parsed)) {
+          valid = false;
+          break;
+        }
         patch.delay_ms = parsed;
-      } else if (parsed > 0) {
+      } else if (SubtitleFontSizeValid(parsed)) {
         patch.font_size = parsed;
       } else {
         valid = false;
@@ -335,9 +363,12 @@ void RespondSubtitleSync(SoupServerMessage* message,
 }
 
 // GET/PUT /api/subtitle-sync (#433): PUT starts (or restarts) the
-// one-shot listening session; GET answers where it got to.
+// one-shot listening session — ?model=<name> picks the model the
+// session enables the tap with when the tap is off; GET answers where
+// it got to.
 void HandleSubtitleSync(SoupServer*, SoupServerMessage* message,
-                        const char* path, GHashTable*, gpointer user_data) {
+                        const char* path, GHashTable* query,
+                        gpointer user_data) {
   auto& self = *static_cast<SubtitleRoutes*>(user_data);
   const std::string_view method{soup_server_message_get_method(message)};
 
@@ -359,7 +390,34 @@ void HandleSubtitleSync(SoupServer*, SoupServerMessage* message,
     return;
   }
 
-  switch (self.sync_start_()) {
+  std::optional<std::string> model;
+  bool valid = true;
+
+  GHashTableIter iter;
+  gpointer key, value;
+  if (query != nullptr) {
+    g_hash_table_iter_init(&iter, query);
+  }
+
+  while (query != nullptr && g_hash_table_iter_next(&iter, &key, &value)) {
+    const std::string_view name{static_cast<const char*>(key)};
+    const std::string_view param{static_cast<const char*>(value)};
+
+    if (name == "model" && !param.empty()) {
+      model = std::string{param};
+    } else {
+      valid = false;
+      break;
+    }
+  }
+
+  if (!valid) {
+    soup_server_message_set_status(message, SOUP_STATUS_BAD_REQUEST, nullptr);
+    return;
+  }
+
+  switch (self.sync_start_(model ? std::make_optional<std::string_view>(*model)
+                                : std::nullopt)) {
     case SubtitleSyncStartResult::kStarted:
       RespondJson(message, R"({"state":"listening"})");
       soup_server_message_set_status(message, SOUP_STATUS_ACCEPTED, nullptr);
@@ -369,9 +427,19 @@ void HandleSubtitleSync(SoupServer*, SoupServerMessage* message,
                   R"({"state":"failed","reason":"no subtitles attached"})");
       soup_server_message_set_status(message, SOUP_STATUS_CONFLICT, nullptr);
       break;
+    case SubtitleSyncStartResult::kNoCapture:
+      RespondJson(message,
+                  R"({"state":"failed","reason":"capture isn't running"})");
+      soup_server_message_set_status(message, SOUP_STATUS_CONFLICT, nullptr);
+      break;
     case SubtitleSyncStartResult::kNoWhisper:
       RespondJson(message,
                   R"({"state":"failed","reason":"whisper is disabled"})");
+      soup_server_message_set_status(message, SOUP_STATUS_CONFLICT, nullptr);
+      break;
+    case SubtitleSyncStartResult::kModelUnavailable:
+      RespondJson(message,
+                  R"({"state":"failed","reason":"the model isn't available"})");
       soup_server_message_set_status(message, SOUP_STATUS_CONFLICT, nullptr);
       break;
     case SubtitleSyncStartResult::kUnparseableSubtitles:
@@ -389,6 +457,10 @@ namespace subtitler {
 
 void SubtitleRoutes::Register(SoupServer* server) {
   if (upload_ || list_ || get_ || delete_) {
+    if (upload_) {
+      soup_server_add_early_handler(server, "/api/subtitles",
+                                    HandleSubtitleUploadEarly, this, nullptr);
+    }
     soup_server_add_handler(server, "/api/subtitles", HandleSubtitles, this,
                             nullptr);
   }

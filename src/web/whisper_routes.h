@@ -27,6 +27,12 @@ using WhisperStateGetHandler = std::function<WhisperRouteState()>;
 using WhisperStateSetHandler = std::function<bool(
     std::optional<bool> enabled, std::optional<std::string_view> model)>;
 
+// Clears the model selection server-side, called when the selected
+// model is deleted from the store, so the gone file doesn't linger as
+// the selected (and persisted) model. Distinct from the setter because
+// an unset model there means "no change".
+using WhisperModelClearHandler = std::function<void()>;
+
 // The /api/whisper endpoints (#19): GET/PUT /api/whisper reads and
 // changes the tap's state, PUT /api/whisper/models/<name> stores a
 // model into <state-dir>/models — models are never downloaded
@@ -43,6 +49,7 @@ struct WhisperRoutes {
 
   WhisperStateGetHandler state_get_;
   WhisperStateSetHandler state_set_;
+  WhisperModelClearHandler model_clear_;
   std::optional<std::filesystem::path> state_dir_;
 };
 

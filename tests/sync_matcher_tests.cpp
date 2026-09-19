@@ -338,6 +338,54 @@ TEST_CASE("sync matcher window votes") {
     CHECK(match.best_hits == 7);
     CHECK(match.best_score == doctest::Approx(7.0));
   }
+
+  SUBCASE("a hallucinated suffix before a long gap can't jump the vote") {
+    // A long silent gap after cue 12: cue 13 starts 87 s later than
+    // the even cadence. Timestamp projection from the window's last
+    // word would land deep in the post-gap cue; anchoring at the last
+    // matched word must not move.
+    auto gapped = cues;
+    for (std::size_t i = 13; i < gapped.size(); ++i) {
+      gapped[i].start_ms += 87'000;
+      gapped[i].end_ms += 87'000;
+    }
+
+    constexpr std::int64_t theta = 123 * kSecond;
+    auto window = WindowAt(gapped, 10, 12, theta);
+    // Whisper-style hallucination: trailing words that were never
+    // said and don't exist in the SRT.
+    window.text += " zqx jkvb qwxyz";
+
+    const auto match = subtitler::MatchWindow(gapped, window);
+
+    CHECK(match.reject == subtitler::WindowReject::kNone);
+    REQUIRE(match.theta_ns.has_value());
+    // Within the one-word tolerance of the true offset, not ~89 s
+    // ahead in the post-gap cue.
+    const auto diff = *match.theta_ns > theta ? *match.theta_ns - theta
+                                              : theta - *match.theta_ns;
+    CHECK(diff <= 600 * kMillisecond);
+  }
+
+  SUBCASE("hallucinated suffixes don't break the lock") {
+    // Different junk suffixes per window: the matched prefixes still
+    // anchor every vote.
+    constexpr std::int64_t theta = 123 * kSecond;
+    std::vector<subtitler::TimestampedText> windows;
+    const std::vector<std::string> junk = {" zqx jkvb", " qwxyz zzz",
+                                           " ppp qqq rrr"};
+    int at = 0;
+    for (const auto [first, last] :
+         {std::pair{10UL, 12UL}, {40UL, 42UL}, {70UL, 72UL}}) {
+      auto window = WindowAt(cues, first, last, theta);
+      window.text += junk[at++];
+      windows.push_back(std::move(window));
+    }
+
+    const auto matched = subtitler::MatchTranscript(cues, windows);
+    REQUIRE(matched.has_value());
+    CHECK(*matched == theta);
+  }
 }
 
 TEST_CASE("sync matcher normalization") {

@@ -232,6 +232,27 @@ TEST_CASE("subtitle library path sharding") {
     CHECK(subtitler::LibrarySubtitlePath("../movie.srt") == std::nullopt);
     CHECK(subtitler::LibrarySubtitlePath("movie.srt/") == std::nullopt);
   }
+
+  SUBCASE("control characters and oversized names are rejected") {
+    CHECK(subtitler::LibrarySubtitlePath("a\tb.srt") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitlePath("a\nb.srt") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitlePath(std::string{"a\0b.srt", 7}) ==
+          std::nullopt);
+    CHECK(subtitler::LibrarySubtitlePath("a\x7f"
+                                         "b.srt") == std::nullopt);
+    CHECK(subtitler::LibrarySubtitlePath(std::string(252, 'x') + ".srt") ==
+          std::nullopt);  // 256 bytes > NAME_MAX
+    CHECK(subtitler::LibrarySubtitlePath(std::string(251, 'x') + ".srt") !=
+          std::nullopt);  // 255 bytes fits
+  }
+
+  SUBCASE("special but legal characters round-trip") {
+    for (const std::string_view title :
+         {"Who?.srt", "C# Sharp.srt", "100%.srt", "a%20b.srt", "a%2Fb.srt",
+          "Quote\"Test.srt", "München Éire ☃.srt"}) {
+      CHECK(subtitler::LibrarySubtitlePath(title).has_value());
+    }
+  }
 }
 
 TEST_CASE("library title derivation from a stored path") {
@@ -284,7 +305,7 @@ TEST_CASE("subtitle storage") {
       std::filesystem::temp_directory_path() / "subtitler-store-test";
   std::filesystem::remove_all(root);
 
-  SUBCASE("stores the file sharded and marks it active") {
+  SUBCASE("stores the file sharded without selecting it") {
     const auto stored = subtitler::StoreSubtitle(root, "Movie.srt",
                                                  "1\n00:00:01,000 --> "
                                                  "00:00:02,000\nHi\n");
@@ -296,6 +317,10 @@ TEST_CASE("subtitle storage") {
                                std::istreambuf_iterator<char>{}};
     CHECK(contents == "1\n00:00:01,000 --> 00:00:02,000\nHi\n");
 
+    // Storing is separate from selecting (#448): the caller marks the
+    // entry active once it's actually in use.
+    CHECK(!std::filesystem::exists(root / "active"));
+    REQUIRE(subtitler::SetActiveSubtitle(root, "m/Movie.srt"));
     const auto active = subtitler::ActiveSubtitleFile(root);
     REQUIRE(active.has_value());
     CHECK(*active == *stored);
@@ -478,6 +503,12 @@ TEST_CASE("whisper model store") {
     CHECK_FALSE(subtitler::WhisperModelNameValid("a\\b.bin"));
     CHECK_FALSE(subtitler::WhisperModelNameValid("model"));
     CHECK_FALSE(subtitler::WhisperModelNameValid("model.binx"));
+    CHECK_FALSE(subtitler::WhisperModelNameValid("a\tb.bin"));
+    CHECK_FALSE(subtitler::WhisperModelNameValid("a\x7f"
+                                                 "b.bin"));
+    CHECK_FALSE(
+        subtitler::WhisperModelNameValid(std::string(252, 'x') + ".bin"));
+    CHECK(subtitler::WhisperModelNameValid(std::string(251, 'x') + ".bin"));
   }
 
   SUBCASE("model path resolution") {

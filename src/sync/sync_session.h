@@ -38,6 +38,11 @@ class SyncSession {
     State state = State::kListening;
     // The matched SRT position at lock time in ms; set when synced.
     std::optional<std::int64_t> time_ms;
+    // The matched clock offset θ (ns): srt_position = running_time + θ.
+    // Set when synced; the applied position must be recomputed from it
+    // at application time — the SRT clock keeps running between the
+    // lock and its application.
+    std::optional<std::int64_t> theta_ns;
     // Why the session failed; set when failed.
     std::string reason;
   };
@@ -46,11 +51,16 @@ class SyncSession {
               std::int64_t deadline_ns);
 
   // Feeds one text window (now_ns = current running time) and answers
-  // the state after the feed.
+  // the state after the feed. The deadline is checked first: a window
+  // arriving after it fails the session instead of matching.
   Result Feed(TimestampedText window, std::int64_t now_ns);
 
   // The state without new input; fails once the deadline has passed.
+  // The deadline is exclusive: now_ns == deadline_ns is not expired.
   Result Poll(std::int64_t now_ns) const;
+
+  // How many windows the session consumed; for the completion summary.
+  std::size_t WindowsFed() const { return windows_.size(); }
 
  private:
   std::vector<SrtCue> cues_;

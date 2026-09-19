@@ -38,9 +38,11 @@ struct WebServerHooks {
   // GET /api/fonts (#159).
   FontListHandler font_list;
   // GET/PUT /api/whisper (#19): the tap's live state. The state dir
-  // enables model listing and storage at /api/whisper/models.
+  // enables model listing and storage at /api/whisper/models. Deleting
+  // the selected model calls whisper_model_clear.
   WhisperStateGetHandler whisper_state_get;
   WhisperStateSetHandler whisper_state_set;
+  WhisperModelClearHandler whisper_model_clear;
   std::optional<std::filesystem::path> state_dir;
   // The static file fallback (#212); without it unmatched paths are 404.
   std::optional<std::filesystem::path> web_root;

@@ -1,6 +1,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <sys/resource.h>
+
+#include <csignal>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -142,6 +145,36 @@ model = ../evil.bin
   CHECK(values.whisper_model == std::nullopt);
 }
 
+TEST_CASE("out-of-range numeric values are dropped (#446)") {
+  const TempDir dir;
+  const auto config = subtitler::Config::Load(dir.File(R"(
+[subtitles]
+delay-ms = 2305843009214
+font-size-pt = 1001
+visible = true
+)"));
+
+  REQUIRE(config != nullptr);
+  const auto& values = config->values();
+  CHECK(values.subtitle_delay_ms == std::nullopt);
+  CHECK(values.subtitle_font_size_pt == std::nullopt);
+  // Invalid keys must not invalidate unrelated good keys.
+  CHECK(values.subtitles_visible == true);
+}
+
+TEST_CASE("boundary numeric values parse (#446)") {
+  const TempDir dir;
+  const auto config = subtitler::Config::Load(dir.File(R"(
+[subtitles]
+delay-ms = -2305843009213
+font-size-pt = 1000
+)"));
+
+  REQUIRE(config != nullptr);
+  CHECK(config->values().subtitle_delay_ms == -2305843009213LL);
+  CHECK(config->values().subtitle_font_size_pt == 1000);
+}
+
 TEST_CASE("empty values count as unset") {
   const TempDir dir;
   const auto config = subtitler::Config::Load(dir.File(R"(
@@ -256,6 +289,23 @@ TEST_CASE("whisper write-back round-trips") {
   CHECK(reloaded->values().whisper_model == "ggml-base.en.bin");
 }
 
+TEST_CASE("clearing the whisper model removes the key") {
+  const TempDir dir;
+  const auto path = dir.File("[whisper]\nenabled = false\nmodel = ggml-tiny.en.bin\n");
+
+  const auto config = subtitler::Config::Load(path);
+  REQUIRE(config != nullptr);
+  REQUIRE(config->values().whisper_model == "ggml-tiny.en.bin");
+
+  config->ClearWhisperModel();
+  CHECK(config->values().whisper_model == std::nullopt);
+  REQUIRE(config->Save());
+
+  const auto reloaded = subtitler::Config::Load(path);
+  REQUIRE(reloaded != nullptr);
+  CHECK(reloaded->values().whisper_model == std::nullopt);
+}
+
 TEST_CASE("clearing the subtitle file removes the key") {
   const TempDir dir;
   const auto path = dir.File("[subtitles]\nfile = /library/m/Movie.srt\n");
@@ -284,4 +334,93 @@ TEST_CASE("Save creates missing parent directories") {
   const auto reloaded = subtitler::Config::Load(path);
   REQUIRE(reloaded != nullptr);
   CHECK(reloaded->values().subtitles_visible == true);
+}
+
+// doctest runs its cases sequentially, so moving the process working
+// directory inside one case is safe as long as it is restored.
+struct CwdGuard {
+  explicit CwdGuard(const std::filesystem::path& path)
+      : previous{std::filesystem::current_path()} {
+    std::filesystem::current_path(path);
+  }
+  ~CwdGuard() { std::filesystem::current_path(previous); }
+  std::filesystem::path previous;
+};
+
+TEST_CASE("Save works with relative config paths") {
+  const TempDir dir;
+  const CwdGuard cwd{dir.path};
+
+  SUBCASE("bare filename") {
+    const auto config = subtitler::Config::Load("config.ini");
+    REQUIRE(config != nullptr);
+    config->SetWebEnabled(true);
+    REQUIRE(config->Save());
+
+    const auto reloaded = subtitler::Config::Load(dir.path / "config.ini");
+    REQUIRE(reloaded != nullptr);
+    CHECK(reloaded->values().web == true);
+  }
+
+  SUBCASE("./ prefixed filename") {
+    const auto config = subtitler::Config::Load("./config.ini");
+    REQUIRE(config != nullptr);
+    config->SetWebEnabled(true);
+    REQUIRE(config->Save());
+    CHECK(std::filesystem::is_regular_file(dir.path / "config.ini"));
+  }
+
+  SUBCASE("nested relative path") {
+    const auto config = subtitler::Config::Load("nested/deeper/config.ini");
+    REQUIRE(config != nullptr);
+    config->SetWebEnabled(true);
+    REQUIRE(config->Save());
+
+    const auto reloaded =
+        subtitler::Config::Load(dir.path / "nested" / "deeper" / "config.ini");
+    REQUIRE(reloaded != nullptr);
+    CHECK(reloaded->values().web == true);
+  }
+}
+
+TEST_CASE("a failed Save is reported and preserves the committed file") {
+  const TempDir dir;
+  const auto path = dir.path / "config.ini";
+
+  const auto config = subtitler::Config::Load(path);
+  REQUIRE(config != nullptr);
+  config->SetWebEnabled(true);
+  REQUIRE(config->Save());
+  const std::string committed = ReadFile(path);
+
+  SUBCASE("the staged write fails") {
+    // A zero file-size limit fails every write, the final flush
+    // included, root or not; SIGXFSZ must not kill the test.
+    struct rlimit previous {};
+    REQUIRE(getrlimit(RLIMIT_FSIZE, &previous) == 0);
+    // Soft limit only: lowering the hard one would be irreversible.
+    const struct rlimit zero { 0, previous.rlim_max };
+    REQUIRE(setrlimit(RLIMIT_FSIZE, &zero) == 0);
+    auto* previous_handler = std::signal(SIGXFSZ, SIG_IGN);
+
+    config->SetWebEnabled(false);
+    CHECK_FALSE(config->Save());
+
+    std::signal(SIGXFSZ, previous_handler);
+    REQUIRE(setrlimit(RLIMIT_FSIZE, &previous) == 0);
+
+    CHECK(ReadFile(path) == committed);
+    CHECK(!std::filesystem::exists(dir.path / "config.ini.tmp"));
+  }
+
+  SUBCASE("the destination can't be replaced") {
+    std::filesystem::remove(path);
+    std::filesystem::create_directory(path);
+
+    config->SetWebEnabled(false);
+    CHECK_FALSE(config->Save());
+
+    CHECK(std::filesystem::is_directory(path));
+    CHECK(!std::filesystem::exists(dir.path / "config.ini.tmp"));
+  }
 }

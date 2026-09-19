@@ -173,11 +173,32 @@ WindowMatch VoteWindow(const TimestampedText& window, const SrtIndex& index) {
     }
   }
 
-  // The window's last word maps to its offset in the SRT stream; its
+  // The window's last MATCHED word anchors θ, not its last word: a
+  // hallucinated or misrecognized trailing suffix never votes, so it
+  // must not project the estimate into a later cue — with a long gap
+  // after the matched region, one wrong word can span minutes.
+  std::size_t last_matched = 0;
+  for (std::size_t i = 0; i + 2 < words.size(); ++i) {
+    const std::string trigram =
+        words[i] + ' ' + words[i + 1] + ' ' + words[i + 2];
+    const auto found = index.trigrams.find(trigram);
+    if (found == index.trigrams.end()) {
+      continue;
+    }
+    for (const std::size_t at : found->second) {
+      const auto offset =
+          static_cast<std::ptrdiff_t>(at) - static_cast<std::ptrdiff_t>(i);
+      if (std::abs(offset - best_at) <= 1) {
+        last_matched = i + 2;
+      }
+    }
+  }
+
+  // The last matched word maps to its offset in the SRT stream; its
   // time is interpolated across its cue. That instant is what the
   // window's timestamp is the running time of, so θ = srt - running.
   const std::ptrdiff_t last =
-      vote_at + static_cast<std::ptrdiff_t>(words.size()) - 1;
+      vote_at + static_cast<std::ptrdiff_t>(last_matched);
   if (last < 0 || static_cast<std::size_t>(last) >= index.stream.size()) {
     match.reject = WindowReject::kOutOfRange;
     return match;
@@ -265,8 +286,12 @@ std::optional<std::int64_t> MatchTranscript(
 
   const std::int64_t theta_ns = votes[best_begin + best_size / 2];
   SYNC_LOG(LogLevel::kDebug,
-           "Subtitle sync matching locked: {} votes agree, offset {} ms",
-           best_size, theta_ns / 1'000'000);
+           "Subtitle sync matching locked: {} votes spread over {} ms, "
+           "offset {} ms",
+           best_size,
+           (votes[best_begin + best_size - 1] - votes[best_begin]) /
+               1'000'000,
+           theta_ns / 1'000'000);
   return theta_ns;
 }
 

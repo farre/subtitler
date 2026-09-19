@@ -1,5 +1,6 @@
 add_library(
     stream
+    bus.cpp
     drop_gate.cpp
     fonts.cpp
     frame_buffer.cpp
